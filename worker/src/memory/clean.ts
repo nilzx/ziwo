@@ -8,6 +8,7 @@
 
 import { SourceReconstructed } from "../store/content";
 import type { RememberInput } from "../store/types";
+import { asUTC, instantOf, UTC } from "../zone";
 
 // Limits on what a single memory may hold. A memory is an account of a
 // moment, not a transcript, so the limits are deliberately tight.
@@ -173,17 +174,18 @@ export function cleanText(req: RememberRequest): CleanText {
 }
 
 // parseWhen reads a date, or a date and time, as a model would write it, and
-// returns it in unix milliseconds. A time without a zone is read as UTC. It
+// returns it in unix milliseconds. A time without a zone is read as the wall
+// clock of zone, UTC when none is given; one with a zone or Z as written. It
 // accepts what Go's time.Parse accepts for the same five layouts: a one-digit
 // hour, a fraction of a second after the seconds, one or more spaces where
 // the layout has one. undefined is Go's zero time (0001-01-01T00:00:00Z),
 // which the Go build then treats as no date at all.
-export function parseWhen(s: string): number | undefined {
+export function parseWhen(s: string, zone: string = UTC): number | undefined {
   s = trimSpace(s);
   for (const layout of whenLayouts) {
     const m = layout.exec(s);
     if (m === null) continue;
-    const t = whenOf(m.groups ?? {});
+    const t = whenOf(m.groups ?? {}, zone);
     if (t !== null) return t;
   }
   throw invalid(`cannot read ${goQuote(s)} as a date: write it like 2026-03-14 or 2026-03-14T09:30:00Z`);
@@ -210,7 +212,7 @@ function daysIn(month: number, year: number): number {
 
 // whenOf applies Go's range checks and returns the instant, or null when a
 // field is out of range. undefined is the zero time.
-function whenOf(g: Record<string, string | undefined>): number | undefined | null {
+function whenOf(g: Record<string, string | undefined>, zone: string): number | undefined | null {
   const int = (x: string | undefined): number => (x === undefined ? 0 : Number(x));
   const year = int(g.y), month = int(g.mo), day = int(g.d);
   const hour = int(g.h), minute = int(g.mi), second = int(g.s);
@@ -227,11 +229,9 @@ function whenOf(g: Record<string, string | undefined>): number | undefined | nul
   const frac = (g.f ?? "").slice(0, 9).padEnd(9, "0");
   const ms = Number(frac.slice(0, 3));
   const finer = Number(frac.slice(3));
-  // Date.UTC would read years below 100 as 19xx.
-  const t = new Date(0);
-  t.setUTCFullYear(year, month - 1, day);
-  t.setUTCHours(hour, minute, second, ms);
-  const at = t.getTime() - offset * 1000;
+  const wall = { year, month, day, hour, minute, second, ms };
+  // Without a zone of its own, the time is what a clock in zone showed.
+  const at = g.z === undefined && zone !== UTC ? instantOf(wall, zone) : asUTC(wall) - offset * 1000;
   if (at === goZeroTime && finer === 0) return undefined;
   return at;
 }

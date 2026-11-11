@@ -17,6 +17,9 @@ export interface SessionEvent {
   id: string;
   model: string;
   client: string;
+  // The IANA time zone the model reported for the person it talks with.
+  // New on this platform; absent when none was reported.
+  tz?: string;
 }
 
 // RememberEvent records that a memory was written. What the memory says is in
@@ -91,7 +94,7 @@ const omit = (s: string): string | undefined => (s === "" ? undefined : s);
 const omitNum = (n: number): number | undefined => (n === 0 ? undefined : n);
 
 export function encodeSession(e: SessionEvent): string {
-  return goJSON({ id: e.id, model: omit(e.model), client: omit(e.client) });
+  return goJSON({ id: e.id, model: omit(e.model), client: omit(e.client), tz: omit(e.tz ?? "") });
 }
 
 export function encodeRemember(e: RememberEvent): string {
@@ -147,7 +150,7 @@ export function encodeExpand(e: ExpandEvent): string {
 
 export function decodeSession(payload: string): SessionEvent {
   const o = parseObject(payload, kindSession);
-  return { id: str(o, "id"), model: str(o, "model"), client: str(o, "client") };
+  return { id: str(o, "id"), model: str(o, "model"), client: str(o, "client"), tz: str(o, "tz") };
 }
 
 export function decodeRemember(payload: string): RememberEvent {

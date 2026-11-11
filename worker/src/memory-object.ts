@@ -2,10 +2,13 @@ import { DurableObject } from "cloudflare:workers";
 import { InvalidInput, parseWhen, type RememberRequest, trimSpace } from "./memory/clean";
 import type { AmendRequest, EntryRequest, EraseRequest, ReflectView } from "./memory/amend";
 import { type ContextView, type Result, Service } from "./memory/service";
-import type { Report } from "./store/check";
+import { formatBatch, formatContext, formatExpand, formatRecall, formatWritten } from "./mcp/format";
+import { reportText, type Report } from "./store/check";
 import type { Usage } from "./store/db";
 import { InvalidParamsError, type Params } from "./store/decay";
+import { metaTokenHash } from "./store/schema";
 import { Store } from "./store/store";
+import { knownZone, UTC } from "./zone";
 import type { Env } from "./index";
 
 // Invalid is an input the caller can fix, with the message for the model.
@@ -15,8 +18,37 @@ export interface Invalid {
 }
 
 // RememberArgs is a memory as a tool call sends it: the date it took place,
-// if any, is text, read as Go's server reads happened_at.
+// if any, is text, read as Go's server reads happened_at, in the zone of the
+// session that writes it.
 export type RememberArgs = Omit<RememberRequest, "happened"> & { happenedAt?: string };
+
+// ToolCall is one tool call, its arguments already checked against the
+// tool's schema, as the Worker hands it to answer.
+export type ToolCall =
+  | { tool: "get_context"; model?: string; timezone?: string; client?: string }
+  | { tool: "remember"; args: RememberArgs }
+  | { tool: "recall"; query: string; limit?: number; deep?: boolean; sessionId?: string }
+  | { tool: "expand"; ids: string[]; sessionId?: string }
+  | {
+      tool: "reflect";
+      sessionId: string;
+      batch?: string;
+      limit?: number;
+      // As the call wrote them: the confirmation repeats each kind untrimmed
+      // and counts pass as given, as Go's does.
+      entries?: EntryRequest[];
+      pass?: string[];
+    }
+  | { tool: "amend"; args: AmendRequest }
+  | { tool: "erase"; args: EraseRequest }
+  | { tool: "check" };
+
+// Answer is the text of a tool's answer, or what was wrong with the call.
+export type Answer = { text: string } | Invalid;
+
+// Access is what a token presented for this memory comes to: the memory's
+// own, another, or a memory that was never created.
+export type Access = "ok" | "rejected" | "unknown";
 
 // outcome runs fn and hands back an InvalidInput as data. Anything else is
 // thrown.
@@ -29,33 +61,122 @@ function outcome<T>(fn: () => T): T | Invalid {
   }
 }
 
+const encoder = new TextEncoder();
+
 // Memory is one memory: a Durable Object that owns the SQLite database its
 // store lives in. Every method is synchronous inside: nothing else runs on
 // the object between its reads and its writes.
+//
+// The store is built on first use, not in the constructor: an object that
+// is asked about a memory that was never created must leave its database
+// empty. authorize, create and replaceToken are what the Worker calls before
+// anything else; they build nothing for a name that was never created.
 export class Memory extends DurableObject<Env> {
-  readonly store: Store;
-  readonly service: Service;
+  private built?: { store: Store; service: Service };
   // The wall clock in unix milliseconds. Tests replace it; an instance
   // field is not reachable over RPC.
   now: () => number = () => Date.now();
 
-  constructor(ctx: DurableObjectState, env: Env) {
-    super(ctx, env);
-    // Synchronous, so it finishes before any request reaches the object.
-    this.store = new Store(ctx.storage);
-    this.service = new Service(this.store, () => this.now());
+  private get parts(): { store: Store; service: Service } {
+    if (this.built === undefined) {
+      const store = new Store(this.ctx.storage);
+      this.built = { store, service: new Service(store, () => this.now()) };
+    }
+    return this.built;
   }
 
-  // getContext starts a session and returns what it is shown.
-  getContext(args: { model?: string; client?: string }): ContextView | Invalid {
-    return outcome(() => this.service.context(args.model ?? "", args.client ?? ""));
+  get store(): Store {
+    return this.parts.store;
+  }
+
+  get service(): Service {
+    return this.parts.service;
+  }
+
+  // storedTokenHash reads the token's hash without building the store: a
+  // database without the meta table holds no memory.
+  private storedTokenHash(): string | undefined {
+    const sql = this.ctx.storage.sql;
+    const tables = sql.exec(`SELECT 1 AS k FROM sqlite_master WHERE type = 'table' AND name = 'meta'`).toArray();
+    if (tables.length === 0) return undefined;
+    const row = sql.exec<{ value: string }>(`SELECT value FROM meta WHERE key = ?`, metaTokenHash).toArray()[0];
+    return row?.value;
+  }
+
+  // authorize says whether hash, the SHA-256 in hex of the token a request
+  // presented, is this memory's. A memory exists once it has a token.
+  authorize(hash: string): Access {
+    const want = this.storedTokenHash();
+    if (want === undefined) return "unknown";
+    const a = encoder.encode(want);
+    const b = encoder.encode(hash);
+    // Compare equal lengths only, and always compare.
+    const same = crypto.subtle.timingSafeEqual(a, a.byteLength === b.byteLength ? b : a) && a.byteLength === b.byteLength;
+    return same ? "ok" : "rejected";
+  }
+
+  // create makes this memory with the given token hash, unless it exists.
+  create(hash: string): "created" | "exists" {
+    if (this.storedTokenHash() !== undefined) return "exists";
+    this.store.setTokenHash(hash);
+    return "created";
+  }
+
+  // replaceToken gives an existing memory a new token hash; the old token
+  // stops working at once.
+  replaceToken(hash: string): "replaced" | "unknown" {
+    if (this.storedTokenHash() === undefined) return "unknown";
+    this.store.setTokenHash(hash);
+    return "replaced";
+  }
+
+  // timeZone returns the zone shown to calls whose session reported none.
+  timeZone(): string {
+    return this.store.defaultZone();
+  }
+
+  // setTimeZone sets the zone timeZone returns and returns it as the runtime
+  // names it.
+  setTimeZone(zone: string): string | Invalid {
+    const known = knownZone(trimSpace(zone));
+    if (known === undefined) return { invalid: `unknown time zone ${JSON.stringify(zone)}: give an IANA name such as Asia/Shanghai` };
+    this.store.setDefaultZone(known);
+    return known;
+  }
+
+  // zoneFor returns the zone to show a call in: that of its session when the
+  // session reported one, else the memory's default.
+  private zoneFor(sessionId: string | undefined): string {
+    const id = trimSpace(sessionId ?? "");
+    const tz = id === "" ? "" : (this.store.session(id)?.tz ?? "");
+    // A zone stored by an earlier runtime may be unknown to this one.
+    const zone = (tz !== "" ? knownZone(tz) : undefined) ?? knownZone(this.store.defaultZone());
+    return zone ?? UTC;
+  }
+
+  // getContext starts a session and returns what it is shown. A time zone
+  // the runtime does not know is not kept.
+  getContext(args: { model?: string; client?: string; timezone?: string }): ContextView | Invalid {
+    return outcome(() => this.startContext(args).view);
+  }
+
+  private startContext(args: { model?: string; client?: string; timezone?: string }): {
+    view: ContextView;
+    zone: string;
+    unknownZone?: string;
+  } {
+    const asked = trimSpace(args.timezone ?? "");
+    const known = asked === "" ? undefined : knownZone(asked);
+    const view = this.service.context(args.model ?? "", args.client ?? "", known ?? "");
+    const zone = known ?? this.zoneFor(undefined);
+    return asked !== "" && known === undefined ? { view, zone, unknownZone: asked } : { view, zone };
   }
 
   remember(args: RememberArgs): { id: string; dup: boolean } | Invalid {
     return outcome(() => {
       const { happenedAt, ...req } = args;
       let happened: number | undefined;
-      if (happenedAt !== undefined && trimSpace(happenedAt) !== "") happened = parseWhen(happenedAt);
+      if (happenedAt !== undefined && trimSpace(happenedAt) !== "") happened = parseWhen(happenedAt, this.zoneFor(req.sessionId));
       return this.service.remember({ ...req, happened });
     });
   }
@@ -95,6 +216,53 @@ export class Memory extends DurableObject<Env> {
 
   check(): Report {
     return this.service.check();
+  }
+
+  // answer carries out one tool call and lays its answer out as text, as
+  // Go's server does, with times in the zone of the session that asked.
+  answer(call: ToolCall): Answer {
+    return outcome((): Answer => {
+      switch (call.tool) {
+        case "get_context": {
+          const { view, zone, unknownZone } = this.startContext(call);
+          return { text: formatContext(view, zone, unknownZone) };
+        }
+        case "remember": {
+          const r = this.remember(call.args);
+          if ("invalid" in r) return r;
+          return { text: (r.dup ? "already remembered as " : "remembered as ") + r.id };
+        }
+        case "recall": {
+          const results = this.service.recall(call.query, call.limit ?? 0, call.deep ?? false, call.sessionId ?? "");
+          return { text: formatRecall(results, call.deep ?? false, this.zoneFor(call.sessionId)) };
+        }
+        case "expand": {
+          const results = this.service.expand(call.ids, call.sessionId ?? "");
+          return { text: formatExpand(results, this.zoneFor(call.sessionId)) };
+        }
+        case "reflect": {
+          const entries = call.entries ?? [];
+          const pass = call.pass ?? [];
+          if (trimSpace(call.batch ?? "") === "") {
+            if (entries.length > 0 || pass.length > 0) {
+              throw new InvalidInput(
+                "batch is required to write back: call reflect with your session id alone first, and pass the batch id it returns",
+              );
+            }
+            const view = this.service.beginReflect(call.sessionId, call.limit ?? 0);
+            return { text: formatBatch(view, this.zoneFor(call.sessionId)) };
+          }
+          const ids = this.service.finishReflect(call.sessionId, call.batch ?? "", entries, pass);
+          return { text: formatWritten(ids, entries.map((e) => e.kind ?? ""), pass.length) };
+        }
+        case "amend":
+          return { text: this.service.amend(call.args) };
+        case "erase":
+          return { text: this.service.erase(call.args) };
+        case "check":
+          return { text: reportText(this.service.check()) };
+      }
+    });
   }
 
   params(): Params {

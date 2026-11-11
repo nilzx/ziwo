@@ -19,8 +19,8 @@ export const logFormat = 3;
 // that fills them. Bump it whenever either changes. The Go build stands at 6;
 // 7 added the indexes a new session's load reads; 8 projects amend, erase and
 // reflect events, and replays an erasure the way it was lived (see
-// applyRemember and applyErase).
-export const derivedVersion = "8";
+// applyRemember and applyErase); 9 keeps the time zone a session reported.
+export const derivedVersion = "9";
 
 // appendOnlyTriggers make the database itself refuse to change or remove an
 // event.
@@ -82,7 +82,8 @@ CREATE TABLE sessions (
   started_at     INTEGER NOT NULL,
   last_active_at INTEGER NOT NULL, -- last time it started, wrote or recalled
   model          TEXT    NOT NULL, -- self-reported by the model; '' when unknown
-  client         TEXT    NOT NULL  -- MCP client name; '' when unknown
+  client         TEXT    NOT NULL, -- MCP client name; '' when unknown
+  tz             TEXT    NOT NULL  -- IANA time zone the model reported; '' when none
 ) STRICT;
 CREATE INDEX sessions_by_activity ON sessions(last_active_at);
 
@@ -212,6 +213,8 @@ export const metaInstance = "instance"; // names this memory, to tell it from a 
 export const metaParams = "params"; // the forgetting parameters, as JSON
 export const metaClock = "clock"; // the experience clock; derived, kept by apply
 export const metaIndex = "index"; // the indexVersion the keyword index was created with
+// The time zone shown to a call whose session reported none; UTC when unset.
+export const metaZone = "timezone";
 // The open round of reflection, as in Go (reflect.go). It is working state,
 // not memory: it is not in the log, and a rebuild leaves it as it is.
 export const metaReflect = "reflect";

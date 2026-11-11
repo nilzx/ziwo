@@ -89,12 +89,13 @@ export class Service {
 
   // context starts a session for the given carrier and returns what it
   // should know before the conversation begins. Being shown here does not
-  // count as coming to mind.
-  context(model: string, client: string): ContextView {
+  // count as coming to mind. tz is the time zone the model reported, already
+  // checked, or "".
+  context(model: string, client: string, tz = ""): ContextView {
     model = clip(model, 120);
     client = clip(client, 120);
     const now = this.now();
-    const { session, note } = this.st.startSession(now, model, client);
+    const { session, note } = this.st.startSession(now, model, client, tz);
     const clock = this.st.clock();
     const selves = this.st.selves();
     const prefs = this.st.preferences();

@@ -14,5 +14,10 @@
     "typescript": "^7.0.2",
     "vitest": "^5.1.0",
     "wrangler": "^4.160.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.4.0",
+    "agents": "^0.33.0",
+    "zod": "^4.6.7"
   }
 }

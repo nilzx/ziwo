@@ -81,7 +81,9 @@ import {
   metaLogFormat,
   metaParams,
   metaTokenHash,
+  metaZone,
 } from "./schema";
+import { UTC } from "../zone";
 import type {
   CarrierNote,
   LogStats,
@@ -308,8 +310,8 @@ export class Store {
       case kindSession: {
         const e = decodeSession(payload);
         this.db.run(
-          `INSERT INTO sessions(id, started_at, last_active_at, model, client) VALUES(?, ?, ?, ?, ?)`,
-          e.id, at, at, e.model, e.client,
+          `INSERT INTO sessions(id, started_at, last_active_at, model, client, tz) VALUES(?, ?, ?, ?, ?, ?)`,
+          e.id, at, at, e.model, e.client, e.tz ?? "",
         );
         if (e.model === "") return;
         this.db.run(
@@ -396,12 +398,13 @@ export class Store {
   }
 
   // startSession records the start of a session and reports whether its model
-  // is new to this memory.
-  startSession(at: number, model: string, client: string): { session: Session; note: CarrierNote } {
+  // is new to this memory. tz is the time zone the model reported, already
+  // checked, or "".
+  startSession(at: number, model: string, client: string, tz = ""): { session: Session; note: CarrierNote } {
     return this.retry(() => {
-      const session: Session = { id: newID("s_"), startedAt: at, lastActiveAt: at, model, client };
+      const session: Session = { id: newID("s_"), startedAt: at, lastActiveAt: at, model, client, tz };
       const note = model === "" ? { first: false, earlier: [] } : this.carrierNote(model);
-      this.appendEvent(at, kindSession, encodeSession({ id: session.id, model, client }));
+      this.appendEvent(at, kindSession, encodeSession({ id: session.id, model, client, tz }));
       return { session, note };
     });
   }
@@ -416,13 +419,14 @@ export class Store {
 
   private sessions(tail: string, ...args: Binding[]): Session[] {
     return this.db
-      .all(`SELECT id, started_at, last_active_at, model, client FROM sessions ` + tail, ...args)
+      .all(`SELECT id, started_at, last_active_at, model, client, tz FROM sessions ` + tail, ...args)
       .map((r) => ({
         id: text(r.id),
         startedAt: num(r.started_at),
         lastActiveAt: num(r.last_active_at),
         model: text(r.model),
         client: text(r.client),
+        tz: text(r.tz),
       }));
   }
 
@@ -767,6 +771,17 @@ export class Store {
   // hash is ever stored.
   setTokenHash(hash: string): void {
     this.tx(() => this.db.setMeta(metaTokenHash, hash));
+  }
+
+  // defaultZone returns the time zone shown to calls whose session reported
+  // none: UTC unless set.
+  defaultZone(): string {
+    return this.db.getMeta(metaZone) ?? UTC;
+  }
+
+  // setDefaultZone stores the zone defaultZone returns. The caller checks it.
+  setDefaultZone(zone: string): void {
+    this.tx(() => this.db.setMeta(metaZone, zone));
   }
 
   // saveVector stores the embedding of memory n produced by model, as

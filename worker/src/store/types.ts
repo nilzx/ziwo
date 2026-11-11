@@ -8,6 +8,7 @@ export interface Session {
   lastActiveAt: number; // the last time it loaded, wrote or recalled
   model: string;
   client: string;
+  tz: string; // the IANA time zone the model reported; '' when none
 }
 
 // CarrierNote says whether the model starting a session is new to this memory.
