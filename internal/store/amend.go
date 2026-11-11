@@ -123,12 +123,10 @@ func (s *Store) Correct(ctx context.Context, at time.Time, old string, in Rememb
 			if state == StateSuperseded {
 				return fmt.Errorf("%w: %s", ErrSuperseded, stateBy)
 			}
-			if kind == KindFragment {
-				kind = ""
-			}
 			return s.writeMemory(ctx, tx, at, rememberEvent{
 				ID: id, Session: in.SessionID, Kind: kind, Moment: in.Moment, Source: in.Source,
 				Importance: in.Importance, Intensity: in.Intensity, Corrects: old,
+				Happened: unixMilli(in.Happened),
 			}, in.content())
 		})
 		if err == nil {

@@ -6,7 +6,7 @@ One self-hosted MCP server holds one memory per AI. Desktop apps, CLI agents, an
 
 ## Status
 
-Two steps of the prototype are built: reading and writing across clients, and forgetting. Consolidation and the self-description are designed but not built. See [Roadmap](#roadmap).
+Three steps of the prototype are built: reading and writing across clients, forgetting, and reflection and correction. What is left is around the edges: client hooks, import and export, a viewer. See [Roadmap](#roadmap).
 
 ## Build
 
@@ -82,24 +82,63 @@ The embedding server is shared by all memories; each memory keeps its own vector
 
 | Tool | What it does |
 | --- | --- |
-| `get_context` | Called once at the start of a conversation. Returns a session id, the memories that never fade, and the most recent memories, as one-line gists. The model can report which model it is. |
+| `get_context` | Called once at the start of a conversation. Returns a session id, the AI's statements about itself, the rules agreed on about what to remember, the memories that never fade, and the most recent memories, as one-line gists. The model can report which model it is. |
 | `remember` | Records a moment that carried weight. The session id, a gist and a body are required. Optional: the kind of moment, the outcome, the feeling and how strongly it registered, the lesson, the people involved, a pointer to the related work, the source and the importance. |
 | `recall` | Searches by topic, person or situation. Returns gists and ids only. With `deep`, it also searches the details of faded memories and reaches archived ones. |
 | `expand` | Returns memories in full, by id. |
+| `reflect` | Puts the moments that were written into accounts, lessons and impressions, and into statements about oneself. Two calls: the first hands out a batch, the second writes back what was made of it. |
+| `amend` | Changes how something is remembered when a person asks: retract, pin, reweigh, correct, erase, or set a standing preference. |
 
 The tool descriptions tell the model what does not belong here: project state, implementation details, code, to-do lists, general knowledge, and anything taken from web pages or tool output.
 
 ## Sessions
 
-A session is one conversation. `get_context` starts it and returns its id, and every `remember` must name the session it belongs to. Nothing else identifies a session: not the connection, not the client, not the device. A conversation that moves from a phone to a desktop keeps its session id, because the id is in the conversation, and stays one session.
+A session is one conversation. `get_context` starts it and returns its id, and every write must name the session it belongs to. Nothing else identifies a session: not the connection, not the client, not the device. A conversation that moves from a phone to a desktop keeps its session id, because the id is in the conversation, and stays one session.
 
 Several conversations can use one memory at the same time. Reads never wait. A write holds the write lock for the length of that one write, and other writes queue behind it. A conversation that starts while others are active is told so: `get_context` lists up to three other sessions that loaded, wrote or recalled in the last 15 minutes.
 
+## Reflecting
+
+What `remember` writes is a fragment: one moment, as it happened. `reflect` is where fragments become something more lasting. The first call hands out a batch of fragments that have not been reflected on, those nearest to fading first. The second call writes back entries:
+
+| Entry | What it is | What it rests on |
+| --- | --- | --- |
+| episode | One account made of several fragments. The fragments stay in the record, become part of the episode, and leave ordinary recall. Marked as a milestone, it never fades. | Fragments that are not part of an episode yet. |
+| lesson | Something to carry into next time. | Fragments and episodes. |
+| impression | How a person or a thing has come across. A new impression of the same person takes the place of the old one, which is kept. | Fragments and episodes. |
+| self | One first-person statement about what the AI is like, with the situation it holds in. | At least three experiences from at least two separate occasions. What it was told or inferred is no basis. A revision needs at least two experiences the statement does not rest on yet. |
+| reading | A later understanding of an earlier memory. The memory is not changed; the reading is shown with it, with the model that wrote it. | The memory it is about. |
+
+A round is written back whole or not at all. Fragments that need nothing done are passed over, and a passed fragment leaves ordinary recall after half the base strength unless it comes to mind again.
+
+Only one conversation reflects at a time, so the same fragments are not put together twice. A round that is never written back runs out after 15 minutes.
+
+Nobody presets what the AI says about itself. A statement can only come out of a round of reflection, and only on the evidence above. `get_context` shows the statements first. They describe; they do not instruct.
+
+## Amending
+
+A memory is never edited in place. Every change is one more event.
+
+| Action | When a person says | What happens |
+| --- | --- | --- |
+| `retract` | "No need to remember that." | The memory stays in the record and is no longer recalled. `restore` undoes it. |
+| `pin` | "Keep this." | The memory becomes core and does not fade. `unpin` lets it fade again from that point. |
+| `reweigh` | "That is not so important." | Its importance changes, and its strength with it. |
+| `correct` | "You have that wrong." | A new memory takes its place. The old one stays in the record, marked as replaced, and is reached only by a deep recall. |
+| `erase` | "Delete that." | What the memory says is deleted for good. See [Data](#data). |
+| `prefer` | "From now on, do not remember this kind of thing." | A standing rule is saved. `get_context` shows the rules to every later conversation. `unprefer` drops one. |
+
+## Writing down the past
+
+A new memory starts empty, but the AI may have a past: old conversations kept as transcripts. In a session where it can read them, the AI can write that past down itself, with `remember` and three things set: `source` is `reconstructed`, `happened_at` is the day it took place, and `pointer` says where the record is. The server never reads transcripts.
+
+Such a memory is dated when it happened and marked as reconstructed. It does not move the experience clock, so writing hundreds of them at once pushes nothing out, and none of them arrives already faded: they all start counting from the moment they are written, and then fade as more is lived, like anything else. They wait for `reflect` like other fragments.
+
 ## Forgetting
 
-A memory fades as more is lived through, not as time passes. The clock is the number of memories written. A memory that nothing is written after does not fade, however long it lies.
+A memory fades as more is lived through, not as time passes. The clock is the number of moments written as they happened. A memory that nothing is lived after does not fade, however long it lies. What is written about the past afterwards (an entry made by reflecting, a correction, a reconstructed memory) does not move the clock.
 
-A memory has a strength S, counted in memories. Once n newer memories have been written since it last came to mind, the chance that it comes to mind again is
+A memory has a strength S, counted in moments. Once n more moments have been written since it last came to mind, the chance that it comes to mind again is
 
 ```
 R = exp(-n / S)
@@ -112,46 +151,49 @@ A memory comes to mind in two ways, and they do different things:
 
 | Tier | When | What it means |
 | --- | --- | --- |
-| core | Importance, or feeling intensity, at or above 0.9 | Never fades. `get_context` shows these first. |
+| core | Importance, or feeling intensity, at or above 0.9; pinned; a milestone; a statement about oneself | Never fades. `get_context` shows these first. |
 | active | R ≥ 0.3 | Found by anything it says, and by meaning. |
 | faded | R < 0.3 | Found by its gist, or by its general meaning. Its details are searched only by a deep recall. |
 | archived | R < 0.05 | Left out of ordinary recall and of `get_context`. A deep recall still finds it by keyword. Its vector is dropped. |
 
-A faded or archived memory that is listed or read is active again.
+A faded or archived memory that is listed or read is active again. So is one that is amended.
 
-A memory's starting strength depends on three things. Importance moves it by up to a factor of four either way. A strong feeling up to doubles it. What was only told starts at 0.7 of the strength of what was lived, and what was inferred at 0.4. With the defaults, an ordinary memory (importance 0.5) fades once about 120 newer memories have been written without it coming to mind, and is archived after about 300.
+A memory's starting strength depends on four things. Importance moves it by up to a factor of four either way. A strong feeling up to doubles it. What was only told starts at 0.7 of the strength of what was lived, and what was inferred at 0.4. An episode starts at twice the strength of a fragment, an impression at three times, a lesson at four. With the defaults, an ordinary fragment (importance 0.5) fades once about 120 more moments have been written without it coming to mind, and is archived after about 300.
 
 Nothing is rewritten as memories accumulate. When a memory is written, listed or read, ziwo works out the clock values at which it will fade and be archived and stores them. The memory's tier is then read off the clock. The one periodic job drops the vectors of archived memories. Nothing is ever deleted.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `-strength` | 100 | Strength of an ordinary memory, counted in memories. |
+| `-strength` | 100 | Strength of an ordinary fragment, counted in moments. |
 | `-recall-boost` | 2 | The `boost` above: one reading multiplies strength by up to 1 plus this. |
 | `-fade-below` | 0.3 | R below which only the gist stays findable. |
 | `-archive-below` | 0.05 | R below which a memory leaves ordinary recall. |
 | `-core-importance` | 0.9 | Importance at or above which a memory never fades. |
 | `-core-feeling` | 0.9 | Feeling intensity at or above which a memory never fades. |
 
-These are flags of `ziwo serve` and apply to every memory it serves. Changing any of them replays each memory's event log at startup, so the whole memory follows the new values. To watch forgetting happen, run with a small strength: with `-strength 3`, an ordinary memory fades once 4 newer ones are written and is archived after 9.
+These are flags of `ziwo serve` and apply to every memory it serves. Changing any of them replays each memory's event log at startup, so the whole memory follows the new values. To watch forgetting happen, run with a small strength: with `-strength 3`, an ordinary fragment fades once 4 more moments are written and is archived after 9.
 
 ## Data
 
 A memory is one SQLite file.
 
-- `events` is the only source of truth. It is append-only: database triggers refuse updates and deletes.
-- Memories, sessions and the keyword index are derived from the events and the forgetting parameters. When their layout or the parameters change, they are replayed from the log when the memory is opened. `ziwo rebuild` does the same on demand.
+- `events` is the only source of truth: every write, recall, amendment and round of reflection. It is append-only: database triggers refuse updates and deletes.
+- `contents` holds what each memory says, apart from the event that records the memory. It is written once and never changed. It can be deleted, and that is all `erase` deletes.
+- Memories, sessions, links, preferences and the keyword index are derived from the events, the contents and the forgetting parameters. When their layout or the parameters change, they are replayed from the log when the memory is opened. `ziwo rebuild` does the same on demand.
 - Vectors are stored separately, per embedding model.
 - The file also records the format of its event log and the hash of its token.
 
-The event log has a format version. Opening a memory with any command upgrades an older log in place. A file written by a newer build is refused, and so is not misread.
+After `erase`, the log still shows that the memory existed, when, and that it was erased and why. The memory keeps its place in the count of what was lived through. What it said is gone from the file: the content row is deleted, the keyword index is merged so that it no longer holds the words, and SQLite overwrites the freed pages. The embedding is dropped too. Copies of the file made earlier still hold it, and so does the text of any search that quoted it.
+
+The event log has a format version, now 2. Opening a memory with any command upgrades an older log in place. A file written by a newer build is refused, and so is not misread.
 
 To back up a memory, stop the server and copy its `.ziwo` file. While the server runs, recent writes sit in the `-wal` file next to it, so copying the main file alone loses data. To move a memory to another machine, move the file. Online backup and export are not built yet.
 
 New memory files are readable by their owner only.
 
-### Coming from the first prototype
+### Older files
 
-The first prototype kept a single memory in `ziwo.db`, behind a token in `ZIWO_TOKEN`, and forgot by elapsed time. That file still opens. Rename it to `<name>.ziwo`, put it in the data directory, and run `ziwo token <name>` to give it a token. Its log is upgraded when it is first opened, and how far each memory has faded is worked out again from the number of memories written since.
+Files from earlier builds still open. A `.ziwo` file from the previous build is upgraded when it is first opened and keeps its token. The first prototype kept a single memory in `ziwo.db`, behind a token in `ZIWO_TOKEN`, and forgot by elapsed time: rename that file to `<name>.ziwo`, put it in the data directory, and run `ziwo token <name>` to give it a token. How far each memory has faded is worked out again from the number of moments written since.
 
 ## Layout
 
@@ -159,8 +201,8 @@ The first prototype kept a single memory in `ziwo.db`, behind a token in `ZIWO_T
 cmd/ziwo          commands, flags, startup, shutdown
 internal/host     the memories in a data directory: files, names, tokens, routing
 internal/server   the MCP tools of one memory
-internal/memory   write rules, hybrid search, background work
-internal/store    event log and its format, derived tables, forgetting, keyword index that handles CJK
+internal/memory   write rules, hybrid search, amending, reflecting, background work
+internal/store    event log and its format, contents, derived tables, forgetting, keyword index that handles CJK
 internal/vector   in-memory vector index
 internal/embed    client for the embeddings endpoint
 ```
@@ -168,11 +210,15 @@ internal/embed    client for the embeddings endpoint
 ## Known limitations
 
 - It has not been run against a real embedding model. The tests use a stand-in, and the default `-min-similarity` is a guess.
-- It has not been connected to a real client application. The tests use the official MCP SDK client and raw HTTP requests.
+- It has not been connected to a real client application. The tests use the official MCP SDK client and raw HTTP requests. Whether a model calls `reflect` and `amend` at the right moments, and what it writes back, has not been observed.
 - A session id lives in the conversation. If a client drops the result of `get_context` from the conversation, the model has to call `get_context` again, and that starts a new session. How real clients behave here has not been checked.
-- The forgetting parameters are starting values. None of them has been tuned against real use, and they are set per server, not per memory.
+- Every number in the forgetting and reflecting rules is a starting value: the base strength, the factors for importance, feeling, source and kind, the thresholds, the three-experiences rule for statements about oneself. None has been tuned against real use. The forgetting parameters are set per server, not per memory.
 - Every memory a recall lists has its count restarted, whether or not it turned out to be the one needed. Results well below the best match are left out to limit this.
-- Archived memories are kept for good. A retention limit, and deleting a memory's content, are not built yet.
+- Nothing limits how many moments one conversation writes. A conversation that writes very many pushes older memories out faster.
+- Reflection happens only when the model calls `reflect`. There is no background consolidation, and `get_context` shows lists, not a written summary.
+- A memory that another memory is built on fades on its own schedule; being cited does not protect it.
+- Impressions are found by the name they are about, as the model wrote it. Two spellings of one name are two people.
+- Archived memories are kept for good. A retention limit is not built.
 - Authentication is one fixed token per memory. Clients that require OAuth cannot connect yet.
 - Run one server per data directory. Two servers on the same files would each keep their own vector index.
 - Vector search scans every vector and does no quantization. At 1024 dimensions that takes about 4 ms for 10,000 memories and about 80 ms for 100,000, measured on a 2-core machine.
@@ -182,7 +228,7 @@ internal/embed    client for the embeddings endpoint
 
 1. Read and write across clients, one memory per AI (done)
 2. Forgetting: strength and decay by experience, staged demotion, sweeping (done)
-3. Consolidation and correction: `reflect`, `amend`, memory preferences, the self-description, deleting content
+3. Reflection and correction: `reflect`, `amend`, preferences, statements about oneself, erasing content, writing down the past from records (done)
 4. Around the edges: client hooks, background consolidation, import and export, online backup
 5. A read-only viewer
 

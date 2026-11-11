@@ -43,8 +43,9 @@ const (
 // Moments are the kinds of occasion worth remembering.
 var Moments = []string{"start", "blocked", "corrected", "breakthrough", "finished", "emotion", "other"}
 
-// Sources say how the AI came to know what a memory holds.
-var Sources = []string{"lived", "told", "inferred"}
+// Sources say how the AI came to know what a memory holds. "reconstructed" is
+// for what it lived through but writes down afterwards, from a record.
+var Sources = []string{"lived", "told", "inferred", store.SourceReconstructed}
 
 // ErrInvalid marks an error the caller can fix by changing its input.
 var ErrInvalid = errors.New("invalid input")
@@ -66,6 +67,9 @@ type Config struct {
 	// ParallelWindow is how recently another session must have been active
 	// for a new session to be told about it. Default 15 minutes.
 	ParallelWindow time.Duration
+	// ReflectHold is how long a round of reflection keeps other sessions
+	// from starting one. Default 15 minutes.
+	ReflectHold time.Duration
 	// SweepEvery is how often the vectors of archived memories are dropped.
 	// Default one hour.
 	SweepEvery time.Duration
@@ -111,6 +115,9 @@ func New(ctx context.Context, st *store.Store, emb embed.Embedder, cfg Config) (
 	}
 	if cfg.ParallelWindow == 0 {
 		cfg.ParallelWindow = 15 * time.Minute
+	}
+	if cfg.ReflectHold == 0 {
+		cfg.ReflectHold = 15 * time.Minute
 	}
 	if cfg.SweepEvery == 0 {
 		cfg.SweepEvery = time.Hour
@@ -185,9 +192,12 @@ func (s *Service) Indexed() int { return s.ix.Len() }
 type ContextView struct {
 	Session store.Session
 	Carrier store.CarrierNote
-	Core    []store.Memory  // memories that never fade, most important first
-	Recent  []store.Memory  // newest memories not archived and not listed under Core
-	Others  []store.Session // other sessions active within the parallel window
+	Selves  []store.Memory     // statements about oneself, oldest first
+	Prefs   []store.Preference // standing rules about what to remember
+	Pending int64              // fragments waiting for reflect
+	Core    []store.Memory     // memories that never fade, most important first
+	Recent  []store.Memory     // newest memories not archived and not listed under Core
+	Others  []store.Session    // other sessions active within the parallel window
 	Counts  store.TierCounts
 	Clock   int64     // the experience clock when the session started
 	Now     time.Time // the wall clock when the session started
@@ -206,6 +216,15 @@ func (s *Service) Context(ctx context.Context, model, client string) (ContextVie
 	}
 	view := ContextView{Session: sess, Carrier: note, Now: now}
 	if view.Clock, err = s.st.Clock(ctx); err != nil {
+		return ContextView{}, err
+	}
+	if view.Selves, err = s.st.Selves(ctx); err != nil {
+		return ContextView{}, err
+	}
+	if view.Prefs, err = s.st.Preferences(ctx); err != nil {
+		return ContextView{}, err
+	}
+	if view.Pending, err = s.st.PendingCount(ctx); err != nil {
 		return ContextView{}, err
 	}
 	if view.Core, err = s.st.Core(ctx, s.cfg.CoreLimit); err != nil {
@@ -237,7 +256,7 @@ func (s *Service) Context(ctx context.Context, model, client string) (ContextVie
 // must name the session it belongs to. dup is true when the same memory had
 // just been written and nothing new was stored.
 func (s *Service) Remember(ctx context.Context, in store.RememberInput) (id string, dup bool, err error) {
-	if in, err = clean(in); err != nil {
+	if in, err = clean(in, s.cfg.Now()); err != nil {
 		return "", false, err
 	}
 	id, dup, err = s.st.Remember(ctx, s.cfg.Now(), in)
@@ -253,26 +272,56 @@ func (s *Service) Remember(ctx context.Context, in store.RememberInput) (id stri
 	return id, dup, nil
 }
 
-func clean(in store.RememberInput) (store.RememberInput, error) {
+// clean checks a memory that is about to be written as it happens, or
+// reconstructed from a record.
+func clean(in store.RememberInput, now time.Time) (store.RememberInput, error) {
+	in.SessionID = strings.TrimSpace(in.SessionID)
+	if in.SessionID == "" {
+		return in, invalid("session_id is required: call get_context first and pass the session id it returns")
+	}
+	in, err := cleanText(in)
+	if err != nil {
+		return in, err
+	}
+	if in.Body == "" {
+		return in, invalid("body is required: what happened, in your own words")
+	}
+	switch {
+	case in.Source != store.SourceReconstructed && !in.Happened.IsZero():
+		return in, invalid("happened_at goes with source %q only: a memory written as it happens is dated now", store.SourceReconstructed)
+	case in.Source == store.SourceReconstructed && in.Happened.IsZero():
+		return in, invalid("happened_at is required with source %q: the day it took place, as the record shows it", store.SourceReconstructed)
+	case in.Happened.After(now.Add(time.Minute)):
+		return in, invalid("happened_at is in the future")
+	}
+	return in, nil
+}
+
+// ParseWhen reads a date, or a date and time, as a model would write it.
+func ParseWhen(s string) (time.Time, error) {
+	s = strings.TrimSpace(s)
+	for _, layout := range []string{time.RFC3339, "2006-01-02T15:04:05", "2006-01-02 15:04:05", "2006-01-02 15:04", time.DateOnly} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t.UTC(), nil
+		}
+	}
+	return time.Time{}, invalid("cannot read %q as a date: write it like 2026-03-14 or 2026-03-14T09:30:00Z", s)
+}
+
+// cleanText checks what a memory says and fills in defaults.
+func cleanText(in store.RememberInput) (store.RememberInput, error) {
 	in.Gist = strings.TrimSpace(in.Gist)
 	in.Body = strings.TrimSpace(in.Body)
 	in.Outcome = strings.TrimSpace(in.Outcome)
 	in.Feeling = strings.TrimSpace(in.Feeling)
 	in.Lesson = strings.TrimSpace(in.Lesson)
 	in.Pointer = strings.TrimSpace(in.Pointer)
-	in.SessionID = strings.TrimSpace(in.SessionID)
 
-	if in.SessionID == "" {
-		return in, invalid("session_id is required: call get_context first and pass the session id it returns")
-	}
 	if in.Gist == "" {
 		return in, invalid("gist is required: one sentence saying what happened")
 	}
 	if n := utf8.RuneCountInString(in.Gist); n > MaxGistRunes {
 		return in, invalid("gist is %d characters, the limit is %d: keep it to one sentence", n, MaxGistRunes)
-	}
-	if in.Body == "" {
-		return in, invalid("body is required: what happened, in your own words")
 	}
 	if n := utf8.RuneCountInString(in.Body); n > MaxBodyRunes {
 		return in, invalid("body is %d characters, the limit is %d: a memory is an account of what you lived through, not a transcript or project notes", n, MaxBodyRunes)
@@ -331,6 +380,9 @@ type Result struct {
 	Score     float64
 	ByKeyword bool
 	ByMeaning bool
+	// Filled in by Expand alone.
+	Sources  []string       // ids of the memories it is built on
+	Readings []store.Memory // later understandings of it
 }
 
 // Recall searches by keyword and, when an embedder is configured, by meaning,
@@ -448,6 +500,11 @@ func (s *Service) Recall(ctx context.Context, query string, limit int, deep bool
 		if tier == store.TierArchived && !deep {
 			continue // its vector has not been swept yet
 		}
+		// The same goes for a memory that no longer stands. One that was
+		// replaced or put into an episode is still reached by a deep search.
+		if m.Retracted || m.State == store.StateErased || (!m.Live() && !deep) {
+			continue
+		}
 		c := cands[n]
 		relevance := (c.keyword + c.meaning) / float64(ways)
 		top = max(top, relevance)
@@ -513,12 +570,25 @@ func (s *Service) Expand(ctx context.Context, ids []string, session string) ([]R
 		return nil, err
 	}
 	out := make([]Result, len(ms))
-	found := make([]string, len(ms))
+	var read []string
 	for i, m := range ms {
 		out[i] = Result{Memory: m, Tier: m.Tier(clock)}
-		found[i] = m.ID
+		if m.State == store.StateErased {
+			continue // there is nothing left to read
+		}
+		if out[i].Sources, err = s.st.Sources(ctx, m.ID); err != nil {
+			return nil, err
+		}
+		if out[i].Readings, err = s.st.Readings(ctx, m.ID); err != nil {
+			return nil, err
+		}
+		if !m.Retracted {
+			read = append(read, m.ID)
+		}
 	}
-	s.note(store.RecallNote{At: s.cfg.Now(), Session: s.knownSession(ctx, session), Read: true, IDs: found, Clock: clock})
+	if len(read) > 0 {
+		s.note(store.RecallNote{At: s.cfg.Now(), Session: s.knownSession(ctx, session), Read: true, IDs: read, Clock: clock})
+	}
 	return out, nil
 }
 

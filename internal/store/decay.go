@@ -6,8 +6,10 @@ import (
 )
 
 // Forgetting is driven by experience, not by the calendar. The clock is the
-// number of memories written so far: it advances by one each time a memory is
-// written and stands still otherwise. An AI lives through nothing between
+// number of moments written as they happened: it advances by one each time
+// such a moment is written and stands still otherwise. What is written
+// afterwards about the past (an account put together by reflecting, a
+// correction, a memory reconstructed from a record) does not advance it. An AI lives through nothing between
 // conversations, so a gap of three months forgets nothing; a week of dense
 // work does.
 //

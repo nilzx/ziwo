@@ -33,6 +33,7 @@ const (
 	kindExpand   = "expand"   // memories were read in full
 	kindAmend    = "amend"    // a memory's standing or weight was changed, or a preference set
 	kindErase    = "erase"    // what a memory says was deleted for good
+	kindReflect  = "reflect"  // a round of reflection was written back
 )
 
 // DedupWindow is how far back Remember looks for an identical memory before
@@ -85,7 +86,8 @@ type CarrierNote struct {
 type Memory struct {
 	N              int64
 	ID             string
-	CreatedAt      time.Time
+	CreatedAt      time.Time // when it happened
+	WrittenAt      time.Time // when it was written; later, for what was reconstructed
 	SessionID      string
 	Model          string // carrier at the time of writing
 	Client         string
@@ -103,9 +105,14 @@ type Memory struct {
 	LastRecalledAt time.Time
 	RecallCount    int // times listed or read
 
-	Kind      string // KindFragment, ...
-	State     string // "" while it stands, else StateSuperseded or StateErased
-	StateBy   string // id of the memory that replaced it
+	Kind      string // one of the Kind constants
+	About     string // impression: who or what it is about
+	Context   string // self: the situation the statement holds in
+	Ref       string // self: the statement it revises; reading: the memory it reads
+	Milestone bool
+	Pending   bool   // a fragment that reflect has not dealt with yet
+	State     string // "" while it stands, else one of the State constants
+	StateBy   string // id of the memory that replaced or absorbed it
 	Retracted bool   // set aside on request; not recalled until restored
 	Pinned    bool   // kept as core on request
 	Corrects  string // id of the memory this one corrects
@@ -134,6 +141,9 @@ type RememberInput struct {
 	Lesson     string
 	People     []string
 	Pointer    string
+	// Happened is when it took place, for a memory reconstructed afterwards.
+	// Zero means now.
+	Happened time.Time
 }
 
 func (in RememberInput) content() content {
@@ -179,6 +189,12 @@ type rememberEvent struct {
 	Intensity  float64 `json:"intensity,omitempty"`
 	Hash       string  `json:"hash"`               // SHA-256 of the stored content
 	Corrects   string  `json:"corrects,omitempty"` // id of the memory this one replaces
+	// Happened is when it took place, in unix milliseconds, if that was not
+	// when it was written.
+	Happened  int64    `json:"happened,omitempty"`
+	From      []string `json:"from,omitempty"`      // ids of the memories it is built on
+	Ref       string   `json:"ref,omitempty"`       // self: the statement it revises; reading: the memory it reads
+	Milestone bool     `json:"milestone,omitempty"` // marked as a milestone
 }
 
 type recallEvent struct {
@@ -415,12 +431,20 @@ func (s *Store) apply(ctx context.Context, tx *sql.Tx, seq, at int64, kind strin
 		}
 		return s.applyErase(ctx, tx, at, e)
 
+	case kindReflect:
+		var e reflectEvent
+		if err := json.Unmarshal(payload, &e); err != nil {
+			return err
+		}
+		return s.applyReflect(ctx, tx, at, e)
+
 	default:
 		return fmt.Errorf("unknown event kind %q", kind)
 	}
 }
 
-// clockOf reads the experience clock: the number of memories written so far.
+// clockOf reads the experience clock: the number of moments written as they
+// happened. See rememberEvent.ticks for what does not count.
 func clockOf(ctx context.Context, q querier) (int64, error) {
 	var clock int64
 	err := q.QueryRowContext(ctx, `SELECT COALESCE(MAX(ord), 0) FROM memories`).Scan(&clock)
@@ -482,7 +506,8 @@ func (s *Store) cameToMind(ctx context.Context, tx *sql.Tx, session string, ids 
 	return sessionActive(ctx, tx, session, at)
 }
 
-// Clock returns the experience clock: the number of memories written so far.
+// Clock returns the experience clock: the number of moments written as they
+// happened.
 func (s *Store) Clock(ctx context.Context) (int64, error) {
 	return clockOf(ctx, s.r)
 }
@@ -594,7 +619,7 @@ func (s *Store) Remember(ctx context.Context, at time.Time, in RememberInput) (i
 			}
 			var existing string
 			err = tx.QueryRowContext(ctx,
-				`SELECT id FROM memories WHERE hash = ? AND created_at >= ? ORDER BY n DESC LIMIT 1`,
+				`SELECT id FROM memories WHERE hash = ? AND written_at >= ? ORDER BY n DESC LIMIT 1`,
 				hash, since).Scan(&existing)
 			if err == nil {
 				id, dup = existing, true
@@ -605,7 +630,7 @@ func (s *Store) Remember(ctx context.Context, at time.Time, in RememberInput) (i
 			}
 			return s.writeMemory(ctx, tx, at, rememberEvent{
 				ID: id, Session: in.SessionID, Moment: in.Moment, Source: in.Source,
-				Importance: in.Importance, Intensity: in.Intensity,
+				Importance: in.Importance, Intensity: in.Intensity, Happened: unixMilli(in.Happened),
 			}, in.content())
 		})
 		if err == nil {
@@ -638,14 +663,21 @@ func (s *Store) LogRecalls(ctx context.Context, notes []RecallNote) error {
 	})
 }
 
-const memorySelect = `SELECT m.n, m.id, m.created_at, m.session_id, COALESCE(s.model, ''), COALESCE(s.client, ''),
+const memorySelect = `SELECT m.n, m.id, m.created_at, m.written_at, m.session_id, COALESCE(s.model, ''), COALESCE(s.client, ''),
   m.moment, m.source, m.importance, m.intensity, m.gist, m.body, m.outcome, m.feeling, m.lesson, m.people,
   m.pointer, m.last_recalled_at, m.recall_count, m.ord, m.touched_ord, m.read_ord, m.core, m.strength,
-  m.fade_at, m.archive_at, m.kind, m.state, m.state_by, m.retracted, m.pinned, m.corrects
+  m.fade_at, m.archive_at, m.kind, m.state, m.state_by, m.retracted, m.pinned, m.corrects,
+  m.about, m.context, m.ref, m.milestone, m.reviewed IS NULL
 FROM memories m LEFT JOIN sessions s ON s.id = m.session_id `
 
-// isLive holds for a memory that stands: not replaced, not erased, not set aside.
+// isLive holds for a memory that stands: not replaced, not absorbed, not
+// erased, not set aside.
 const isLive = `(m.state = '' AND m.retracted = 0)`
+
+// isListed holds for the kinds of memory that searches and lists show.
+// Statements about oneself are loaded whole at the start of a session, and a
+// reading is shown with the memory it reads.
+const isListed = `(m.kind NOT IN ('` + KindSelf + `', '` + KindReading + `'))`
 
 // Conditions on memories m, each taking the clock as its parameter.
 const (
@@ -665,16 +697,20 @@ func (s *Store) memories(ctx context.Context, tail string, args ...any) ([]Memor
 	var out []Memory
 	for rows.Next() {
 		var m Memory
-		var created, recalled int64
+		var created, written, recalled int64
+		var unreviewed bool
 		var fadeAt, archiveAt sql.NullFloat64
 		var people string
-		if err := rows.Scan(&m.N, &m.ID, &created, &m.SessionID, &m.Model, &m.Client,
+		if err := rows.Scan(&m.N, &m.ID, &created, &written, &m.SessionID, &m.Model, &m.Client,
 			&m.Moment, &m.Source, &m.Importance, &m.Intensity, &m.Gist, &m.Body, &m.Outcome, &m.Feeling,
 			&m.Lesson, &people, &m.Pointer, &recalled, &m.RecallCount, &m.Ord, &m.TouchedOrd, &m.ReadOrd,
 			&m.Core, &m.Strength, &fadeAt, &archiveAt,
-			&m.Kind, &m.State, &m.StateBy, &m.Retracted, &m.Pinned, &m.Corrects); err != nil {
+			&m.Kind, &m.State, &m.StateBy, &m.Retracted, &m.Pinned, &m.Corrects,
+			&m.About, &m.Context, &m.Ref, &m.Milestone, &unreviewed); err != nil {
 			return nil, err
 		}
+		m.Pending = unreviewed && m.Kind == KindFragment && m.Live()
+		m.WrittenAt = time.UnixMilli(written).UTC()
 		m.CreatedAt = time.UnixMilli(created).UTC()
 		m.LastRecalledAt = time.UnixMilli(recalled).UTC()
 		m.FadeAt, m.ArchiveAt = fadeAt.Float64, archiveAt.Float64
@@ -737,12 +773,13 @@ func (s *Store) ByN(ctx context.Context, ns []int64) (map[int64]Memory, error) {
 // Recent returns the newest memories that are not archived when the clock
 // reads clock, newest first.
 func (s *Store) Recent(ctx context.Context, clock int64, limit int) ([]Memory, error) {
-	return s.memories(ctx, `WHERE `+isLive+` AND `+notArchived+` ORDER BY m.n DESC LIMIT ?`, clock, limit)
+	return s.memories(ctx, `WHERE `+isLive+` AND `+isListed+` AND `+notArchived+`
+		ORDER BY m.created_at DESC, m.n DESC LIMIT ?`, clock, limit)
 }
 
 // Core returns the memories that never fade, most important first.
 func (s *Store) Core(ctx context.Context, limit int) ([]Memory, error) {
-	return s.memories(ctx, `WHERE `+isLive+` AND m.core = 1 ORDER BY m.pinned DESC, m.importance DESC, m.intensity DESC, m.n DESC LIMIT ?`, limit)
+	return s.memories(ctx, `WHERE `+isLive+` AND `+isListed+` AND m.core = 1 ORDER BY m.pinned DESC, m.importance DESC, m.intensity DESC, m.n DESC LIMIT ?`, limit)
 }
 
 // TextHit is a memory matched by keyword.
@@ -770,7 +807,8 @@ func (s *Store) SearchText(ctx context.Context, query string, clock int64, deep 
 		rows, err = s.r.QueryContext(ctx,
 			`SELECT memories_fts.rowid, bm25(memories_fts) AS score
 			   FROM memories_fts JOIN memories m ON m.n = memories_fts.rowid
-			  WHERE memories_fts MATCH ? AND m.retracted = 0 AND m.state IN ('', '`+StateSuperseded+`')
+			  WHERE memories_fts MATCH ? AND `+isListed+` AND m.retracted = 0
+			    AND m.state IN ('', '`+StateSuperseded+`', '`+StateAbsorbed+`')
 			  ORDER BY score LIMIT ?`,
 			match, limit)
 	} else {
@@ -778,11 +816,11 @@ func (s *Store) SearchText(ctx context.Context, query string, clock int64, deep 
 			`SELECT n, score FROM (
 			   SELECT memories_fts.rowid AS n, bm25(memories_fts) AS score
 			     FROM memories_fts JOIN memories m ON m.n = memories_fts.rowid
-			    WHERE memories_fts MATCH ? AND `+isLive+` AND `+notYetFaded+`
+			    WHERE memories_fts MATCH ? AND `+isLive+` AND `+isListed+` AND `+notYetFaded+`
 			   UNION ALL
 			   SELECT memories_fts.rowid, bm25(memories_fts)
 			     FROM memories_fts JOIN memories m ON m.n = memories_fts.rowid
-			    WHERE memories_fts MATCH ? AND `+isLive+` AND `+isFadedBand+`
+			    WHERE memories_fts MATCH ? AND `+isLive+` AND `+isListed+` AND `+isFadedBand+`
 			 ) ORDER BY score LIMIT ?`,
 			match, clock, "gist : ("+match+")", clock, clock, limit)
 	}
@@ -817,7 +855,7 @@ func (s *Store) TierCounts(ctx context.Context, clock int64) (TierCounts, error)
 		        count(*) FILTER (WHERE `+isActiveBand+`),
 		        count(*) FILTER (WHERE `+isFadedBand+`),
 		        count(*) FILTER (WHERE `+isArchived+`)
-		   FROM memories m WHERE `+isLive, clock, clock, clock, clock).Scan(&c.Core, &c.Active, &c.Faded, &c.Archived)
+		   FROM memories m WHERE `+isLive+` AND `+isListed, clock, clock, clock, clock).Scan(&c.Core, &c.Active, &c.Faded, &c.Archived)
 	return c, err
 }
 
@@ -898,7 +936,7 @@ func (s *Store) Vectors(ctx context.Context, model string, fn func(n int64, vec 
 // clock reads clock and have no embedding from model yet, oldest first.
 func (s *Store) Unembedded(ctx context.Context, model string, clock int64, limit int) ([]Memory, error) {
 	return s.memories(ctx,
-		`WHERE `+isLive+` AND `+notArchived+` AND NOT EXISTS (SELECT 1 FROM vectors v WHERE v.n = m.n AND v.model = ?)
+		`WHERE `+isLive+` AND `+isListed+` AND `+notArchived+` AND NOT EXISTS (SELECT 1 FROM vectors v WHERE v.n = m.n AND v.model = ?)
 		 ORDER BY m.n LIMIT ?`, clock, model, limit)
 }
 
@@ -908,7 +946,7 @@ func (s *Store) Unembedded(ctx context.Context, model string, clock int64, limit
 // embedded again.
 func (s *Store) DropArchivedVectors(ctx context.Context, clock int64) ([]int64, error) {
 	rows, err := s.w.QueryContext(ctx,
-		`DELETE FROM vectors WHERE n IN (SELECT m.n FROM memories m WHERE `+isArchived+` OR NOT `+isLive+`) RETURNING n`, clock)
+		`DELETE FROM vectors WHERE n IN (SELECT m.n FROM memories m WHERE `+isArchived+` OR NOT `+isLive+` OR NOT `+isListed+`) RETURNING n`, clock)
 	if err != nil {
 		return nil, err
 	}
@@ -926,6 +964,14 @@ func (s *Store) DropArchivedVectors(ctx context.Context, clock int64) ([]int64, 
 		}
 	}
 	return out, rows.Err()
+}
+
+// unixMilli is t in unix milliseconds, or 0 for the zero time.
+func unixMilli(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.UnixMilli()
 }
 
 func contentHash(gist, body string) string {

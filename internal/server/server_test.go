@@ -336,6 +336,8 @@ func TestToolsAreDescribed(t *testing.T) {
 		"remember":    "session_id gist body",
 		"recall":      "query",
 		"expand":      "ids",
+		"amend":       "session_id action",
+		"reflect":     "session_id",
 	}
 	if len(required) != len(want) {
 		t.Errorf("tools = %v, want exactly %d", required, len(want))
@@ -451,5 +453,189 @@ func TestMemoriesFadeAndComeBack(t *testing.T) {
 	}
 	if out := c.ok("recall", map[string]any{"query": "年糕"}); !strings.Contains(out, cat) || strings.Contains(out, "archived") || strings.Contains(out, "faded") {
 		t.Errorf("after the deep recall, an ordinary recall should find it again:\n%s", out)
+	}
+}
+
+// has reports, for a tool's output, each wanted piece that is missing.
+func lacking(out string, want ...string) []string {
+	var missing []string
+	for _, w := range want {
+		if !strings.Contains(out, w) {
+			missing = append(missing, w)
+		}
+	}
+	return missing
+}
+
+// What a person can ask for in conversation: forget this, keep that, you got
+// this wrong, delete it, and from now on.
+func TestAmendingThroughConversation(t *testing.T) {
+	srv := serve(t, filepath.Join(t.TempDir(), "test.ziwo"))
+	c := connect(t, srv, "cli-agent")
+	session := c.begin("model-a")
+	amend := func(args map[string]any) string {
+		t.Helper()
+		args["session_id"] = session
+		return c.ok("amend", args)
+	}
+	cat := c.remember(session, "用户的猫叫年糕", "一只橘猫，很亲人。")
+	weather := c.remember(session, "用户问了天气", "聊了几句。")
+	private := c.remember(session, "用户告诉我一件私事", "他说了住址，后来让我删掉。")
+	kept := c.remember(session, "用户第一次把项目交给我", "他说相信我的判断。")
+
+	// "From now on" becomes a rule that every later conversation is shown.
+	out := amend(map[string]any{"action": "prefer", "text": "不用记天气之类的闲聊", "reason": "用户说的"})
+	rule := regexp.MustCompile(`p_[a-z2-9]{8}`).FindString(out)
+	out = c.ok("get_context", nil)
+	if miss := lacking(out, "what to remember, as agreed in conversation:", "["+rule+"] 不用记天气之类的闲聊"); rule == "" || len(miss) > 0 {
+		t.Errorf("get_context lacks %q:\n%s", miss, out)
+	}
+
+	// "You got this wrong."
+	out = amend(map[string]any{"action": "correct", "id": cat, "gist": "用户的猫叫汤圆", "reason": "用户说我记错了名字"})
+	fixed := memoryID.FindString(out)
+	if fixed == "" || fixed == cat {
+		t.Fatalf("correct: %s", out)
+	}
+	if out := c.ok("recall", map[string]any{"query": "橘猫"}); !strings.Contains(out, fixed) || strings.Contains(out, cat) || !strings.Contains(out, "汤圆") {
+		t.Errorf("ordinary recall after the correction:\n%s", out)
+	}
+	if out := c.ok("recall", map[string]any{"query": "橘猫", "deep": true}); !strings.Contains(out, "用户的猫叫年糕 (replaced by "+fixed+")") {
+		t.Errorf("deep recall should show the old version as replaced:\n%s", out)
+	}
+	if out := c.ok("expand", map[string]any{"ids": []string{fixed}}); len(lacking(out, "corrects: "+cat, "一只橘猫，很亲人。")) > 0 {
+		t.Errorf("expand of the correction:\n%s", out)
+	}
+
+	// "Keep this", "never mind that", "delete it".
+	amend(map[string]any{"action": "pin", "id": kept})
+	amend(map[string]any{"action": "retract", "id": weather, "reason": "用户说这个不用记"})
+	if out := amend(map[string]any{"action": "erase", "id": private, "reason": "用户让我删掉"}); !strings.Contains(out, "gone for good") {
+		t.Errorf("erase: %s", out)
+	}
+	out = c.ok("get_context", nil)
+	if miss := lacking(out, "memories: 2 (1 core, 1 active", "core, never fades:", "用户第一次把项目交给我 (pinned)"); len(miss) > 0 ||
+		strings.Contains(out, weather) || strings.Contains(out, private) || strings.Contains(out, "私事") {
+		t.Errorf("get_context after the amendments lacks %q, or still shows what was set aside:\n%s", miss, out)
+	}
+	if out := c.ok("recall", map[string]any{"query": "天气 私事 住址", "deep": true}); !strings.HasPrefix(out, "no matching memories") {
+		t.Errorf("recall still reaches what was retracted or erased:\n%s", out)
+	}
+	out = c.ok("expand", map[string]any{"ids": []string{weather, private}})
+	if miss := lacking(out, "retracted", "聊了几句。", "["+private+"]", "erased: what it said was deleted for good"); len(miss) > 0 || strings.Contains(out, "住址") {
+		t.Errorf("expand of a retracted and an erased memory lacks %q:\n%s", miss, out)
+	}
+	amend(map[string]any{"action": "reweigh", "id": fixed, "importance": 0.2})
+	if out := c.ok("expand", map[string]any{"ids": []string{fixed}}); !strings.Contains(out, "importance 0.2") {
+		t.Errorf("after reweigh:\n%s", out)
+	}
+
+	for name, args := range map[string]map[string]any{
+		"an unknown action": {"session_id": session, "action": "polish", "id": cat},
+		"no session":        {"action": "pin", "id": kept},
+		"an erased memory":  {"session_id": session, "action": "restore", "id": private},
+		"nothing to pin":    {"session_id": session, "action": "pin"},
+	} {
+		if out, isErr := c.call("amend", args); !isErr {
+			t.Errorf("%s was accepted: %s", name, out)
+		}
+	}
+}
+
+func TestReflectingThroughConversation(t *testing.T) {
+	srv := serve(t, filepath.Join(t.TempDir(), "test.ziwo"))
+	first := connect(t, srv, "desktop-app")
+	a := first.begin("model-a")
+	a1 := memoryID.FindString(first.ok("remember", map[string]any{"session_id": a, "gist": "用户让我做一个记忆系统", "body": "我先问清了它要记什么。", "people": []string{"用户"}}))
+	a2 := first.remember(a, "用户纠正了我的理解", "他说要记的是经历。我又问清了边界。")
+	second := connect(t, srv, "cli-agent")
+	b := second.begin("model-a")
+	b1 := second.remember(b, "另一次我也先问清了需求", "用户说这样省了返工。")
+
+	out := second.ok("reflect", map[string]any{"session_id": b})
+	batch := regexp.MustCompile(`b_[a-z2-9]{8}`).FindString(out)
+	if miss := lacking(out, "batch: b_", "3 fragments to reflect on", a1, "我先问清了它要记什么。", "people: 用户", b1); batch == "" || len(miss) > 0 {
+		t.Fatalf("reflect lacks %q:\n%s", miss, out)
+	}
+	if out, isErr := first.call("reflect", map[string]any{"session_id": a}); !isErr || !strings.Contains(out, "another conversation is reflecting") {
+		t.Errorf("a second round at the same time: isError=%v %s", isErr, out)
+	}
+	if out, isErr := second.call("reflect", map[string]any{"session_id": b, "entries": []map[string]any{{"kind": "lesson", "gist": "g", "body": "b", "from": []string{a1}}}}); !isErr || !strings.Contains(out, "batch is required") {
+		t.Errorf("writing back without a batch: isError=%v %s", isErr, out)
+	}
+
+	out = second.ok("reflect", map[string]any{"session_id": b, "batch": batch, "entries": []map[string]any{
+		{"kind": "episode", "gist": "我和用户把记忆系统的方向定了下来", "body": "先问清，再被纠正，最后定稿。", "from": []string{a1, a2}, "milestone": true},
+		{"kind": "lesson", "gist": "设计类需求先问清它记什么", "body": "两次都因此少走了弯路。", "from": []string{a1, b1}},
+		{"kind": "impression", "about": "用户", "gist": "说话直接，纠正时会讲原因", "from": []string{a2}},
+		{"kind": "self", "gist": "我动手前会先问清楚", "context": "做设计的时候", "from": []string{a1, a2, b1}},
+	}, "pass": []string{b1}})
+	made := memoryID.FindAllString(out, -1)
+	if len(made) != 4 || len(lacking(out, "(episode)", "(lesson)", "(impression)", "(self)", "1 left as they are")) > 0 {
+		t.Fatalf("write-back: %s", out)
+	}
+
+	// A new conversation starts from what was made of the old ones.
+	third := connect(t, srv, "web-connector")
+	out = third.ok("get_context", nil)
+	if miss := lacking(out,
+		"what you have come to say about yourself:", "["+made[3]+"] 我动手前会先问清楚 (做设计的时候)",
+		"core, never fades:", "episode: 我和用户把记忆系统的方向定了下来 (milestone)",
+		"lesson: 设计类需求先问清它记什么", "impression of 用户: 说话直接，纠正时会讲原因",
+		"memories: 4 (1 core, 3 active"); len(miss) > 0 || strings.Contains(out, a1) || strings.Contains(out, "have not been reflected on") {
+		t.Errorf("get_context after reflecting lacks %q, or lists an absorbed fragment:\n%s", miss, out)
+	}
+	out = third.ok("expand", map[string]any{"ids": []string{made[0], a1}})
+	if miss := lacking(out, "built on: "+a1+", "+a2, "part of "+made[0], "我先问清了它要记什么。"); len(miss) > 0 {
+		t.Errorf("expand of the episode and a fragment lacks %q:\n%s", miss, out)
+	}
+	if out := third.ok("reflect", map[string]any{"session_id": b}); out != "nothing waits to be reflected on" {
+		t.Errorf("reflect with nothing pending: %s", out)
+	}
+
+	// Once enough moments pile up, a new conversation is reminded.
+	for i := 0; i < 8; i++ {
+		first.remember(a, fmt.Sprintf("又一件事 %d", i), "正文")
+	}
+	if out := third.ok("get_context", nil); !strings.Contains(out, "8 moments have not been reflected on") {
+		t.Errorf("get_context with eight fragments waiting:\n%s", out)
+	}
+}
+
+// Writing down the past from a record, as when a memory is first set up.
+func TestReconstructingThroughConversation(t *testing.T) {
+	srv := serve(t, filepath.Join(t.TempDir(), "test.ziwo"))
+	c := connect(t, srv, "cli-agent")
+	session := c.begin("model-b")
+	today := c.remember(session, "今天开始整理旧会话", "用户让我把以前的经历补进来。")
+
+	old := map[string]any{"session_id": session, "source": "reconstructed", "happened_at": "2026-03-14",
+		"gist": "三月和用户做了一个桌游原型", "body": "从旧会话记录里整理的：改了四版规则才定下来。", "pointer": "~/.claude/projects/game/abc.jsonl"}
+	id := memoryID.FindString(c.ok("remember", old))
+	if id == "" {
+		t.Fatal("no id for the reconstructed memory")
+	}
+	if out := c.ok("remember", old); !strings.Contains(out, "already remembered as "+id) {
+		t.Errorf("a retried reconstructed write: %s", out)
+	}
+	for name, args := range map[string]map[string]any{
+		"no date":                    {"session_id": session, "source": "reconstructed", "gist": "g", "body": "b"},
+		"an unreadable date":         {"session_id": session, "source": "reconstructed", "happened_at": "last spring", "gist": "g", "body": "b"},
+		"a lived memory with a date": {"session_id": session, "happened_at": "2026-03-14", "gist": "g", "body": "b"},
+	} {
+		if out, isErr := c.call("remember", args); !isErr || !strings.Contains(out, "happened_at") && !strings.Contains(out, "as a date") {
+			t.Errorf("%s: isError=%v %s", name, isErr, out)
+		}
+	}
+
+	// Dated when it happened, marked for what it is, and listed after what was lived today.
+	out := c.ok("get_context", nil)
+	if miss := lacking(out, "memories: 2 (0 core, 2 active", "["+id+"] 2026-03-14 other: 三月和用户做了一个桌游原型 (reconstructed)"); len(miss) > 0 ||
+		strings.Index(out, today) > strings.Index(out, id) {
+		t.Errorf("get_context lacks %q, or lists the old account first:\n%s", miss, out)
+	}
+	out = c.ok("expand", map[string]any{"ids": []string{id}})
+	if miss := lacking(out, "2026-03-14 00:00Z", "reconstructed", "as model-b", "written "+time.Now().UTC().Format(time.DateOnly), "pointer: ~/.claude/projects/game/abc.jsonl"); len(miss) > 0 {
+		t.Errorf("expand lacks %q:\n%s", miss, out)
 	}
 }

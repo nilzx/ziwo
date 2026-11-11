@@ -435,6 +435,8 @@ func dump(t *testing.T, s *Store) string {
 		`SELECT * FROM sessions ORDER BY id`,
 		`SELECT * FROM carriers ORDER BY model`,
 		`SELECT * FROM memories ORDER BY n`,
+		`SELECT * FROM links ORDER BY src, dst`,
+		`SELECT * FROM policies ORDER BY id`,
 		`SELECT n, model, hex(vec) FROM vectors ORDER BY n, model`,
 		`SELECT value FROM meta WHERE key = 'derived'`,
 	} {
