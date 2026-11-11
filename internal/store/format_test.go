@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -38,8 +39,8 @@ func rawExec(t *testing.T, path, stmt string) {
 func TestNewFileRecordsItsLogFormat(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "test.ziwo")
 	open(t, path).Close()
-	if v, ok := metaValue(t, path, metaLogFormat); !ok || v != "1" {
-		t.Errorf("log format = %q, %v; want 1", v, ok)
+	if v, ok := metaValue(t, path, metaLogFormat); !ok || v != strconv.Itoa(logFormat) {
+		t.Errorf("log format = %q, %v; want %d", v, ok, logFormat)
 	}
 }
 
@@ -81,8 +82,8 @@ func TestLogFromBeforeVersioningIsUpgraded(t *testing.T) {
 		t.Errorf("the upgrade left the log writable: %v", err)
 	}
 	s2.Close()
-	if v, _ := metaValue(t, path, metaLogFormat); v != "1" {
-		t.Errorf("log format after the upgrade = %q, want 1", v)
+	if v, _ := metaValue(t, path, metaLogFormat); v != strconv.Itoa(logFormat) {
+		t.Errorf("log format after the upgrade = %q, want %d", v, logFormat)
 	}
 }
 

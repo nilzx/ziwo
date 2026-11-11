@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -22,6 +23,80 @@ var migrations = []func(context.Context, *sql.Tx) error{
 			  WHERE kind = 'recall' AND COALESCE(json_extract(payload, '$.query'), '') = ''`)
 		return err
 	},
+	// 1 -> 2: what a memory says moves out of its event into the contents
+	// table, so that it can be erased. The event keeps the content's hash.
+	func(ctx context.Context, tx *sql.Tx) error {
+		type row struct {
+			seq     int64
+			payload string
+		}
+		var after int64
+		for {
+			rows, err := tx.QueryContext(ctx,
+				`SELECT seq, payload FROM events WHERE kind = 'remember' AND seq > ? ORDER BY seq LIMIT 200`, after)
+			if err != nil {
+				return err
+			}
+			var batch []row
+			for rows.Next() {
+				var r row
+				if err := rows.Scan(&r.seq, &r.payload); err != nil {
+					rows.Close()
+					return err
+				}
+				batch = append(batch, r)
+			}
+			if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+				return err
+			}
+			if len(batch) == 0 {
+				return nil
+			}
+			for _, r := range batch {
+				var old rememberEventV1
+				if err := json.Unmarshal([]byte(r.payload), &old); err != nil {
+					return fmt.Errorf("event %d: %w", r.seq, err)
+				}
+				if old.Hash != "" {
+					continue // already in the new form
+				}
+				data, hash := content{Gist: old.Gist, Body: old.Body, Outcome: old.Outcome, Feeling: old.Feeling,
+					Lesson: old.Lesson, People: old.People, Pointer: old.Pointer}.encode()
+				if _, err := tx.ExecContext(ctx,
+					`INSERT INTO contents(id, data) VALUES(?, ?) ON CONFLICT(id) DO NOTHING`, old.ID, data); err != nil {
+					return err
+				}
+				slim, err := json.Marshal(rememberEvent{ID: old.ID, Session: old.Session, Moment: old.Moment,
+					Source: old.Source, Importance: old.Importance, Intensity: old.Intensity, Hash: hash})
+				if err != nil {
+					return err
+				}
+				if _, err := tx.ExecContext(ctx, `UPDATE events SET payload = ? WHERE seq = ?`, string(slim), r.seq); err != nil {
+					return err
+				}
+			}
+			after = batch[len(batch)-1].seq
+		}
+	},
+}
+
+// rememberEventV1 is a remember event as formats 0 and 1 wrote it, with what
+// the memory says inside the event.
+type rememberEventV1 struct {
+	ID         string   `json:"id"`
+	Session    string   `json:"session"`
+	Moment     string   `json:"moment"`
+	Source     string   `json:"source"`
+	Importance float64  `json:"importance"`
+	Intensity  float64  `json:"intensity,omitempty"`
+	Gist       string   `json:"gist"`
+	Body       string   `json:"body"`
+	Outcome    string   `json:"outcome,omitempty"`
+	Feeling    string   `json:"feeling,omitempty"`
+	Lesson     string   `json:"lesson,omitempty"`
+	People     []string `json:"people,omitempty"`
+	Pointer    string   `json:"pointer,omitempty"`
+	Hash       string   `json:"hash,omitempty"` // set only by later formats
 }
 
 // upgradeLog brings the event log to the current format. It reports whether

@@ -20,11 +20,14 @@ package store
 //	0  before the format was versioned. Reading a memory in full was logged
 //	   as a "recall" event without a query.
 //	1  "recall" lists memories; reading in full is its own "expand" event.
-const logFormat = 1
+//	2  What a memory says is no longer in its event. It lives in the contents
+//	   table, where it can be erased for good; the event keeps its hash.
+//	   New kinds of event: "amend", "erase".
+const logFormat = 2
 
 // derivedVersion identifies the layout of the derived tables and the logic
 // that fills them. Bump it whenever either changes.
-const derivedVersion = "3"
+const derivedVersion = "4"
 
 const logSchema = `
 CREATE TABLE IF NOT EXISTS events (
@@ -45,6 +48,17 @@ CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 ) STRICT, WITHOUT ROWID;
+
+-- What each memory says. It is written once, with the event that records the
+-- memory, and never changed. It can be deleted: that is how a memory's
+-- content is erased for good while the log still shows that it existed.
+CREATE TABLE IF NOT EXISTS contents (
+  id   TEXT PRIMARY KEY, -- the memory's id
+  data TEXT NOT NULL     -- JSON; see content in content.go
+) STRICT, WITHOUT ROWID;
+
+CREATE TRIGGER IF NOT EXISTS contents_no_update BEFORE UPDATE ON contents
+BEGIN SELECT RAISE(ABORT, 'content is written once'); END;
 ` + appendOnlyTriggers
 
 // appendOnlyTriggers make the database itself refuse to change or remove an
@@ -64,6 +78,7 @@ DROP TRIGGER IF EXISTS events_no_delete;
 `
 
 const dropDerived = `
+DROP TABLE IF EXISTS policies;
 DROP TABLE IF EXISTS memories_fts;
 DROP TABLE IF EXISTS memories;
 DROP TABLE IF EXISTS carriers;
@@ -93,6 +108,7 @@ CREATE TABLE memories (
   id               TEXT    NOT NULL UNIQUE,
   created_at       INTEGER NOT NULL,
   session_id       TEXT    NOT NULL,
+  kind             TEXT    NOT NULL, -- fragment: a moment written as it happened
   moment           TEXT    NOT NULL,
   source           TEXT    NOT NULL,
   importance       REAL    NOT NULL,
@@ -114,10 +130,25 @@ CREATE TABLE memories (
   core             INTEGER NOT NULL, -- 0 or 1; a core memory never fades
   strength         REAL    NOT NULL, -- counted in memories
   fade_at          REAL,             -- clock value from which only the gist stays findable
-  archive_at       REAL              -- clock value from which it leaves ordinary search
+  archive_at       REAL,             -- clock value from which it leaves ordinary search
+  -- Standing. A memory is live when state is '' and retracted is 0.
+  state            TEXT    NOT NULL, -- '', superseded (a correction replaced it) or erased
+  state_by         TEXT    NOT NULL, -- id of the memory that replaced it, or ''
+  retracted        INTEGER NOT NULL, -- 0 or 1; set aside on request, can be restored
+  pinned           INTEGER NOT NULL, -- 0 or 1; kept as core on request
+  corrects         TEXT    NOT NULL  -- id of the memory this one corrects, or ''
 ) STRICT;
 CREATE INDEX memories_by_hash ON memories(hash, created_at);
 CREATE INDEX memories_by_archive ON memories(archive_at) WHERE core = 0;
+
+-- Standing rules about what to remember, set in conversation.
+CREATE TABLE policies (
+  id         TEXT PRIMARY KEY,
+  created_at INTEGER NOT NULL,
+  session_id TEXT    NOT NULL,
+  text       TEXT    NOT NULL,
+  retired_at INTEGER -- NULL while in force
+) STRICT;
 
 -- Keyword index. rowid = memories.n. Contentless: the text lives in memories.
 -- The gist has a column of its own because a faded memory is matched on its
