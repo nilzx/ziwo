@@ -15,7 +15,11 @@ You need Go 1.25 or later and a C compiler (the SQLite driver uses cgo).
 ```sh
 make build   # go build -tags sqlite_fts5 -o ziwo ./cmd/ziwo
 make test
+make smoke   # end to end: runs the real binary and talks MCP to it over HTTP
+make mutate  # changes one line at a time and expects the tests to notice
 ```
+
+`make smoke` and `make mutate` need Python 3. The scripts are in `scripts/`.
 
 The `sqlite_fts5` build tag is required. Without it a memory cannot be opened: `no such module: fts5`.
 
@@ -256,6 +260,7 @@ internal/vector   in-memory vector index
 internal/embed    client for the embeddings endpoint
 internal/llm      client for the chat endpoint that background reflection uses
 internal/sealed   the encryption around an export
+scripts/          end-to-end check of the real binary, mutation checks
 ```
 
 ## Known limitations
