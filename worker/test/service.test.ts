@@ -239,6 +239,23 @@ describe("service", () => {
       expect(view.session.id, "two calls to get_context returned the same session").not.toBe(f.session);
     }));
 
+  it("takes two spellings of a model's name for one carrier", () =>
+    start((f) => {
+      f.session = f.begin("claude-sonnet-5-5", "web").session.id;
+      f.remember("a first thing", "body");
+      // Seen on a real client: the same model named itself both ways.
+      let view = f.begin("Claude Sonnet 5.5", "phone");
+      expect(view.carrier.first).toBe(false);
+      expect(view.session.model, "a session keeps the name as it was given").toBe("Claude Sonnet 5.5");
+      view = f.begin(" claude-fable-5-2 ", "web");
+      expect(view.carrier).toEqual({ first: true, earlier: ["claude-sonnet-5-5"] });
+      // A name with nothing to compare is no carrier.
+      view = f.begin("...", "web");
+      expect(view.carrier.first).toBe(false);
+      view = f.begin("CLAUDE_FABLE 5.2", "web");
+      expect(view.carrier.first).toBe(false);
+    }));
+
   it("RememberValidation", () =>
     start((f) => {
       const long = (n: number) => "字".repeat(n);

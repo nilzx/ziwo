@@ -331,11 +331,12 @@ export class Store {
           `INSERT INTO sessions(id, started_at, last_active_at, model, client, tz) VALUES(?, ?, ?, ?, ?, ?)`,
           e.id, at, at, e.model, e.client, e.tz ?? "",
         );
-        if (e.model === "") return;
+        const carrier = carrierKey(e.model);
+        if (carrier === "") return;
         this.db.run(
           `INSERT INTO carriers(model, first_seen, last_seen, sessions) VALUES(?, ?, ?, 1)
            ON CONFLICT(model) DO UPDATE SET last_seen = excluded.last_seen, sessions = sessions + 1`,
-          e.model, at, at,
+          carrier, at, at,
         );
         return;
       }
@@ -421,12 +422,14 @@ export class Store {
   startSession(at: number, model: string, client: string, tz = ""): { session: Session; note: CarrierNote } {
     return this.retry(() => {
       const session: Session = { id: newID("s_"), startedAt: at, lastActiveAt: at, model, client, tz };
-      const note = model === "" ? { first: false, earlier: [] } : this.carrierNote(model);
+      const carrier = carrierKey(model);
+      const note = carrier === "" ? { first: false, earlier: [] } : this.carrierNote(carrier);
       this.appendEvent(at, kindSession, encodeSession({ id: session.id, model, client, tz }));
       return { session, note };
     });
   }
 
+  // model is a carrier's key, as carrierKey gives it.
   private carrierNote(model: string): CarrierNote {
     const known = this.db.first(`SELECT 1 AS k FROM carriers WHERE model = ?`, model) !== undefined;
     const earlier = this.db
@@ -1062,4 +1065,14 @@ function toMemory(r: Row): Memory {
   };
   m.pending = flag(r.unreviewed) && m.kind === KindFragment && m.state === "" && !m.retracted;
   return m;
+}
+
+// carrierKey brings the spellings a model gives its own name to one form, so
+// that "Claude Sonnet 5.5" and "claude-sonnet-5-5" are one carrier. A session
+// keeps the name as it was given.
+export function carrierKey(model: string): string {
+  return model
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, "-")
+    .replace(/^-|-$/g, "");
 }

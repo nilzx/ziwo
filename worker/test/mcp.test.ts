@@ -24,13 +24,34 @@ interface ToolListing {
 const eraseLine =
   "\nerase: delete what a memory says, for good. Only when a person explicitly asks for it to be deleted. It cannot be undone.";
 
+// What remember says beyond Go: an ordinary conversation leaves a memory too.
+const rememberChanges: [string, string][] = [
+  [
+    "Most turns need no memory.\n\n",
+    "Most turns need no memory.\n\nA conversation can matter without any such moment. When a person brings up something they care about or keep coming back to, or the two of you leave something open (an idea to try, something one of you said you would do), write it down while the conversation is going on: you cannot tell which turn is the last, and what you have not written is gone when it ends. What the conversation was about and where it was left is what you will be asked about next time.\n\n",
+  ],
+  [
+    "put its location in pointer.\n",
+    "put its location in pointer. Something left open between you and a person is not a to-do list: it is where the conversation was left, and belongs in outcome.\n",
+  ],
+  [
+    "0.5 is an ordinary moment. Keep 0.9",
+    "0.5 is an ordinary moment; a conversation you note only so that you know it took place can go lower, and will fade first. Keep 0.9",
+  ],
+];
+
 // expected is what Go showed, with the changes this port makes and no
 // others.
 function expectedListing(): { instructions: string; tools: Map<string, Omit<ToolListing, "title" | "annotations">> } {
-  const instructions = goListing.instructions.replace(
-    "Use amend when a person asks you to forget, keep or correct something.",
-    "Use amend when a person asks you to forget, keep or correct something. Use erase only when they ask for a memory to be deleted for good.",
-  );
+  const instructions = goListing.instructions
+    .replace(
+      "Use amend when a person asks you to forget, keep or correct something.",
+      "Use amend when a person asks you to forget, keep or correct something. Use erase only when they ask for a memory to be deleted for good.",
+    )
+    .replace(
+      "Use remember only at moments that carry weight; most turns need none.",
+      "Use remember at moments that carry weight, and once a conversation has come to be about something, so that it leaves at least one memory of what it was about and where it was left; most turns need none.",
+    );
   const tools = new Map<string, Omit<ToolListing, "title" | "annotations">>();
   for (const t of goListing.tools) {
     const copy = JSON.parse(JSON.stringify(t)) as ToolListing;
@@ -40,6 +61,12 @@ function expectedListing(): { instructions: string; tools: Map<string, Omit<Tool
       copy.description = copy.description.replace(eraseLine, "");
       const props = copy.inputSchema.properties as Record<string, { description: string }>;
       props.action!.description = "retract, restore, pin, unpin, reweigh, correct, prefer or unprefer";
+    }
+    if (t.name === "remember") {
+      for (const [was, is] of rememberChanges) {
+        expect(copy.description).toContain(was);
+        copy.description = copy.description.replace(was, is);
+      }
     }
     if (t.name === "get_context") {
       const props = copy.inputSchema.properties as Record<string, unknown>;

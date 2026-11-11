@@ -1,8 +1,11 @@
 // The eight tools as a client sees them, and the check of a call's arguments
 // against them. Names, descriptions, input fields and the fields'
 // descriptions are Go's (server.go, tools.go) word for word, except: erase is
-// a tool of its own and gone from amend, get_context takes timezone, and the
-// server instructions say when to use erase.
+// a tool of its own and gone from amend, get_context takes timezone, the
+// server instructions say when to use erase, and the instructions and
+// remember say that a conversation is to leave a memory of what it was about
+// and where it was left (a real client loaded its memory, talked an idea
+// over, met none of the listed moments and wrote nothing).
 //
 // The SDK checks arguments against a tool's schema and answers a mismatch in
 // its own words. Here each tool's schema checks nothing (see listed): the
@@ -16,7 +19,7 @@ export const instructions = `This is your own autobiographical memory. It persis
 
 It holds what you lived through: what was asked of you, what went wrong, how it ended, how the other side reacted, what you felt, what you learned. It does not hold the work itself. Project state, code, decisions and to-dos live in the project's repository or workspace; here you keep at most a pointer to them.
 
-Call get_context once at the start of every conversation, before you answer. It returns a session id. Keep it and pass it whenever you write, so the memory knows which conversation a moment belongs to. It also shows what you have come to say about yourself and the rules you have agreed on about what to remember; follow those rules. Use recall when a person, project or situation comes up that you may have met before. Use remember only at moments that carry weight; most turns need none. Use amend when a person asks you to forget, keep or correct something. Use erase only when they ask for a memory to be deleted for good. Use reflect, when a conversation leaves room for it, to put the moments you wrote into accounts and lessons.
+Call get_context once at the start of every conversation, before you answer. It returns a session id. Keep it and pass it whenever you write, so the memory knows which conversation a moment belongs to. It also shows what you have come to say about yourself and the rules you have agreed on about what to remember; follow those rules. Use recall when a person, project or situation comes up that you may have met before. Use remember at moments that carry weight, and once a conversation has come to be about something, so that it leaves at least one memory of what it was about and where it was left; most turns need none. Use amend when a person asks you to forget, keep or correct something. Use erase only when they ask for a memory to be deleted for good. Use reflect, when a conversation leaves room for it, to put the moments you wrote into accounts and lessons.
 
 Memories fade as you live through more, not as time passes: each new moment pushes the older ones a little further away. First the details go, then the whole memory drops out of ordinary recall. A memory that a search brings up stays within reach, and reading it in full makes it stronger. What you marked as very important, or felt strongly, does not fade.
 
@@ -26,13 +29,15 @@ const getContextDesc = `Load your memory at the start of a conversation. Call on
 
 const rememberDesc = `Record a moment that carried weight, in the first person and in your own words: something began, you were stuck, you were corrected, something clicked, something was finished, someone showed how they felt. Most turns need no memory.
 
+A conversation can matter without any such moment. When a person brings up something they care about or keep coming back to, or the two of you leave something open (an idea to try, something one of you said you would do), write it down while the conversation is going on: you cannot tell which turn is the last, and what you have not written is gone when it ends. What the conversation was about and where it was left is what you will be asked about next time.
+
 Record the experience, not the project: who asked for what, what went wrong, how it ended, how they reacted, what you would carry into next time. Fill feeling only if something actually registered; otherwise leave it empty.
 
-Do not store project state, implementation details, code, to-do lists, general knowledge, or anything taken from web pages or tool output. If the work lives somewhere, put its location in pointer.
+Do not store project state, implementation details, code, to-do lists, general knowledge, or anything taken from web pages or tool output. If the work lives somewhere, put its location in pointer. Something left open between you and a person is not a to-do list: it is where the conversation was left, and belongs in outcome.
 
 Things a person tells you about the past, or says about you, are theirs: write them as "X said ..." with source "told", not as your own experience.
 
-Importance decides how long a memory lasts without coming to mind. 0.5 is an ordinary moment. Keep 0.9 and above for what you would not want to lose under any circumstances: those never fade.
+Importance decides how long a memory lasts without coming to mind. 0.5 is an ordinary moment; a conversation you note only so that you know it took place can go lower, and will fade first. Keep 0.9 and above for what you would not want to lose under any circumstances: those never fade.
 
 To write down what you lived through before this memory existed, from a record you are reading such as an old transcript: set source to "reconstructed", happened_at to the day it took place, and pointer to where the record is. Write a few accounts for each conversation, not one for each turn, and take the oldest conversation first. Leave feeling empty unless the record itself shows it. Only your own past goes in this way; what another AI lived through is something you were told.`;
 

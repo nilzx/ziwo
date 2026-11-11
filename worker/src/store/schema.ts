@@ -19,8 +19,9 @@ export const logFormat = 3;
 // that fills them. Bump it whenever either changes. The Go build stands at 6;
 // 7 added the indexes a new session's load reads; 8 projects amend, erase and
 // reflect events, and replays an erasure the way it was lived (see
-// applyRemember and applyErase); 9 keeps the time zone a session reported.
-export const derivedVersion = "9";
+// applyRemember and applyErase); 9 keeps the time zone a session reported;
+// 10 keys a carrier by one spelling of its name (see carrierKey).
+export const derivedVersion = "10";
 
 // appendOnlyTriggers make the database itself refuse to change or remove an
 // event.
