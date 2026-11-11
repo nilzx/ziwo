@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -526,5 +527,204 @@ func TestRebuildAndDescribe(t *testing.T) {
 	}
 	if names, _ := Names(dir); !reflect.DeepEqual(names, []string{"claude"}) {
 		t.Errorf("asking about a memory that does not exist created it: %v", names)
+	}
+}
+
+// logBuf collects log output from several goroutines.
+type logBuf struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *logBuf) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *logBuf) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+// lines returns the log lines whose message is msg.
+func (l *logBuf) lines(msg string) []string {
+	var out []string
+	for _, line := range strings.Split(l.String(), "\n") {
+		if strings.Contains(line, "msg="+msg+" ") || strings.HasSuffix(line, "msg="+msg) {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+func accessLogged(t *testing.T, dir string, cfg Config) (*running, *logBuf) {
+	t.Helper()
+	buf := &logBuf{}
+	cfg.Logger = slog.New(slog.NewTextHandler(buf, nil))
+	return run(t, dir, cfg), buf
+}
+
+func TestAccessLogSaysHowEachRequestWasAuthenticated(t *testing.T) {
+	dir := t.TempDir()
+	token := create(t, dir, "anna")
+	r, buf := accessLogged(t, dir, Config{AccessLog: true})
+
+	if code, _ := r.post("/anna/mcp", ""); code != 401 {
+		t.Fatalf("no token: status %d", code)
+	}
+	if code, _ := r.post("/anna/mcp", "Bearer ziwo_wrong"); code != 401 {
+		t.Fatalf("wrong token: status %d", code)
+	}
+	if code, _ := r.post("/anna/mcp", "Bearer "+token); code != 200 {
+		t.Fatalf("right token: status %d", code)
+	}
+	if code, _ := r.post("/nobody/mcp", "Bearer "+token); code != 401 {
+		t.Fatalf("unknown memory: status %d", code)
+	}
+	resp, err := http.Get(r.url + "/healthz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	lines := buf.lines("request")
+	if len(lines) != 5 {
+		t.Fatalf("want 5 request lines, got %d:\n%s", len(lines), buf.String())
+	}
+	for i, want := range []string{"status=401 ", "status=401 ", "status=200 ", "status=401 ", "status=200 "} {
+		if !strings.Contains(lines[i], want) {
+			t.Errorf("line %d lacks %q: %s", i, want, lines[i])
+		}
+	}
+	for i, want := range []string{"auth=none", "auth=rejected", "auth=ok", "auth=rejected"} {
+		if !strings.Contains(lines[i], want) {
+			t.Errorf("line %d lacks %q: %s", i, want, lines[i])
+		}
+	}
+	if strings.Contains(lines[4], "auth=") || !strings.Contains(lines[4], "path=/healthz") {
+		t.Errorf("healthz line should carry no auth: %s", lines[4])
+	}
+	for _, want := range []string{"method=POST", "path=/anna/mcp", "dur=", "agent=", "remote=127.0.0.1"} {
+		if !strings.Contains(lines[0], want) {
+			t.Errorf("line lacks %q: %s", want, lines[0])
+		}
+	}
+}
+
+func TestAccessLogLeavesOutAuthWithoutAuth(t *testing.T) {
+	dir := t.TempDir()
+	create(t, dir, "anna")
+	r, buf := accessLogged(t, dir, Config{AccessLog: true, NoAuth: true})
+	if code, _ := r.post("/anna/mcp", ""); code != 200 {
+		t.Fatalf("status %d", code)
+	}
+	lines := buf.lines("request")
+	if len(lines) != 1 || strings.Contains(lines[0], "auth=") {
+		t.Fatalf("want one line without auth:\n%s", buf.String())
+	}
+}
+
+func TestAccessLogClientAddressAndVersion(t *testing.T) {
+	h := New(Config{AccessLog: true, BehindProxy: true})
+	buf := &logBuf{}
+	h.log = slog.New(slog.NewTextHandler(buf, nil))
+	req := httptest.NewRequest("GET", "/healthz?x=q", nil)
+	req.Header.Set("X-Forwarded-For", "203.0.113.7, 10.0.0.1")
+	req.Header.Set("MCP-Protocol-Version", "2025-06-18")
+	req.Header.Set("User-Agent", strings.Repeat("a", 300))
+	h.Handler().ServeHTTP(httptest.NewRecorder(), req)
+	line := buf.String()
+	for _, want := range []string{"remote=203.0.113.7", "mcp_version=2025-06-18", "agent=" + strings.Repeat("a", 120) + " "} {
+		if !strings.Contains(line, want) {
+			t.Errorf("line lacks %q: %s", want, line)
+		}
+	}
+	if strings.Contains(line, strings.Repeat("a", 121)) || strings.Contains(line, "10.0.0.1") {
+		t.Errorf("agent not clipped or later hop logged: %s", line)
+	}
+}
+
+func TestAccessLogNeverHoldsWhatAMemorySays(t *testing.T) {
+	const (
+		marker  = "zorblaxquint"
+		marker2 = "frimplevonk"
+	)
+	dir := t.TempDir()
+	token := create(t, dir, "anna")
+	r, buf := accessLogged(t, dir, Config{AccessLog: true})
+	c := r.connect("anna", token)
+	c.remember(marker+" gist", marker+" body")
+	c.call("recall", map[string]any{"query": marker})
+
+	for _, path := range []string{"/anna/mcp?x=" + marker2, "/healthz?x=" + marker2} {
+		req, _ := http.NewRequest(http.MethodPost, r.url+path, strings.NewReader(initialize))
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+	}
+
+	log := buf.String()
+	if len(buf.lines("request")) < 4 || len(buf.lines("tool")) < 3 {
+		t.Fatalf("expected request and tool lines:\n%s", log)
+	}
+	for _, secret := range []string{marker, marker2, token, "Bearer"} {
+		if strings.Contains(log, secret) {
+			t.Errorf("log holds %q:\n%s", secret, log)
+		}
+	}
+}
+
+func TestNoAccessLogLinesWhenOff(t *testing.T) {
+	dir := t.TempDir()
+	token := create(t, dir, "anna")
+	r, buf := accessLogged(t, dir, Config{})
+	r.post("/anna/mcp", "")
+	c := r.connect("anna", token)
+	c.remember("a gist", "a body")
+	if got := buf.String(); strings.Contains(got, "msg=request") || strings.Contains(got, "msg=tool") {
+		t.Fatalf("log holds access lines although off:\n%s", got)
+	}
+}
+
+// flushRecorder is a response writer that counts flushes.
+type flushRecorder struct {
+	*httptest.ResponseRecorder
+	flushes int
+}
+
+func (f *flushRecorder) Flush() { f.flushes++; f.ResponseRecorder.Flush() }
+
+func TestAccessLogKeepsStreamingIntact(t *testing.T) {
+	h := New(Config{AccessLog: true})
+	buf := &logBuf{}
+	h.log = slog.New(slog.NewTextHandler(buf, nil))
+	var viaController error
+	wrapped := h.logged(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f, ok := w.(http.Flusher)
+		if !ok {
+			t.Error("wrapper hides http.Flusher")
+			return
+		}
+		f.Flush()
+		viaController = http.NewResponseController(w).Flush()
+	}))
+	rec := &flushRecorder{ResponseRecorder: httptest.NewRecorder()}
+	wrapped.ServeHTTP(rec, httptest.NewRequest("GET", "/x/mcp", nil))
+	if viaController != nil {
+		t.Fatalf("ResponseController flush failed: %v", viaController)
+	}
+	if rec.flushes != 2 {
+		t.Fatalf("underlying writer flushed %d times, want 2", rec.flushes)
+	}
+	if line := buf.String(); !strings.Contains(line, "status=200") {
+		t.Fatalf("a flushed response should log 200: %s", line)
+	}
+	if _, ok := any(&record{ResponseWriter: rec}).(interface{ Unwrap() http.ResponseWriter }); !ok {
+		t.Fatal("no Unwrap")
 	}
 }

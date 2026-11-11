@@ -24,6 +24,9 @@ type Options struct {
 	BehindProxy bool
 	Version     string
 	Logger      *slog.Logger
+	// AccessLog logs one line per tool call: the tool, how it ended and how
+	// long it took. Never arguments, ids or error text.
+	AccessLog bool
 }
 
 // What the model is told about this server when it connects. Tool
@@ -95,6 +98,7 @@ func New(svc *memory.Service, opt Options) http.Handler {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
+	accessLog := opt.AccessLog
 	version := opt.Version
 	if version == "" {
 		version = "dev"
@@ -109,16 +113,16 @@ func New(svc *memory.Service, opt Options) http.Handler {
 	closed := &mcp.ToolAnnotations{DestructiveHint: &no, OpenWorldHint: &no}
 
 	mcp.AddTool(srv, &mcp.Tool{Name: "get_context", Description: getContextDesc, Annotations: closed},
-		func(ctx context.Context, req *mcp.CallToolRequest, in getContextIn) (*mcp.CallToolResult, any, error) {
+		logged(accessLog, log, "get_context", func(ctx context.Context, req *mcp.CallToolRequest, in getContextIn) (*mcp.CallToolResult, any, error) {
 			view, err := svc.Context(ctx, strings.TrimSpace(in.Model), clientName(req))
 			if err != nil {
 				return fail(log, "get_context", err)
 			}
 			return text(formatContext(view)), nil, nil
-		})
+		}))
 
 	mcp.AddTool(srv, &mcp.Tool{Name: "remember", Description: rememberDesc, Annotations: closed},
-		func(ctx context.Context, req *mcp.CallToolRequest, in rememberIn) (*mcp.CallToolResult, any, error) {
+		logged(accessLog, log, "remember", func(ctx context.Context, req *mcp.CallToolRequest, in rememberIn) (*mcp.CallToolResult, any, error) {
 			var happened time.Time
 			if strings.TrimSpace(in.HappenedAt) != "" {
 				var err error
@@ -140,10 +144,10 @@ func New(svc *memory.Service, opt Options) http.Handler {
 				return text("already remembered as " + id), nil, nil
 			}
 			return text("remembered as " + id), nil, nil
-		})
+		}))
 
 	mcp.AddTool(srv, &mcp.Tool{Name: "recall", Description: recallDesc, Annotations: closed},
-		func(ctx context.Context, req *mcp.CallToolRequest, in recallIn) (*mcp.CallToolResult, any, error) {
+		logged(accessLog, log, "recall", func(ctx context.Context, req *mcp.CallToolRequest, in recallIn) (*mcp.CallToolResult, any, error) {
 			results, err := svc.Recall(ctx, in.Query, in.Limit, in.Deep, in.SessionID)
 			if err != nil {
 				return fail(log, "recall", err)
@@ -159,10 +163,10 @@ func New(svc *memory.Service, opt Options) http.Handler {
 				writeGist(&b, r.Memory, r.Tier)
 			}
 			return text(b.String()), nil, nil
-		})
+		}))
 
 	mcp.AddTool(srv, &mcp.Tool{Name: "expand", Description: expandDesc, Annotations: closed},
-		func(ctx context.Context, req *mcp.CallToolRequest, in expandIn) (*mcp.CallToolResult, any, error) {
+		logged(accessLog, log, "expand", func(ctx context.Context, req *mcp.CallToolRequest, in expandIn) (*mcp.CallToolResult, any, error) {
 			results, err := svc.Expand(ctx, in.IDs, in.SessionID)
 			if err != nil {
 				return fail(log, "expand", err)
@@ -178,9 +182,9 @@ func New(svc *memory.Service, opt Options) http.Handler {
 				writeFull(&b, r)
 			}
 			return text(b.String()), nil, nil
-		})
+		}))
 
-	addAmendAndReflect(srv, svc, log, closed)
+	addAmendAndReflect(srv, svc, log, closed, accessLog)
 
 	return mcp.NewStreamableHTTPHandler(
 		func(*http.Request) *mcp.Server { return srv },
@@ -210,10 +214,42 @@ func text(s string) *mcp.CallToolResult {
 // reported without internals.
 func fail(log *slog.Logger, tool string, err error) (*mcp.CallToolResult, any, error) {
 	if errors.Is(err, memory.ErrInvalid) {
-		return nil, nil, errors.New(strings.TrimPrefix(err.Error(), memory.ErrInvalid.Error()+": "))
+		return nil, nil, inputError(strings.TrimPrefix(err.Error(), memory.ErrInvalid.Error()+": "))
 	}
 	log.Error("tool failed", "tool", tool, "err", err)
 	return nil, nil, errors.New("the memory server hit an internal error; nothing was changed")
+}
+
+// inputError is a mistake in the input, worded for the model. It still wraps
+// memory.ErrInvalid so that the access log can tell it from a failure.
+type inputError string
+
+func (e inputError) Error() string { return string(e) }
+func (e inputError) Unwrap() error { return memory.ErrInvalid }
+
+// logged wraps a tool handler so that each call leaves one line in the log:
+// the tool, how it ended, how long it took. It is a wrapper on the handler
+// and not a server middleware because by the time a middleware sees the
+// result, the SDK has turned the error into text and "invalid" can no longer
+// be told from "error" without reading that text. Nothing of the call itself
+// is logged.
+func logged[In any](on bool, log *slog.Logger, tool string, h mcp.ToolHandlerFor[In, any]) mcp.ToolHandlerFor[In, any] {
+	if !on {
+		return h
+	}
+	return func(ctx context.Context, req *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
+		start := time.Now()
+		res, out, err := h(ctx, req, in)
+		outcome := "ok"
+		switch {
+		case errors.Is(err, memory.ErrInvalid):
+			outcome = "invalid"
+		case err != nil || (res != nil && res.IsError):
+			outcome = "error"
+		}
+		log.Info("tool", "tool", tool, "outcome", outcome, "dur", time.Since(start))
+		return res, out, err
+	}
 }
 
 func formatContext(v memory.ContextView) string {

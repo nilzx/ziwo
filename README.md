@@ -59,6 +59,7 @@ Flags of `ziwo serve`:
 | `-addr` | `ZIWO_ADDR` | Address to listen on. Default `127.0.0.1:8377`. |
 | `-no-auth` | | Serve without checking tokens. Allowed only on a loopback address. |
 | `-behind-proxy` | | Set this when a reverse proxy on the same machine terminates TLS. Without it, requests that carry the public host name are refused as DNS rebinding. |
+| `-access-log` | | Log one line per request and per tool call (method, path, status, duration, whether the token opened the memory, client, tool and how it ended) to the server log. Off by default. Never logs what a memory says, a request body, a query or a token. |
 
 ### Semantic search (optional)
 

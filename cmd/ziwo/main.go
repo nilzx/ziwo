@@ -322,6 +322,7 @@ func serve(ctx context.Context, args []string) error {
 		reflectModel  = fs.String("reflect-model", env("ZIWO_REFLECT_MODEL", ""), "model that reflects in the background")
 		reflectIdle   = fs.Duration("reflect-idle", 30*time.Minute, "reflect in the background only after no conversation has used the memory for this long")
 		reflectMin    = fs.Int("reflect-min", 8, "reflect in the background only once this many moments wait")
+		accessLog     = fs.Bool("access-log", false, "log one line per request and per tool call, never what a memory says; for finding out why a client cannot connect")
 	)
 	params := paramFlags(fs)
 	if err := fs.Parse(args); err != nil {
@@ -371,7 +372,7 @@ func serve(ctx context.Context, args []string) error {
 	h := host.New(host.Config{
 		Dir: *dir, Params: *params, Embedder: emb,
 		Memory: mcfg,
-		NoAuth: *noAuth, BehindProxy: *behindProxy, Version: version, Logger: log,
+		NoAuth: *noAuth, BehindProxy: *behindProxy, Version: version, Logger: log, AccessLog: *accessLog,
 	})
 	defer h.Close()
 

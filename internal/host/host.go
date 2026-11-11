@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -182,6 +183,10 @@ type Config struct {
 	BehindProxy bool
 	Version     string
 	Logger      *slog.Logger
+	// AccessLog logs one line per request and one per tool call, to find out
+	// why a client cannot connect. Only figures and fixed words: never a
+	// body, an argument, a header value that holds a secret or a query.
+	AccessLog bool
 }
 
 // Host keeps memories open and routes requests to them.
@@ -256,6 +261,7 @@ func (h *Host) body(ctx context.Context, name string) (*body, error) {
 	}
 	b := &body{st: st, svc: svc, mcp: server.New(svc, server.Options{
 		BehindProxy: h.cfg.BehindProxy, Version: h.cfg.Version, Logger: log,
+		AccessLog: h.cfg.AccessLog,
 	})}
 	h.open[name] = b
 	return b, nil
@@ -270,8 +276,21 @@ func (h *Host) Handler() http.Handler {
 	})
 	mux.HandleFunc("/{name}/mcp", func(w http.ResponseWriter, r *http.Request) {
 		b, err := h.body(r.Context(), r.PathValue("name"))
+		ok := err == nil && h.allowed(r, b)
+		// Without auth, or when the memory could not be opened, no token
+		// was weighed, so the log says nothing about one.
+		if rec, _ := r.Context().Value(recordKey{}).(*record); rec != nil && !h.cfg.NoAuth && (err == nil || errors.Is(err, ErrUnknown)) {
+			switch {
+			case ok:
+				rec.auth = "ok"
+			case r.Header.Get("Authorization") == "":
+				rec.auth = "none"
+			default:
+				rec.auth = "rejected"
+			}
+		}
 		switch {
-		case err == nil && h.allowed(r, b):
+		case ok:
 			b.mcp.ServeHTTP(w, r)
 		case err != nil && !errors.Is(err, ErrUnknown):
 			h.log.Error("memory unavailable", "err", err)
@@ -286,7 +305,94 @@ func (h *Host) Handler() http.Handler {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 		}
 	})
-	return mux
+	if !h.cfg.AccessLog {
+		return mux
+	}
+	return h.logged(mux)
+}
+
+type recordKey struct{}
+
+// record is what the access log learns about one request while it is served.
+type record struct {
+	http.ResponseWriter
+	status int
+	auth   string // "", or ok, none, rejected
+}
+
+func (w *record) WriteHeader(code int) {
+	if w.status == 0 {
+		w.status = code
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *record) Write(p []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	return w.ResponseWriter.Write(p)
+}
+
+// Flush passes through. MCP's Streamable HTTP answers with server-sent
+// events and the SDK flushes after each one; a wrapper that hid the Flusher
+// would hold the stream back and clients would hang without a word.
+func (w *record) Flush() {
+	if w.status == 0 {
+		w.status = http.StatusOK // flushing sends the header
+	}
+	_ = http.NewResponseController(w.ResponseWriter).Flush()
+}
+
+// Unwrap lets http.ResponseController reach the real writer.
+func (w *record) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+// logged writes one line when each request has been served. A stream that
+// stays open is logged when it ends.
+func (h *Host) logged(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &record{ResponseWriter: w}
+		ctx := context.WithValue(r.Context(), recordKey{}, rec)
+		next.ServeHTTP(rec, r.WithContext(ctx))
+		if rec.status == 0 {
+			rec.status = http.StatusOK
+		}
+		// The method and the path are the client's to choose, like the
+		// headers below, so they are clipped too.
+		attrs := []any{"method", clip(r.Method, 16), "path", clip(r.URL.Path, 200), "status", rec.status, "dur", time.Since(start)}
+		if rec.auth != "" && r.URL.Path != "/healthz" {
+			attrs = append(attrs, "auth", rec.auth)
+		}
+		attrs = append(attrs, "agent", clip(r.UserAgent(), 120), "remote", h.remote(r))
+		if v := r.Header.Get("MCP-Protocol-Version"); v != "" {
+			attrs = append(attrs, "mcp_version", clip(v, 32))
+		}
+		h.log.Info("request", attrs...)
+	})
+}
+
+// remote is the client's address without its port. Behind a proxy that
+// address is the proxy's, so the first X-Forwarded-For entry is used.
+func (h *Host) remote(r *http.Request) string {
+	if h.cfg.BehindProxy {
+		if first, _, _ := strings.Cut(r.Header.Get("X-Forwarded-For"), ","); strings.TrimSpace(first) != "" {
+			return clip(strings.TrimSpace(first), 64)
+		}
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return clip(r.RemoteAddr, 64)
+	}
+	return host
+}
+
+// clip cuts s to at most n characters.
+func clip(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n])
+	}
+	return s
 }
 
 // allowed reports whether the request carries the memory's own token. The

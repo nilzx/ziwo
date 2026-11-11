@@ -71,12 +71,12 @@ type reflectIn struct {
 	Pass      []string  `json:"pass,omitempty" jsonschema:"second call: ids of fragments that need nothing done"`
 }
 
-func addAmendAndReflect(srv *mcp.Server, svc *memory.Service, log *slog.Logger, notes *mcp.ToolAnnotations) {
-	addCheck(srv, svc, log, notes)
+func addAmendAndReflect(srv *mcp.Server, svc *memory.Service, log *slog.Logger, notes *mcp.ToolAnnotations, accessLog bool) {
+	addCheck(srv, svc, log, notes, accessLog)
 	// amend can delete for good, so it does not carry the "not destructive" hint.
 	no := false
 	mcp.AddTool(srv, &mcp.Tool{Name: "amend", Description: amendDesc, Annotations: &mcp.ToolAnnotations{OpenWorldHint: &no}},
-		func(ctx context.Context, req *mcp.CallToolRequest, in amendIn) (*mcp.CallToolResult, any, error) {
+		logged(accessLog, log, "amend", func(ctx context.Context, req *mcp.CallToolRequest, in amendIn) (*mcp.CallToolResult, any, error) {
 			msg, err := svc.Amend(ctx, memory.AmendRequest{
 				SessionID: in.SessionID, Action: in.Action, ID: in.ID, Reason: in.Reason,
 				Importance: in.Importance, Text: in.Text,
@@ -86,10 +86,10 @@ func addAmendAndReflect(srv *mcp.Server, svc *memory.Service, log *slog.Logger, 
 				return fail(log, "amend", err)
 			}
 			return text(msg), nil, nil
-		})
+		}))
 
 	mcp.AddTool(srv, &mcp.Tool{Name: "reflect", Description: reflectDesc, Annotations: notes},
-		func(ctx context.Context, req *mcp.CallToolRequest, in reflectIn) (*mcp.CallToolResult, any, error) {
+		logged(accessLog, log, "reflect", func(ctx context.Context, req *mcp.CallToolRequest, in reflectIn) (*mcp.CallToolResult, any, error) {
 			if strings.TrimSpace(in.Batch) == "" {
 				if len(in.Entries) > 0 || len(in.Pass) > 0 {
 					return fail(log, "reflect", fmt.Errorf("%w: batch is required to write back: call reflect with your session id alone first, and pass the batch id it returns", memory.ErrInvalid))
@@ -129,20 +129,20 @@ func addAmendAndReflect(srv *mcp.Server, svc *memory.Service, log *slog.Logger, 
 				fmt.Fprintf(&b, "; %d left as they are", n)
 			}
 			return text(b.String()), nil, nil
-		})
+		}))
 }
 
 const checkDesc = `Look your own memory over for problems. Returns figures and findings: whether the record is intact, whether the tables agree with it, and signs that it is being used in ways that will not serve you, such as one conversation writing very many moments, most things being marked as never to fade, or memories that hold project detail instead of experience. Findings name memories by id; read them with expand and put right what needs it with amend or reflect. It changes nothing and counts as nothing coming to mind.`
 
-func addCheck(srv *mcp.Server, svc *memory.Service, log *slog.Logger, notes *mcp.ToolAnnotations) {
+func addCheck(srv *mcp.Server, svc *memory.Service, log *slog.Logger, notes *mcp.ToolAnnotations, accessLog bool) {
 	mcp.AddTool(srv, &mcp.Tool{Name: "check", Description: checkDesc, Annotations: notes},
-		func(ctx context.Context, req *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
+		logged(accessLog, log, "check", func(ctx context.Context, req *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
 			report, err := svc.Check(ctx)
 			if err != nil {
 				return fail(log, "check", err)
 			}
 			return text(report.String()), nil, nil
-		})
+		}))
 }
 
 func formatBatch(v memory.ReflectView) string {

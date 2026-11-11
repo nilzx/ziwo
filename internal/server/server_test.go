@@ -3,11 +3,13 @@ package server
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -678,5 +680,66 @@ func TestCheckingAndBeingBroughtBack(t *testing.T) {
 	}
 	if out := c.ok("get_context", nil); strings.Contains(out, "brought back") {
 		t.Errorf("the original says it was restored:\n%s", out)
+	}
+}
+
+// capture collects log output from several goroutines.
+type capture struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (c *capture) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.b.Write(p)
+}
+
+func (c *capture) toolLines() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []string
+	for _, l := range strings.Split(c.b.String(), "\n") {
+		if strings.Contains(l, "msg=tool ") {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+func TestAccessLogHasOneLineForEachToolCall(t *testing.T) {
+	buf := &capture{}
+	log := slog.New(slog.NewTextHandler(buf, nil))
+	in := serveWith(t, filepath.Join(t.TempDir(), "m.ziwo"), Options{AccessLog: true, Logger: log}, store.DefaultParams())
+	c := connect(t, in, "tester")
+
+	session := c.begin("test-model")
+	c.ok("remember", map[string]any{"session_id": session, "gist": "zorblaxquint gist", "body": "zorblaxquint body"})
+	if _, isErr := c.call("remember", map[string]any{"session_id": "s_nosuchone", "gist": "zorblaxquint gist", "body": "zorblaxquint body"}); !isErr {
+		t.Fatal("remember with an unknown session id should fail")
+	}
+
+	lines := buf.toolLines()
+	want := []string{"tool=get_context outcome=ok", "tool=remember outcome=ok", "tool=remember outcome=invalid"}
+	if len(lines) != len(want) {
+		t.Fatalf("want %d tool lines, got %d:\n%s", len(want), len(lines), strings.Join(lines, "\n"))
+	}
+	for i, w := range want {
+		if !strings.Contains(lines[i], w) || !strings.Contains(lines[i], "dur=") {
+			t.Errorf("line %d: want %q and dur: %s", i, w, lines[i])
+		}
+		if strings.Contains(lines[i], "zorblaxquint") || strings.Contains(lines[i], session) {
+			t.Errorf("line %d holds input: %s", i, lines[i])
+		}
+	}
+}
+
+func TestNoToolLinesWhenAccessLogIsOff(t *testing.T) {
+	buf := &capture{}
+	log := slog.New(slog.NewTextHandler(buf, nil))
+	in := serveWith(t, filepath.Join(t.TempDir(), "m.ziwo"), Options{Logger: log}, store.DefaultParams())
+	connect(t, in, "tester").begin("test-model")
+	if lines := buf.toolLines(); len(lines) != 0 {
+		t.Fatalf("tool lines although off: %v", lines)
 	}
 }
