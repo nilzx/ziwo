@@ -42,6 +42,15 @@ func run() error {
 		passagePrefix = flag.String("embed-passage-prefix", env("ZIWO_EMBED_PASSAGE_PREFIX", ""), "text the model expects before a stored passage")
 		minSimilarity = flag.Float64("min-similarity", 0.35, "drop matches by meaning below this cosine similarity; depends on the embedding model")
 	)
+	// How memories strengthen and fade. Changing any of these replays the
+	// event log at startup, so the whole memory follows the new values.
+	params := store.DefaultParams()
+	flag.Float64Var(&params.BaseStrengthDays, "strength-days", params.BaseStrengthDays, "strength of an ordinary memory, in days; it fades after about 1.2 times this without recall")
+	flag.Float64Var(&params.RecallBoost, "recall-boost", params.RecallBoost, "how much one recall can strengthen a memory: strength is multiplied by up to 1 plus this")
+	flag.Float64Var(&params.FadeBelow, "fade-below", params.FadeBelow, "retention below which only a memory's gist stays findable")
+	flag.Float64Var(&params.ArchiveBelow, "archive-below", params.ArchiveBelow, "retention below which a memory leaves ordinary recall")
+	flag.Float64Var(&params.CoreImportance, "core-importance", params.CoreImportance, "importance at or above which a memory never fades")
+	flag.Float64Var(&params.CoreFeeling, "core-feeling", params.CoreFeeling, "feeling intensity at or above which a memory never fades")
 	flag.Parse()
 	if flag.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q", flag.Arg(0))
@@ -51,7 +60,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	st, err := store.Open(ctx, *dbPath)
+	st, err := store.Open(ctx, *dbPath, params)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", *dbPath, err)
 	}
@@ -108,7 +117,7 @@ func run() error {
 		return err
 	}
 
-	memories, _, err := st.Counts(ctx)
+	tiers, err := st.TierCounts(ctx, time.Now())
 	if err != nil {
 		return err
 	}
@@ -117,7 +126,8 @@ func run() error {
 		search = "keyword + " + emb.Model()
 	}
 	log.Info("ziwo listening", "addr", ln.Addr().String(), "endpoint", "/mcp", "db", *dbPath,
-		"memories", memories, "search", search, "auth", token != "")
+		"memories", tiers.Total(), "core", tiers.Core, "active", tiers.Active, "faded", tiers.Faded,
+		"archived", tiers.Archived, "search", search, "auth", token != "")
 
 	served := make(chan error, 1)
 	go func() { served <- httpSrv.Serve(ln) }()

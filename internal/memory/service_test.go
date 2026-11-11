@@ -78,23 +78,42 @@ func (e *topicEmbedder) set(down bool, refuse string) {
 	e.mu.Unlock()
 }
 
+// testClock is a clock the test moves by hand. The service's background
+// workers read it too, so it is locked.
+type testClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *testClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *testClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(d)
+}
+
 type fixture struct {
-	t    *testing.T
-	path string
-	st   *store.Store
-	svc  *Service
-	now  time.Time
+	t     *testing.T
+	path  string
+	st    *store.Store
+	svc   *Service
+	clock *testClock
 }
 
 func start(t *testing.T, path string, emb embed.Embedder) *fixture {
 	t.Helper()
-	f := &fixture{t: t, path: path, now: time.Date(2026, 11, 11, 8, 0, 0, 0, time.UTC)}
-	st, err := store.Open(context.Background(), path)
+	f := &fixture{t: t, path: path, clock: &testClock{t: time.Date(2026, 11, 11, 8, 0, 0, 0, time.UTC)}}
+	st, err := store.Open(context.Background(), path, store.DefaultParams())
 	if err != nil {
 		t.Fatal(err)
 	}
 	f.st = st
-	svc, err := New(context.Background(), st, emb, Config{Now: func() time.Time { return f.now }})
+	svc, err := New(context.Background(), st, emb, Config{Now: f.clock.Now})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +139,7 @@ func (f *fixture) remember(gist, body string) string {
 	if err != nil {
 		f.t.Fatalf("remember %q: %v", gist, err)
 	}
-	f.now = f.now.Add(time.Minute)
+	f.clock.Advance(time.Minute)
 	return id
 }
 
@@ -133,11 +152,30 @@ func (f *fixture) sync() {
 
 func (f *fixture) recall(query string) []Result {
 	f.t.Helper()
-	rs, err := f.svc.Recall(context.Background(), query, 0, "conn-1")
+	rs, err := f.svc.Recall(context.Background(), query, 0, false, "conn-1")
 	if err != nil {
 		f.t.Fatalf("recall %q: %v", query, err)
 	}
 	return rs
+}
+
+func (f *fixture) deepRecall(query string) []Result {
+	f.t.Helper()
+	rs, err := f.svc.Recall(context.Background(), query, 0, true, "conn-1")
+	if err != nil {
+		f.t.Fatalf("deep recall %q: %v", query, err)
+	}
+	return rs
+}
+
+// get reads a memory without it counting as a recall.
+func (f *fixture) get(id string) store.Memory {
+	f.t.Helper()
+	ms, err := f.st.Get(context.Background(), []string{id})
+	if err != nil || len(ms) != 1 {
+		f.t.Fatalf("get %s: %v, %d memories", id, err, len(ms))
+	}
+	return ms[0]
 }
 
 func ids(rs []Result) []string {
@@ -215,7 +253,7 @@ func TestImportanceBreaksTies(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		f.now = f.now.Add(time.Minute)
+		f.clock.Advance(time.Minute)
 		return id
 	}
 	minor := write("小事：一样的正文", 0.1)
@@ -310,12 +348,8 @@ func TestRecallIsRecorded(t *testing.T) {
 	f.recall("纠正")
 	f.sync()
 
-	ms, err := f.svc.Expand(context.Background(), []string{id})
-	if err != nil || len(ms) != 1 {
-		t.Fatalf("expand: %v, %d memories", err, len(ms))
-	}
-	if ms[0].RecallCount != 2 {
-		t.Errorf("recall count = %d, want 2", ms[0].RecallCount)
+	if got := f.get(id).RecallCount; got != 2 {
+		t.Errorf("recall count = %d, want 2", got)
 	}
 }
 
@@ -324,12 +358,12 @@ func TestSessionResolution(t *testing.T) {
 	ctx := context.Background()
 	write := func(req RememberRequest) string {
 		t.Helper()
-		req.Gist, req.Body = "第 "+f.now.Format(time.TimeOnly)+" 条", "正文"
+		req.Gist, req.Body = "第 "+f.clock.Now().Format(time.TimeOnly)+" 条", "正文"
 		_, session, _, err := f.svc.Remember(ctx, req)
 		if err != nil {
 			t.Fatal(err)
 		}
-		f.now = f.now.Add(time.Minute)
+		f.clock.Advance(time.Minute)
 		return session
 	}
 
@@ -358,7 +392,7 @@ func TestSessionResolution(t *testing.T) {
 		t.Errorf("second write on that connection: session %s, want %s", got, web)
 	}
 	// Long after, with no connection to go by: a new session.
-	f.now = f.now.Add(2 * SessionWindow)
+	f.clock.Advance(2 * SessionWindow)
 	if got := write(RememberRequest{Client: "desktop"}); got == a {
 		t.Errorf("after the window: still session %s", a)
 	}
@@ -378,7 +412,7 @@ func TestContextShowsRecentMemoriesAndNewCarriers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if view.Total != 0 || len(view.Recent) != 0 || view.Carrier.First {
+	if view.Counts.Total() != 0 || len(view.Recent) != 0 || view.Carrier.First {
 		t.Errorf("empty memory: %+v", view)
 	}
 	var last string
@@ -390,8 +424,8 @@ func TestContextShowsRecentMemoriesAndNewCarriers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if view.Total != 10 || len(view.Recent) != 8 || view.Recent[0].ID != last {
-		t.Errorf("total=%d recent=%d first=%s, want 10, 8, %s", view.Total, len(view.Recent), view.Recent[0].ID, last)
+	if view.Counts.Active != 10 || len(view.Recent) != 8 || view.Recent[0].ID != last {
+		t.Errorf("active=%d recent=%d first=%s, want 10, 8, %s", view.Counts.Active, len(view.Recent), view.Recent[0].ID, last)
 	}
 	if !view.Carrier.First || len(view.Carrier.Earlier) != 1 || view.Carrier.Earlier[0] != "model-a" {
 		t.Errorf("carrier note = %+v, want model-b flagged as new after model-a", view.Carrier)
@@ -414,6 +448,8 @@ func TestRememberValidation(t *testing.T) {
 		"bad source":      {Gist: "g", Body: "b", Source: "dreamed"},
 		"importance > 1":  {Gist: "g", Body: "b", Importance: 1.5},
 		"importance < 0":  {Gist: "g", Body: "b", Importance: -0.1},
+		"intensity > 1":   {Gist: "g", Body: "b", Feeling: "f", Intensity: 1.2},
+		"intensity alone": {Gist: "g", Body: "b", Intensity: 0.5},
 		"too many people": {Gist: "g", Body: "b", People: distinct(MaxPeople + 1)},
 	} {
 		if _, _, _, err := f.svc.Remember(ctx, RememberRequest{RememberInput: in}); !errors.Is(err, ErrInvalid) {
@@ -431,19 +467,18 @@ func TestRememberValidation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("input at the limits was rejected: %v", err)
 	}
-	ms, _ := f.svc.Expand(ctx, []string{id})
-	m := ms[0]
+	m := f.get(id)
 	if m.Moment != "other" || m.Source != "lived" || m.Importance != 0.5 || len(m.People) != 1 || m.People[0] != "年糕" || m.Gist != long(MaxGistRunes) {
 		t.Errorf("defaults: moment=%s source=%s importance=%v people=%v", m.Moment, m.Source, m.Importance, m.People)
 	}
 
-	if _, err := f.svc.Recall(ctx, "  ", 0, ""); !errors.Is(err, ErrInvalid) {
+	if _, err := f.svc.Recall(ctx, "  ", 0, false, ""); !errors.Is(err, ErrInvalid) {
 		t.Errorf("blank query: err = %v", err)
 	}
-	if _, err := f.svc.Expand(ctx, nil); !errors.Is(err, ErrInvalid) {
+	if _, err := f.svc.Expand(ctx, nil, ""); !errors.Is(err, ErrInvalid) {
 		t.Errorf("no ids: err = %v", err)
 	}
-	if _, err := f.svc.Expand(ctx, distinct(MaxExpand+1)); !errors.Is(err, ErrInvalid) {
+	if _, err := f.svc.Expand(ctx, distinct(MaxExpand+1), ""); !errors.Is(err, ErrInvalid) {
 		t.Errorf("too many ids: err = %v", err)
 	}
 }

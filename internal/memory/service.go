@@ -37,7 +37,11 @@ const (
 	SessionWindow = 30 * time.Minute
 
 	embedBatchSize = 16
-	rrfK           = 60
+
+	// relevanceFloor drops results whose relevance is below this share of the
+	// best result's. Being returned strengthens a memory, so a memory that
+	// only brushes the query must not be returned.
+	relevanceFloor = 0.3
 )
 
 // Moments are the kinds of occasion worth remembering.
@@ -61,8 +65,13 @@ type Config struct {
 	EmbedMaxRunes int
 	// RecentLimit is how many recent memories a new session is shown. Default 8.
 	RecentLimit int
-	Logger      *slog.Logger
-	Now         func() time.Time
+	// CoreLimit is how many core memories a new session is shown. Default 12.
+	CoreLimit int
+	// SweepEvery is how often the vectors of archived memories are dropped.
+	// Default one hour.
+	SweepEvery time.Duration
+	Logger     *slog.Logger
+	Now        func() time.Time
 }
 
 // Service ties the store, the embedder and the vector index together.
@@ -99,6 +108,12 @@ func New(ctx context.Context, st *store.Store, emb embed.Embedder, cfg Config) (
 	if cfg.RecentLimit == 0 {
 		cfg.RecentLimit = 8
 	}
+	if cfg.CoreLimit == 0 {
+		cfg.CoreLimit = 12
+	}
+	if cfg.SweepEvery == 0 {
+		cfg.SweepEvery = time.Hour
+	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.New(slog.DiscardHandler)
 	}
@@ -124,8 +139,9 @@ func New(ctx context.Context, st *store.Store, emb embed.Embedder, cfg Config) (
 	}
 	bg, cancel := context.WithCancel(context.Background())
 	s.stop = cancel
-	s.wg.Add(1)
+	s.wg.Add(2)
 	go s.recallLoop(bg)
+	go s.sweepLoop(bg)
 	if emb != nil {
 		s.wg.Add(1)
 		go s.embedLoop(bg)
@@ -145,18 +161,24 @@ func (s *Service) Close() error {
 // Sync finishes all background work that is currently due. Tests and
 // maintenance commands use it; normal operation never needs to.
 func (s *Service) Sync(ctx context.Context) error {
-	if s.emb != nil {
-		for {
-			n, err := s.embedBatch(ctx)
-			if err != nil {
-				return err
-			}
-			if n == 0 {
-				break
-			}
+	if err := s.flushRecalls(ctx); err != nil {
+		return err
+	}
+	if err := s.Sweep(ctx); err != nil {
+		return err
+	}
+	if s.emb == nil {
+		return nil
+	}
+	for {
+		n, err := s.embedBatch(ctx)
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return nil
 		}
 	}
-	return s.flushRecalls(ctx)
 }
 
 // Indexed reports how many memories can be found by meaning.
@@ -166,29 +188,45 @@ func (s *Service) Indexed() int { return s.ix.Len() }
 type ContextView struct {
 	Session store.Session
 	Carrier store.CarrierNote
-	Recent  []store.Memory
-	Total   int64
+	Core    []store.Memory // memories that never fade, most important first
+	Recent  []store.Memory // newest memories not archived and not listed under Core
+	Counts  store.TierCounts
+	Now     time.Time
 }
 
 // Context starts a session for the given carrier and returns what it should
 // know before the conversation begins. conn identifies the MCP connection, so
-// later writes on it can be attached to this session.
+// later writes on it can be attached to this session. Being shown here does
+// not count as a recall.
 func (s *Service) Context(ctx context.Context, model, client, conn string) (ContextView, error) {
 	model, client = clip(model, 120), clip(client, 120)
-	sess, note, err := s.st.StartSession(ctx, s.cfg.Now(), model, client)
+	now := s.cfg.Now()
+	sess, note, err := s.st.StartSession(ctx, now, model, client)
 	if err != nil {
 		return ContextView{}, err
 	}
 	s.bind(conn, sess.ID)
-	recent, err := s.st.Recent(ctx, s.cfg.RecentLimit)
+	view := ContextView{Session: sess, Carrier: note, Now: now}
+	if view.Core, err = s.st.Core(ctx, s.cfg.CoreLimit); err != nil {
+		return ContextView{}, err
+	}
+	shown := make(map[string]bool, len(view.Core))
+	for _, m := range view.Core {
+		shown[m.ID] = true
+	}
+	recent, err := s.st.Recent(ctx, now, s.cfg.RecentLimit+len(view.Core))
 	if err != nil {
 		return ContextView{}, err
 	}
-	total, _, err := s.st.Counts(ctx)
-	if err != nil {
+	for _, m := range recent {
+		if !shown[m.ID] && len(view.Recent) < s.cfg.RecentLimit {
+			view.Recent = append(view.Recent, m)
+		}
+	}
+	if view.Counts, err = s.st.TierCounts(ctx, now); err != nil {
 		return ContextView{}, err
 	}
-	return ContextView{Session: sess, Carrier: note, Recent: recent, Total: total}, nil
+	return view, nil
 }
 
 // RememberRequest is a memory to write, plus what is known about who is writing.
@@ -216,10 +254,7 @@ func (s *Service) Remember(ctx context.Context, req RememberRequest) (id, sessio
 		return "", "", false, err
 	}
 	if !dup {
-		select {
-		case s.wake <- struct{}{}:
-		default:
-		}
+		s.wakeEmbedder()
 	}
 	return id, in.SessionID, dup, nil
 }
@@ -271,6 +306,12 @@ func clean(in store.RememberInput) (store.RememberInput, error) {
 	}
 	if in.Importance < 0 || in.Importance > 1 {
 		return in, invalid("importance must be between 0 and 1")
+	}
+	if in.Intensity < 0 || in.Intensity > 1 {
+		return in, invalid("feeling_intensity must be between 0 and 1")
+	}
+	if in.Intensity > 0 && in.Feeling == "" {
+		return in, invalid("feeling_intensity needs a feeling: say what registered, or leave both out")
 	}
 
 	var people []string
@@ -342,15 +383,22 @@ func (s *Service) boundTo(conn string) (string, bool) {
 // Result is one memory found by Recall.
 type Result struct {
 	store.Memory
+	Tier      store.Tier // at the time of the search, before it counted as a recall
 	Score     float64
 	ByKeyword bool
 	ByMeaning bool
 }
 
 // Recall searches by keyword and, when an embedder is configured, by meaning,
-// and returns the best matches. It records which memories came back so they
-// can be strengthened; that write happens after the answer is returned.
-func (s *Service) Recall(ctx context.Context, query string, limit int, conn string) ([]Result, error) {
+// and returns the best matches.
+//
+// An ordinary search finds active and core memories by anything they say and
+// faded ones by their gist or their meaning. A deep search also reads the
+// details of faded memories and reaches archived ones.
+//
+// Every memory returned counts as recalled: it is strengthened and, if it had
+// faded, becomes active again. That write happens after the answer is returned.
+func (s *Service) Recall(ctx context.Context, query string, limit int, deep bool, conn string) ([]Result, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, invalid("query is required")
@@ -363,6 +411,7 @@ func (s *Service) Recall(ctx context.Context, query string, limit int, conn stri
 		limit = MaxRecall
 	}
 	depth := max(4*limit, 20)
+	now := s.cfg.Now()
 
 	// Embedding the query is the slow part, so it runs alongside the keyword search.
 	var byMeaning chan []vector.Hit
@@ -381,16 +430,18 @@ func (s *Service) Recall(ctx context.Context, query string, limit int, conn stri
 		}()
 	}
 
-	byKeyword, err := s.st.SearchText(ctx, query, depth)
+	byKeyword, err := s.st.SearchText(ctx, query, now, deep, depth)
 	if err != nil {
 		return nil, err
 	}
 
-	// Reciprocal rank fusion: each list votes by rank, so the two kinds of
-	// score never need to be put on one scale.
+	// Each way of searching scores a memory between 0 and 1: keyword matches
+	// relative to the best keyword match, matches by meaning by their cosine
+	// similarity. Relevance is the average over the ways that found anything,
+	// so a memory found both ways outranks one found by a single way.
 	type cand struct {
-		score              float64
-		keyword, byMeaning bool
+		keyword, meaning   float64
+		byKeyword, byMeans bool
 	}
 	cands := make(map[int64]*cand)
 	get := func(n int64) *cand {
@@ -401,16 +452,28 @@ func (s *Service) Recall(ctx context.Context, query string, limit int, conn stri
 		}
 		return c
 	}
-	for rank, n := range byKeyword {
-		c := get(n)
-		c.score += 1 / float64(rrfK+rank+1)
-		c.keyword = true
+	ways := 0
+	if len(byKeyword) > 0 {
+		ways++
+		best := byKeyword[0].Score
+		for _, h := range byKeyword {
+			c := get(h.N)
+			c.byKeyword = true
+			c.keyword = 1
+			if best > 0 {
+				c.keyword = h.Score / best
+			}
+		}
 	}
 	if byMeaning != nil {
-		for rank, h := range <-byMeaning {
+		hits := <-byMeaning
+		if len(hits) > 0 {
+			ways++
+		}
+		for _, h := range hits {
 			c := get(h.Key)
-			c.score += 1 / float64(rrfK+rank+1)
-			c.byMeaning = true
+			c.byMeans = true
+			c.meaning = float64(h.Score)
 		}
 	}
 	if len(cands) == 0 {
@@ -425,16 +488,35 @@ func (s *Service) Recall(ctx context.Context, query string, limit int, conn stri
 	if err != nil {
 		return nil, err
 	}
-	results := make([]Result, 0, len(found))
+	type scored struct {
+		Result
+		relevance float64
+	}
+	var kept []scored
+	var top float64
 	for n, m := range found {
+		tier := m.Tier(now)
+		if tier == store.TierArchived && !deep {
+			continue // its vector has not been swept yet
+		}
 		c := cands[n]
-		results = append(results, Result{
+		relevance := (c.keyword + c.meaning) / float64(ways)
+		top = max(top, relevance)
+		kept = append(kept, scored{relevance: relevance, Result: Result{
 			Memory: m,
-			// Relevance leads; importance breaks near-ties.
-			Score:     c.score * (0.6 + 0.4*m.Importance),
-			ByKeyword: c.keyword,
-			ByMeaning: c.byMeaning,
-		})
+			Tier:   tier,
+			// Relevance leads. Importance and how well the memory has been
+			// retained scale it by at most a factor of three between them.
+			Score:     relevance * (0.7 + 0.3*m.Importance) * (0.5 + 0.5*m.Retention(now)),
+			ByKeyword: c.byKeyword,
+			ByMeaning: c.byMeans,
+		}})
+	}
+	results := make([]Result, 0, len(kept))
+	for _, k := range kept {
+		if k.relevance >= relevanceFloor*top {
+			results = append(results, k.Result)
+		}
 	}
 	sort.Slice(results, func(i, j int) bool {
 		if results[i].Score != results[j].Score {
@@ -445,20 +527,21 @@ func (s *Service) Recall(ctx context.Context, query string, limit int, conn stri
 	if len(results) > limit {
 		results = results[:limit]
 	}
+	if len(results) == 0 {
+		return nil, nil
+	}
 
 	ids := make([]string, len(results))
 	for i, r := range results {
 		ids[i] = r.ID
 	}
-	session, _ := s.boundTo(conn)
-	s.mu.Lock()
-	s.pending = append(s.pending, store.RecallNote{At: s.cfg.Now(), Session: session, Query: query, IDs: ids})
-	s.mu.Unlock()
+	s.noteRecall(now, conn, query, ids)
 	return results, nil
 }
 
-// Expand returns memories in full.
-func (s *Service) Expand(ctx context.Context, ids []string) ([]store.Memory, error) {
+// Expand returns memories in full, whatever tier they are in. Reading a
+// memory in full counts as recalling it.
+func (s *Service) Expand(ctx context.Context, ids []string, conn string) ([]Result, error) {
 	var want []string
 	for _, id := range ids {
 		if id = strings.TrimSpace(id); id != "" && !contains(want, id) {
@@ -471,7 +554,26 @@ func (s *Service) Expand(ctx context.Context, ids []string) ([]store.Memory, err
 	if len(want) > MaxExpand {
 		return nil, invalid("at most %d ids per call", MaxExpand)
 	}
-	return s.st.Get(ctx, want)
+	ms, err := s.st.Get(ctx, want)
+	if err != nil || len(ms) == 0 {
+		return nil, err
+	}
+	now := s.cfg.Now()
+	out := make([]Result, len(ms))
+	found := make([]string, len(ms))
+	for i, m := range ms {
+		out[i] = Result{Memory: m, Tier: m.Tier(now)}
+		found[i] = m.ID
+	}
+	s.noteRecall(now, conn, "", found)
+	return out, nil
+}
+
+func (s *Service) noteRecall(at time.Time, conn, query string, ids []string) {
+	session, _ := s.boundTo(conn)
+	s.mu.Lock()
+	s.pending = append(s.pending, store.RecallNote{At: at, Session: session, Query: query, IDs: ids})
+	s.mu.Unlock()
 }
 
 func (s *Service) recallLoop(ctx context.Context) {
@@ -504,7 +606,48 @@ func (s *Service) flushRecalls(ctx context.Context) error {
 		s.mu.Unlock()
 		return err
 	}
+	// A recalled memory that had been archived has no vector any more.
+	s.wakeEmbedder()
 	return nil
+}
+
+func (s *Service) sweepLoop(ctx context.Context) {
+	defer s.wg.Done()
+	tick := time.NewTicker(s.cfg.SweepEvery)
+	defer tick.Stop()
+	for {
+		if err := s.Sweep(ctx); err != nil && ctx.Err() == nil {
+			s.log.Warn("sweep failed; will retry", "err", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+	}
+}
+
+// Sweep drops the vectors of memories that have been archived. Fading and
+// archiving themselves need no sweep: a memory's tier is read off the clock.
+func (s *Service) Sweep(ctx context.Context) error {
+	dropped, err := s.st.DropArchivedVectors(ctx, s.cfg.Now())
+	if err != nil {
+		return err
+	}
+	for _, n := range dropped {
+		s.ix.Remove(n)
+	}
+	if len(dropped) > 0 {
+		s.log.Info("archived memories left the vector index", "count", len(dropped))
+	}
+	return nil
+}
+
+func (s *Service) wakeEmbedder() {
+	select {
+	case s.wake <- struct{}{}:
+	default:
+	}
 }
 
 func (s *Service) embedLoop(ctx context.Context) {
@@ -542,7 +685,7 @@ func (s *Service) embedBatch(ctx context.Context) (int, error) {
 	s.embedMu.Lock()
 	defer s.embedMu.Unlock()
 
-	fetched, err := s.st.Unembedded(ctx, s.emb.Model(), embedBatchSize+len(s.skip))
+	fetched, err := s.st.Unembedded(ctx, s.emb.Model(), s.cfg.Now(), embedBatchSize+len(s.skip))
 	if err != nil {
 		return 0, err
 	}

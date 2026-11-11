@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,17 +27,19 @@ type instance struct {
 
 func serve(t *testing.T, dbPath string) *instance {
 	t.Helper()
-	return serveWith(t, dbPath, Options{Token: testToken})
+	return serveWith(t, dbPath, Options{Token: testToken}, nil)
 }
 
-func serveWith(t *testing.T, dbPath string, opt Options) *instance {
+// serveWith starts a server whose memory reads the time from clock, or from
+// the real clock when clock is nil.
+func serveWith(t *testing.T, dbPath string, opt Options, clock func() time.Time) *instance {
 	t.Helper()
 	ctx := context.Background()
-	st, err := store.Open(ctx, dbPath)
+	st, err := store.Open(ctx, dbPath, store.DefaultParams())
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc, err := memory.New(ctx, st, nil, memory.Config{})
+	svc, err := memory.New(ctx, st, nil, memory.Config{Now: clock})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +151,7 @@ func TestTwoClientsShareOneMemory(t *testing.T) {
 	// A different client, running a different model, opens the same memory.
 	cli := connect(t, srv, "cli-agent")
 	out = cli.ok("get_context", map[string]any{"model": "model-b"})
-	for _, want := range []string{id, "corrected: 用户纠正了我对记忆系统的理解", "memories: 1",
+	for _, want := range []string{id, "corrected: 用户纠正了我对记忆系统的理解", "memories: 1 (0 core, 1 active",
 		"first time this memory is loaded by model-b", "model-a"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("cli get_context lacks %q:\n%s", want, out)
@@ -189,7 +192,7 @@ func TestTwoClientsShareOneMemory(t *testing.T) {
 	srv = serve(t, dbPath)
 	web := connect(t, srv, "web-connector")
 	out = web.ok("get_context", nil)
-	if !strings.Contains(out, "memories: 2") || !strings.Contains(out, id) || !strings.Contains(out, second) {
+	if !strings.Contains(out, "memories: 2 ") || !strings.Contains(out, id) || !strings.Contains(out, second) {
 		t.Errorf("after restart:\n%s", out)
 	}
 	if out = web.ok("recall", map[string]any{"query": "纠正"}); !strings.Contains(out, id) {
@@ -208,7 +211,7 @@ func TestMistakesComeBackAsToolErrors(t *testing.T) {
 	if out, isErr := c.call("remember", map[string]any{"body": "b"}); !isErr {
 		t.Errorf("missing gist was accepted: %q", out)
 	}
-	if out := c.ok("recall", map[string]any{"query": "anything"}); out != "no matching memories" {
+	if out := c.ok("recall", map[string]any{"query": "anything"}); !strings.HasPrefix(out, "no matching memories") {
 		t.Errorf("empty recall: %q", out)
 	}
 	if out := c.ok("expand", map[string]any{"ids": []string{"m_aaaaaaaa"}}); out != "no memories with those ids" {
@@ -311,8 +314,85 @@ func TestBehindProxyAcceptsThePublicHostName(t *testing.T) {
 	if got := post(direct); got != http.StatusForbidden {
 		t.Errorf("without BehindProxy: status %d, want 403", got)
 	}
-	proxied := serveWith(t, filepath.Join(t.TempDir(), "ziwo.db"), Options{Token: testToken, BehindProxy: true})
+	proxied := serveWith(t, filepath.Join(t.TempDir(), "ziwo.db"), Options{Token: testToken, BehindProxy: true}, nil)
 	if got := post(proxied); got != http.StatusOK {
 		t.Errorf("with BehindProxy: status %d, want 200", got)
+	}
+}
+
+// The whole life of a memory as a client sees it: written, faded to its gist,
+// gone from ordinary recall, and brought back.
+func TestMemoriesFadeAndComeBack(t *testing.T) {
+	// The server's goroutines read the clock while the test moves it.
+	var mu sync.Mutex
+	now := time.Date(2026, 11, 11, 8, 0, 0, 0, time.UTC)
+	clock := func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return now
+	}
+	advance := func(d time.Duration) {
+		mu.Lock()
+		defer mu.Unlock()
+		now = now.Add(d)
+	}
+	srv := serveWith(t, filepath.Join(t.TempDir(), "ziwo.db"), Options{Token: testToken}, clock)
+	c := connect(t, srv, "cli-agent")
+	c.ok("get_context", nil)
+
+	cat := memoryID.FindString(c.ok("remember", map[string]any{
+		"gist": "用户给我看了他的猫", "body": "一只橘猫，名字叫年糕。"}))
+	kept := memoryID.FindString(c.ok("remember", map[string]any{
+		"gist": "用户第一次把整个项目交给我", "body": "他说相信我的判断。",
+		"feeling": "被信任，这件事我不想忘", "feeling_intensity": 0.95}))
+
+	// Forty days on, with nothing recalled.
+	advance(40 * 24 * time.Hour)
+	out := c.ok("get_context", nil)
+	for _, want := range []string{"memories: 2 (1 core, 0 active, 1 faded, 0 archived)", "core, never fades:", kept, "(faded)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("day 40 get_context lacks %q:\n%s", want, out)
+		}
+	}
+	if out := c.ok("recall", map[string]any{"query": "年糕"}); !strings.Contains(out, "deep=true") || strings.Contains(out, cat) {
+		t.Errorf("day 40: an ordinary recall on a detail should find nothing and point at deep recall:\n%s", out)
+	}
+	if out := c.ok("recall", map[string]any{"query": "相信我的判断"}); !strings.Contains(out, kept) || !strings.Contains(out, "(core)") {
+		t.Errorf("day 40: the core memory should be found by its details:\n%s", out)
+	}
+
+	// A hundred days more: it has left ordinary recall altogether.
+	advance(100 * 24 * time.Hour)
+	out = c.ok("get_context", nil)
+	if !strings.Contains(out, "0 faded, 1 archived") || strings.Contains(out, cat) || !strings.Contains(out, "recall deep=true") {
+		t.Errorf("day 140 get_context:\n%s", out)
+	}
+	if out := c.ok("recall", map[string]any{"query": "猫"}); strings.Contains(out, cat) {
+		t.Errorf("day 140: an ordinary recall reached an archived memory:\n%s", out)
+	}
+	out = c.ok("recall", map[string]any{"query": "年糕", "deep": true})
+	if !strings.Contains(out, cat) || !strings.Contains(out, "(archived)") {
+		t.Fatalf("day 140: deep recall should find it, marked archived:\n%s", out)
+	}
+
+	// Having been recalled, it is active again. The write is asynchronous.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		out = c.ok("get_context", nil)
+		if strings.Contains(out, "1 active") || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !strings.Contains(out, "memories: 2 (1 core, 1 active, 0 faded, 0 archived)") || !strings.Contains(out, cat) {
+		t.Errorf("after the deep recall:\n%s", out)
+	}
+	if out := c.ok("recall", map[string]any{"query": "年糕"}); !strings.Contains(out, cat) || strings.Contains(out, "archived") {
+		t.Errorf("after the deep recall, an ordinary recall should find it again:\n%s", out)
+	}
+
+	// A feeling without words for it is refused.
+	if out, isErr := c.call("remember", map[string]any{"gist": "g", "body": "b", "feeling_intensity": 0.5}); !isErr || !strings.Contains(out, "feeling_intensity needs a feeling") {
+		t.Errorf("intensity without a feeling: isError=%v %q", isErr, out)
 	}
 }

@@ -15,7 +15,7 @@ var t0 = time.Date(2026, 11, 11, 8, 0, 0, 0, time.UTC)
 
 func open(t *testing.T, path string) *Store {
 	t.Helper()
-	s, err := Open(context.Background(), path)
+	s, err := Open(context.Background(), path, DefaultParams())
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -50,15 +50,29 @@ func remember(t *testing.T, s *Store, at time.Time, sess, gist, body string) str
 	return id
 }
 
+// searchIDs runs an ordinary search shortly after t0, while every memory the
+// tests write is still active.
 func searchIDs(t *testing.T, s *Store, query string) []string {
 	t.Helper()
+	return searchAt(t, s, query, t0.Add(time.Hour), false)
+}
+
+func searchAt(t *testing.T, s *Store, query string, now time.Time, deep bool) []string {
+	t.Helper()
 	ctx := context.Background()
-	ns, err := s.SearchText(ctx, query, 10)
+	hits, err := s.SearchText(ctx, query, now, deep, 10)
 	if err != nil {
 		t.Fatalf("search %q: %v", query, err)
 	}
-	if len(ns) == 0 {
+	if len(hits) == 0 {
 		return nil
+	}
+	ns := make([]int64, len(hits))
+	for i, h := range hits {
+		ns[i] = h.N
+		if h.Score <= 0 || (i > 0 && h.Score > hits[i-1].Score) {
+			t.Errorf("search %q: hit %d has score %v after %v; want positive and descending", query, i, h.Score, hits[max(i-1, 0)].Score)
+		}
 	}
 	byN, err := s.ByN(ctx, ns)
 	if err != nil {
@@ -386,14 +400,14 @@ func TestVectorsRoundTripPerModel(t *testing.T) {
 		t.Errorf("vectors for model-x = %v, want only %v", got, want)
 	}
 
-	pending, err := s.Unembedded(ctx, "model-x", 10)
+	pending, err := s.Unembedded(ctx, "model-x", t0, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(pending) != 1 || pending[0].ID != id2 {
 		t.Errorf("unembedded for model-x = %d memories, want just %s", len(pending), id2)
 	}
-	if pending, _ := s.Unembedded(ctx, "model-z", 10); len(pending) != 2 {
+	if pending, _ := s.Unembedded(ctx, "model-z", t0, 10); len(pending) != 2 {
 		t.Errorf("unembedded for an unused model = %d, want 2", len(pending))
 	}
 }

@@ -11,8 +11,9 @@ package store
 // change freely between releases without migrations.
 
 // derivedVersion identifies the layout of the derived tables and the logic
-// that fills them. Bump it whenever either changes.
-const derivedVersion = "1"
+// that fills them. Bump it whenever either changes. The forgetting parameters
+// are tracked alongside it, so a change to them also triggers a replay.
+const derivedVersion = "2"
 
 const logSchema = `
 CREATE TABLE IF NOT EXISTS events (
@@ -73,6 +74,7 @@ CREATE TABLE memories (
   moment           TEXT    NOT NULL,
   source           TEXT    NOT NULL,
   importance       REAL    NOT NULL,
+  intensity        REAL    NOT NULL, -- how strongly it registered, 0 to 1
   gist             TEXT    NOT NULL,
   body             TEXT    NOT NULL,
   outcome          TEXT    NOT NULL,
@@ -82,12 +84,20 @@ CREATE TABLE memories (
   pointer          TEXT    NOT NULL,
   hash             TEXT    NOT NULL,
   last_recalled_at INTEGER NOT NULL,
-  recall_count     INTEGER NOT NULL
+  recall_count     INTEGER NOT NULL,
+  -- Forgetting. See decay.go. A core memory never fades and has no crossings.
+  core             INTEGER NOT NULL, -- 0 or 1
+  strength         REAL    NOT NULL, -- days
+  fade_at          INTEGER,          -- when only the gist stays findable
+  archive_at       INTEGER           -- when it leaves ordinary search
 ) STRICT;
 CREATE INDEX memories_by_hash ON memories(hash, created_at);
+CREATE INDEX memories_by_archive ON memories(archive_at) WHERE core = 0;
 
 -- Keyword index. rowid = memories.n. Contentless: the text lives in memories.
+-- The gist has a column of its own because a faded memory is matched on its
+-- gist alone.
 CREATE VIRTUAL TABLE memories_fts USING fts5(
-  text, content='', contentless_delete=1, tokenize='unicode61'
+  gist, rest, content='', contentless_delete=1, tokenize='unicode61'
 );
 `

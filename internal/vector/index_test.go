@@ -132,3 +132,35 @@ func benchmarkSearch(b *testing.B, n, dim int) {
 func BenchmarkSearch1k(b *testing.B)   { benchmarkSearch(b, 1_000, 1024) }
 func BenchmarkSearch10k(b *testing.B)  { benchmarkSearch(b, 10_000, 1024) }
 func BenchmarkSearch100k(b *testing.B) { benchmarkSearch(b, 100_000, 1024) }
+
+func TestRemove(t *testing.T) {
+	ix := New()
+	for key, v := range map[int64][]float32{1: {1, 0, 0}, 2: {0, 1, 0}, 3: {0, 0, 1}} {
+		if err := ix.Add(key, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ix.Remove(1)
+	ix.Remove(1)  // already gone
+	ix.Remove(99) // never there
+	if ix.Len() != 2 {
+		t.Fatalf("len = %d, want 2", ix.Len())
+	}
+	if hits := ix.Search([]float32{1, 0, 0}, 3, 0.5); len(hits) != 0 {
+		t.Errorf("removed vector still found: %+v", hits)
+	}
+	// The vectors that stayed are still under their own keys.
+	for key, q := range map[int64][]float32{2: {0, 1, 0}, 3: {0, 0, 1}} {
+		if hits := ix.Search(q, 3, 0.5); len(hits) != 1 || hits[0].Key != key {
+			t.Errorf("after a removal, key %d: %+v", key, hits)
+		}
+	}
+	ix.Remove(3)
+	ix.Remove(2)
+	if ix.Len() != 0 || len(ix.Search([]float32{0, 1, 0}, 3, 0)) != 0 {
+		t.Errorf("index not empty after removing everything")
+	}
+	if err := ix.Add(4, []float32{0, 1, 0}); err != nil {
+		t.Errorf("add after emptying: %v", err)
+	}
+}

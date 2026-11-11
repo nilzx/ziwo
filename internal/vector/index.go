@@ -64,6 +64,26 @@ func (ix *Index) Add(key int64, v []float32) error {
 	return nil
 }
 
+// Remove forgets the vector stored under key, if there is one.
+func (ix *Index) Remove(key int64) {
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
+	i, ok := ix.pos[key]
+	if !ok {
+		return
+	}
+	last := len(ix.keys) - 1
+	if i != last {
+		// Fill the hole with the last vector, so the data stays dense.
+		copy(ix.data[i*ix.dim:(i+1)*ix.dim], ix.data[last*ix.dim:])
+		ix.keys[i] = ix.keys[last]
+		ix.pos[ix.keys[i]] = i
+	}
+	ix.keys = ix.keys[:last]
+	ix.data = ix.data[:last*ix.dim]
+	delete(ix.pos, key)
+}
+
 // Search returns up to k vectors closest to q, best first, leaving out any
 // whose cosine similarity is below min. A query of the wrong dimension, or a
 // zero query, matches nothing.
