@@ -128,6 +128,7 @@ func TestADamagedExportIsNotBroughtBack(t *testing.T) {
 		"what a memory says changed": strings.Replace(good, "keptmark4v", "keptmark4w", 1),
 		"an event removed":           strings.Join(append(append([]string{}, lines[:3]...), lines[4:]...), ""),
 		"two events swapped":         strings.Join(append([]string{lines[0], lines[2], lines[1]}, lines[3:]...), ""),
+		"its last events dropped":    strings.Join(append(append([]string{}, lines[:len(lines)-5]...), lines[len(lines)-2:]...), ""),
 		"not an export":              "hello\n",
 		"empty":                      "",
 		"another kind of export":     strings.Replace(good, `"ziwo_export":1`, `"ziwo_export":9`, 1),
@@ -142,6 +143,11 @@ func TestADamagedExportIsNotBroughtBack(t *testing.T) {
 				os.Remove(f)
 			}
 		}
+	}
+	// A change is pinned to the event where it was made.
+	_, err := Import(ctx, filepath.Join(dir, "bad.ziwo"), strings.NewReader(strings.Replace(good, "keptmark4v", "keptmark4w", 1)), t0)
+	if err == nil || !strings.Contains(err.Error(), "changed or damaged at event 3") {
+		t.Errorf("a changed memory: %v, want the event named", err)
 	}
 	if _, err := Import(ctx, filepath.Join(dir, "new.ziwo"), strings.NewReader(strings.Replace(good, `"log_format":3`, `"log_format":99`, 1)), t0); !errors.Is(err, ErrNewerFormat) {
 		t.Errorf("an export from a newer build: %v", err)

@@ -118,13 +118,19 @@ type fixture struct {
 
 func start(t *testing.T, path string, emb embed.Embedder) *fixture {
 	t.Helper()
+	return startWith(t, path, emb, Config{})
+}
+
+func startWith(t *testing.T, path string, emb embed.Embedder, cfg Config) *fixture {
+	t.Helper()
 	f := &fixture{t: t, path: path, clock: &testClock{t: time.Date(2026, 11, 11, 8, 0, 0, 0, time.UTC)}}
 	st, err := store.Open(context.Background(), path, store.Options{Params: testParams(), Create: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	f.st = st
-	svc, err := New(context.Background(), st, emb, Config{Now: f.clock.Now})
+	cfg.Now = f.clock.Now
+	svc, err := New(context.Background(), st, emb, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

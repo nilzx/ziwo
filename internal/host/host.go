@@ -173,7 +173,8 @@ type Config struct {
 	Params store.Params
 	// Embedder is shared by all memories. Nil means keyword search only.
 	Embedder embed.Embedder
-	// Memory is passed to each memory's service.
+	// Memory is passed to each memory's service. Its Reflector, if any, is
+	// shared by all memories.
 	Memory memory.Config
 	// NoAuth serves every memory without checking tokens. Only for a
 	// loopback address.

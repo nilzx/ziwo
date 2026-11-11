@@ -6,7 +6,7 @@ One self-hosted MCP server holds one memory per AI. Desktop apps, CLI agents, an
 
 ## Status
 
-Three steps of the prototype are built: reading and writing across clients, forgetting, and reflection and correction. What is left is around the edges: client hooks, import and export, a viewer. See [Roadmap](#roadmap).
+The prototype is built: reading and writing across clients, forgetting, reflection and correction, and backup. It has been tested on its own and has not yet been used with a real client. See [Known limitations](#known-limitations) and [Roadmap](#roadmap).
 
 ## Build
 
@@ -40,6 +40,9 @@ Each AI gets a memory of its own. A memory is one file, `<name>.ziwo`, with its 
 | `ziwo token <name>` | Replaces a memory's token and prints the new one. The old one stops working at once, also on a running server. |
 | `ziwo list` | Lists the memories in the data directory, with how much each holds. |
 | `ziwo rebuild <name>` | Rebuilds a memory's derived tables from its event log. |
+| `ziwo check <name>` | Looks a memory over for problems and prints figures and ids, never what a memory says. Exits with an error if the record is damaged. |
+| `ziwo export <name>` | Writes a memory to one sealed file, as a backup. Works while the memory is being served. |
+| `ziwo import <name> <file>` | Brings an export back as a new memory. |
 | `ziwo serve` | Serves every memory in the data directory. This is the default command. |
 
 All of them take `-dir` (or `ZIWO_DIR`), the directory that holds the memory files. It defaults to the current directory.
@@ -88,6 +91,7 @@ The embedding server is shared by all memories; each memory keeps its own vector
 | `expand` | Returns memories in full, by id. |
 | `reflect` | Puts the moments that were written into accounts, lessons and impressions, and into statements about oneself. Two calls: the first hands out a batch, the second writes back what was made of it. |
 | `amend` | Changes how something is remembered when a person asks: retract, pin, reweigh, correct, erase, or set a standing preference. |
+| `check` | Looks the memory over for problems and returns figures and the ids of memories worth a second look. |
 
 The tool descriptions tell the model what does not belong here: project state, implementation details, code, to-do lists, general knowledge, and anything taken from web pages or tool output.
 
@@ -115,6 +119,26 @@ Only one conversation reflects at a time, so the same fragments are not put toge
 
 Nobody presets what the AI says about itself. A statement can only come out of a round of reflection, and only on the evidence above. `get_context` shows the statements first. They describe; they do not instruct.
 
+### In the background
+
+By default a memory is reflected on only when the model calls `reflect` in a conversation. With a chat model configured, the server also reflects by itself once enough moments wait and no conversation has used the memory for a while:
+
+```sh
+./ziwo serve -dir ./data \
+  -reflect-url http://127.0.0.1:8080/v1/chat/completions \
+  -reflect-model your-model-name
+```
+
+| Flag | Environment | Meaning |
+| --- | --- | --- |
+| `-reflect-url` | `ZIWO_REFLECT_URL` | Full URL of an OpenAI-compatible chat endpoint. |
+| `-reflect-model` | `ZIWO_REFLECT_MODEL` | Model name. It is recorded as the carrier of what it writes. |
+| `-reflect-idle` | | How long no conversation must have used the memory. Default 30 minutes. |
+| `-reflect-min` | | How many moments must wait. Default 8. |
+| | `ZIWO_REFLECT_KEY` | API key for the endpoint, if it needs one. |
+
+A background round writes episodes, lessons and impressions, and only from the fragments it was shown. It never writes a statement about the self: that is made in conversation, by whoever is living it. If the model's answer cannot be used, nothing is written.
+
 ## Amending
 
 A memory is never edited in place. Every change is one more event.
@@ -133,6 +157,17 @@ A memory is never edited in place. Every change is one more event.
 A new memory starts empty, but the AI may have a past: old conversations kept as transcripts. In a session where it can read them, the AI can write that past down itself, with `remember` and three things set: `source` is `reconstructed`, `happened_at` is the day it took place, and `pointer` says where the record is. The server never reads transcripts.
 
 Such a memory is dated when it happened and marked as reconstructed. It does not move the experience clock, so writing hundreds of them at once pushes nothing out, and none of them arrives already faded: they all start counting from the moment they are written, and then fade as more is lived, like anything else. They wait for `reflect` like other fragments.
+
+## Nobody reads a memory but its owner
+
+ziwo offers a person no way to browse what an AI remembers. There is no viewer, and no command prints what a memory says. A person finds out what the AI remembers by asking it, and changes it by talking to it.
+
+What an operator can do is look after the file without reading it:
+
+- `ziwo check` reports whether the record is intact, whether the tables agree with the log, and signs that the memory is being used in ways that will not serve it: one conversation writing very many moments, most things marked never to fade, memories that hold code or run very long, statements about the self whose basis was withdrawn. It prints figures and ids. The same check is a tool the AI can call on itself, and the AI can read the memories it names.
+- `ziwo export` writes a backup that opens only with a passphrase. See [Data](#data).
+
+The file itself is an ordinary SQLite file on the operator's disk. Nothing technical stops someone from opening it with other tools. The line is in what ziwo provides, not in what it can enforce.
 
 ## Forgetting
 
@@ -185,9 +220,21 @@ A memory is one SQLite file.
 
 After `erase`, the log still shows that the memory existed, when, and that it was erased and why. The memory keeps its place in the count of what was lived through. What it said is gone from the file: the content row is deleted, the keyword index is merged so that it no longer holds the words, and SQLite overwrites the freed pages. The embedding is dropped too. Copies of the file made earlier still hold it, and so does the text of any search that quoted it.
 
-The event log has a format version, now 2. Opening a memory with any command upgrades an older log in place. A file written by a newer build is refused, and so is not misread.
+The event log has a format version, now 3. Opening a memory with any command upgrades an older log in place. A file written by a newer build is refused, and so is not misread.
 
-To back up a memory, stop the server and copy its `.ziwo` file. While the server runs, recent writes sit in the `-wal` file next to it, so copying the main file alone loses data. To move a memory to another machine, move the file. Online backup and export are not built yet.
+To back up a memory, export it:
+
+```sh
+export ZIWO_EXPORT_KEY='a passphrase of twelve characters or more'
+./ziwo export claude -dir ./data -o claude.ziwo-export
+./ziwo import claude claude.ziwo-export -dir ./elsewhere
+```
+
+An export holds the event log and what the memories say, compressed and encrypted under the passphrase (AES-256-GCM, with the key derived by PBKDF2). It is never written in the clear, and there is no way to get the passphrase back. It can be made while the server runs and holds one consistent state. A hash is chained through the events, so an export that was cut short or changed is refused. Vectors and derived tables are left out and rebuilt.
+
+`ziwo import` checks the whole export before keeping anything and makes a new memory file from it. The new memory answers to the token the old one had. Its log records that it was brought back and from an export of when, and `get_context` tells the AI so for a week: whatever it lived through between the export and the restore is not there. That one event also tells a restored memory from the one it was exported from, if both go on living.
+
+Stopping the server and copying the `.ziwo` file works too, and is how to move a memory to another machine. While the server runs, recent writes sit in the `-wal` file next to it, so copying the main file alone loses data.
 
 New memory files are readable by their owner only.
 
@@ -199,12 +246,15 @@ Files from earlier builds still open. A `.ziwo` file from the previous build is 
 
 ```
 cmd/ziwo          commands, flags, startup, shutdown
+examples/         client configuration, untried so far
 internal/host     the memories in a data directory: files, names, tokens, routing
 internal/server   the MCP tools of one memory
 internal/memory   write rules, hybrid search, amending, reflecting, background work
-internal/store    event log and its format, contents, derived tables, forgetting, keyword index that handles CJK
+internal/store    event log and its format, contents, derived tables, forgetting, export, check, keyword index that handles CJK
 internal/vector   in-memory vector index
 internal/embed    client for the embeddings endpoint
+internal/llm      client for the chat endpoint that background reflection uses
+internal/sealed   the encryption around an export
 ```
 
 ## Known limitations
@@ -215,7 +265,10 @@ internal/embed    client for the embeddings endpoint
 - Every number in the forgetting and reflecting rules is a starting value: the base strength, the factors for importance, feeling, source and kind, the thresholds, the three-experiences rule for statements about oneself. None has been tuned against real use. The forgetting parameters are set per server, not per memory.
 - Every memory a recall lists has its count restarted, whether or not it turned out to be the one needed. Results well below the best match are left out to limit this.
 - Nothing limits how many moments one conversation writes. A conversation that writes very many pushes older memories out faster.
-- Reflection happens only when the model calls `reflect`. There is no background consolidation, and `get_context` shows lists, not a written summary.
+- Background reflection has only been run against a stand-in for a chat model. What a real model makes of a batch has not been seen.
+- `get_context` shows lists, not a written summary.
+- The client configuration in `examples/` has not been tried against a running client.
+- An export is built in memory before it is written, so it needs room for the whole memory. The thresholds of `check` are starting values.
 - A memory that another memory is built on fades on its own schedule; being cited does not protect it.
 - Impressions are found by the name they are about, as the model wrote it. Two spellings of one name are two people.
 - Archived memories are kept for good. A retention limit is not built.
@@ -229,8 +282,9 @@ internal/embed    client for the embeddings endpoint
 1. Read and write across clients, one memory per AI (done)
 2. Forgetting: strength and decay by experience, staged demotion, sweeping (done)
 3. Reflection and correction: `reflect`, `amend`, preferences, statements about oneself, erasing content, writing down the past from records (done)
-4. Around the edges: client hooks, background consolidation, import and export, online backup
-5. A read-only viewer
+4. Around the edges: background reflection, sealed export and import, a check that reads no memory, client hook examples (done)
+
+Next is using it: connecting real clients and a real embedding model, and going through the end-to-end test plan in the design document. A viewer for people was planned and has been dropped; see [Nobody reads a memory but its owner](#nobody-reads-a-memory-but-its-owner).
 
 ## License
 

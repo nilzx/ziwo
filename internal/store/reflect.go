@@ -170,6 +170,19 @@ func (s *Store) FinishReflect(ctx context.Context, at time.Time, session, batch 
 	}
 }
 
+// AbandonReflect closes a round without writing anything back, if it is
+// still the one that is open.
+func (s *Store) AbandonReflect(ctx context.Context, session, batch string) error {
+	return s.write(ctx, func(tx *sql.Tx) error {
+		cur, ok, err := readLease(ctx, tx)
+		if err != nil || !ok || cur.Batch != batch || cur.Session != session {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `DELETE FROM meta WHERE key = ?`, metaReflect)
+		return err
+	})
+}
+
 // basis is a memory that an entry rests on, as far as the checks need it.
 type basis struct {
 	id, kind, state, source, session string

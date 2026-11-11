@@ -19,6 +19,7 @@ import (
 
 	"github.com/nilzx/ziwo/internal/embed"
 	"github.com/nilzx/ziwo/internal/host"
+	"github.com/nilzx/ziwo/internal/llm"
 	"github.com/nilzx/ziwo/internal/memory"
 	"github.com/nilzx/ziwo/internal/store"
 )
@@ -317,6 +318,10 @@ func serve(ctx context.Context, args []string) error {
 		queryPrefix   = fs.String("embed-query-prefix", env("ZIWO_EMBED_QUERY_PREFIX", ""), "text the model expects before a query")
 		passagePrefix = fs.String("embed-passage-prefix", env("ZIWO_EMBED_PASSAGE_PREFIX", ""), "text the model expects before a stored passage")
 		minSimilarity = fs.Float64("min-similarity", 0.35, "drop matches by meaning below this cosine similarity; depends on the embedding model")
+		reflectURL    = fs.String("reflect-url", env("ZIWO_REFLECT_URL", ""), "OpenAI-compatible chat endpoint for background reflection, e.g. http://127.0.0.1:8080/v1/chat/completions; empty means memories are reflected on in conversation only")
+		reflectModel  = fs.String("reflect-model", env("ZIWO_REFLECT_MODEL", ""), "model that reflects in the background")
+		reflectIdle   = fs.Duration("reflect-idle", 30*time.Minute, "reflect in the background only after no conversation has used the memory for this long")
+		reflectMin    = fs.Int("reflect-min", 8, "reflect in the background only once this many moments wait")
 	)
 	params := paramFlags(fs)
 	if err := fs.Parse(args); err != nil {
@@ -346,13 +351,26 @@ func serve(ctx context.Context, args []string) error {
 		search = "keyword + " + *embedModel
 	}
 
+	mcfg := memory.Config{MinSimilarity: float32(*minSimilarity), ReflectIdle: *reflectIdle, ReflectMin: *reflectMin}
+	reflection := "in conversation"
+	if *reflectURL != "" {
+		if *reflectModel == "" {
+			return errors.New("-reflect-model is required with -reflect-url")
+		}
+		if *reflectIdle <= 0 || *reflectMin <= 0 {
+			return errors.New("-reflect-idle and -reflect-min must be positive")
+		}
+		mcfg.Reflector = &llm.Chat{URL: *reflectURL, ModelName: *reflectModel, APIKey: os.Getenv("ZIWO_REFLECT_KEY")}
+		reflection = "in conversation, and in the background by " + *reflectModel
+	}
+
 	names, err := host.Names(*dir)
 	if err != nil {
 		return err
 	}
 	h := host.New(host.Config{
 		Dir: *dir, Params: *params, Embedder: emb,
-		Memory: memory.Config{MinSimilarity: float32(*minSimilarity)},
+		Memory: mcfg,
 		NoAuth: *noAuth, BehindProxy: *behindProxy, Version: version, Logger: log,
 	})
 	defer h.Close()
@@ -377,7 +395,7 @@ func serve(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	log.Info("ziwo listening", "addr", ln.Addr().String(), "dir", *dir, "search", search, "auth", !*noAuth)
+	log.Info("ziwo listening", "addr", ln.Addr().String(), "dir", *dir, "search", search, "reflection", reflection, "auth", !*noAuth)
 
 	served := make(chan error, 1)
 	go func() { served <- httpSrv.Serve(ln) }()

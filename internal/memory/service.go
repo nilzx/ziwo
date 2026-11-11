@@ -70,6 +70,13 @@ type Config struct {
 	// ReflectHold is how long a round of reflection keeps other sessions
 	// from starting one. Default 15 minutes.
 	ReflectHold time.Duration
+	// Reflector, when set, reflects in the background once ReflectMin
+	// fragments wait and no conversation has been active for ReflectIdle.
+	// Defaults: 8 fragments, 30 minutes, looked at every minute.
+	Reflector    Reflector
+	ReflectMin   int
+	ReflectIdle  time.Duration
+	ReflectEvery time.Duration
 	// SweepEvery is how often the vectors of archived memories are dropped.
 	// Default one hour.
 	SweepEvery time.Duration
@@ -94,6 +101,8 @@ type Service struct {
 
 	mu      sync.Mutex
 	pending []store.RecallNote
+
+	background string // session of background reflection; used by its worker alone
 }
 
 // New loads stored vectors into memory and starts the background workers.
@@ -118,6 +127,15 @@ func New(ctx context.Context, st *store.Store, emb embed.Embedder, cfg Config) (
 	}
 	if cfg.ReflectHold == 0 {
 		cfg.ReflectHold = 15 * time.Minute
+	}
+	if cfg.ReflectMin == 0 {
+		cfg.ReflectMin = 8
+	}
+	if cfg.ReflectIdle == 0 {
+		cfg.ReflectIdle = 30 * time.Minute
+	}
+	if cfg.ReflectEvery == 0 {
+		cfg.ReflectEvery = time.Minute
 	}
 	if cfg.SweepEvery == 0 {
 		cfg.SweepEvery = time.Hour
@@ -152,6 +170,10 @@ func New(ctx context.Context, st *store.Store, emb embed.Embedder, cfg Config) (
 	if emb != nil {
 		s.wg.Add(1)
 		go s.embedLoop(bg)
+	}
+	if cfg.Reflector != nil {
+		s.wg.Add(1)
+		go s.backgroundLoop(bg)
 	}
 	return s, nil
 }

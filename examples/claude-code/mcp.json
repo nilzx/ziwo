@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "ziwo": {
+      "type": "http",
+      "url": "https://memory.example.com/claude/mcp",
+      "headers": { "Authorization": "Bearer ${ZIWO_TOKEN}" }
+    }
+  }
+}
