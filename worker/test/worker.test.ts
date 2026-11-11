@@ -335,7 +335,7 @@ describe("the access log", () => {
         expect(Object.keys(p).sort()).toEqual(["dur_ms", "memory", "msg", "outcome", "tool"]);
       } else {
         expect(p.msg).toBe("request");
-        for (const k of Object.keys(p)) expect(["msg", "method", "path", "status", "dur_ms", "auth", "cred", "agent", "mcp_version"]).toContain(k);
+        for (const k of Object.keys(p)) expect(["msg", "method", "path", "status", "dur_ms", "auth", "cred", "agent", "mcp_version", "rpc"]).toContain(k);
       }
     }
     const tools = parsed.filter((p) => p.msg === "tool");
@@ -350,6 +350,10 @@ describe("the access log", () => {
     expect(requests.filter((p) => p.auth === "ok").every((p) => p.agent === "agent/1")).toBe(true);
     expect(requests.some((p) => p.mcp_version === modern)).toBe(true);
     expect(requests.some((p) => p.mcp_version === "2025-06-18")).toBe(true);
+    // What each request asked for is one of a fixed list of words.
+    const asked = new Set(requests.map((p) => p.rpc).filter((r) => r !== undefined));
+    expect(asked.has("tools/call")).toBe(true);
+    for (const r of asked) expect(["initialize", "notifications/initialized", "server/discover", "tools/list", "tools/call", "other"]).toContain(r);
   });
 
   it("logs an internal failure as an error, and tells the model nothing of it", async () => {

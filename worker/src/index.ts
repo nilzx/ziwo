@@ -84,12 +84,21 @@ interface Peek {
   initializeClient?: string; // the client's name in an initialize request
   metaClient?: string; // the client's name in a request's _meta (new generation)
   protocol?: string;
+  rpc?: string; // what the first message asks for: one of rpcWords, or "other"
 }
+
+// The requests the access log names. A method is the client's text: only
+// these words reach the log.
+const rpcWords: ReadonlySet<string> = new Set([
+  "initialize", "notifications/initialized", "server/discover", "ping",
+  "tools/list", "tools/call", "resources/list", "resources/templates/list", "prompts/list",
+]);
 
 function peek(body: unknown): Peek {
   const out: Peek = {};
   for (const m of Array.isArray(body) ? body : [body]) {
     const msg = record(m);
+    if (out.rpc === undefined && typeof msg?.method === "string") out.rpc = rpcWords.has(msg.method) ? msg.method : "other";
     const params = record(msg?.params);
     const meta = record(params?._meta);
     const metaName = record(meta?.[CLIENT_INFO_META_KEY])?.name;
@@ -172,6 +181,7 @@ async function serveMemory(request: Request, env: Env, name: string, note: Note)
   }
   const p = peek(parsed);
   note.protocol = request.headers.get("mcp-protocol-version") ?? p.protocol;
+  note.rpc = p.rpc;
   // New generation: every request names its client. Old generation: the
   // name given at initialize comes back in the session id. Else the name the
   // client registered for its grant, else the agent.
@@ -234,6 +244,7 @@ export default {
     // The consent page is a person's browser: its agent is not logged.
     if (note.oauth !== "authorize") fields.agent = clipText(request.headers.get("user-agent") ?? "", 120);
     if (note.protocol !== undefined) fields.mcp_version = clipText(note.protocol, 32);
+    if (note.rpc !== undefined) fields.rpc = note.rpc;
     // An OAuth step: which endpoint, the outcome, the check that refused it
     // and the memory a consent was for. Never a code, a token or a secret.
     if (note.oauth !== undefined) fields.oauth = note.oauth;

@@ -4,6 +4,7 @@
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
+import { writeUnasked } from "../src/mcp/format";
 import { parseWhen } from "../src/memory/clean";
 import type { Memory as MemoryObject } from "../src/memory-object";
 import { formatDate, formatDateTime, instantOf, knownZone } from "../src/zone";
@@ -64,7 +65,7 @@ describe("time zones through the tools", () => {
     const c = new Client("new", m);
     const ctx = await c.ok("get_context", { timezone: "Asia/Shanghai" });
     const s = idIn(ctx, "s_");
-    expect(ctx).toBe(`session: ${s}\nnow: 2026-11-11 16:00 +08:00 (Asia/Shanghai)\nNo memories yet. This is where it starts.\n`);
+    expect(ctx).toBe(`session: ${s}\nnow: 2026-11-11 16:00 +08:00 (Asia/Shanghai)\nNo memories yet. This is where it starts.\n${writeUnasked}`);
     const id = idIn(await c.ok("remember", { session_id: s, gist: "zone marker one", body: "b" }));
     // A date alone in that zone: Shanghai is a day ahead at 20:00 UTC.
     await setClock(m.name, at("2026-11-11T20:00:00Z"));

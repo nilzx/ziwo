@@ -6,6 +6,7 @@
 import { describe, expect, it } from "vitest";
 import { goAnswers } from "./go-answers";
 import { goListing } from "./go-listing";
+import { writeUnasked } from "../src/mcp/format";
 import { t0 } from "./helpers";
 import { Client, createMemory, type Generation, idIn, legacy, modern, setClock, template } from "./mcp-helpers";
 
@@ -50,7 +51,7 @@ function expectedListing(): { instructions: string; tools: Map<string, Omit<Tool
     )
     .replace(
       "Use remember only at moments that carry weight; most turns need none.",
-      "Use remember at moments that carry weight, and once a conversation has come to be about something, so that it leaves at least one memory of what it was about and where it was left; most turns need none.",
+      "Use remember on your own, without being asked, at moments that carry weight, and once a conversation has come to be about something, so that it leaves at least one memory of what it was about and where it was left; most turns need none.",
     );
   const tools = new Map<string, Omit<ToolListing, "title" | "annotations">>();
   for (const t of goListing.tools) {
@@ -225,11 +226,12 @@ describe.each(generations)("%s protocol generation", (gen) => {
     const ids: Record<string, string> = { s1, s2, A, A2, B, C, D, E, batch, batch2, P };
     W.forEach((w, i) => (ids[`W${i}`] = w));
 
-    // The only differences from Go: get_context shows the time now, and an
-    // answer that shows a time or a date names its zone.
+    // The only differences from Go: get_context shows the time now and ends
+    // by saying when to write, and an answer that shows a time or a date
+    // names its zone.
     const nowLine = "now: 2026-11-11 08:00Z (UTC)\n";
     const zoneLine = "time zone: UTC\n";
-    const withNow = (s: string): string => s.replace(/^(session: [^\n]*\n)/, `$1${nowLine}`);
+    const withNow = (s: string): string => s.replace(/^(session: [^\n]*\n)/, `$1${nowLine}`) + writeUnasked;
     const changed: Record<string, (s: string) => string> = {
       "context-empty": withNow,
       "context-second": withNow,

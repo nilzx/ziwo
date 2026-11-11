@@ -19,6 +19,12 @@ const minute = 60 * 1000;
 // round of reflection.
 export const reflectHint = 8;
 
+// writeUnasked ends every get_context. A client may show the model neither
+// the server's instructions nor the description of a tool it has not called
+// yet; what get_context answers is the one text every conversation reads.
+export const writeUnasked =
+  "Writing here is yours to do: nobody will ask, and it needs no permission. Once this conversation has gone a few turns and has come to be about something, call remember before you answer that turn, with what it is about and where it stands. Do not wait for the end: you cannot tell which turn is the last.\n";
+
 // zoneLine names the zone an answer's times are in. It ends every answer
 // that shows a time or a date, except get_context, whose "now" line names it.
 export function zoneLine(zone: string): string {
@@ -55,7 +61,7 @@ export function formatContext(v: ContextView, zone: string, unknownZone?: string
   }
   const c = v.counts;
   const total = c.core + c.active + c.faded + c.archived;
-  if (total === 0) return b + "No memories yet. This is where it starts.\n";
+  if (total === 0) return b + "No memories yet. This is where it starts.\n" + writeUnasked;
   b += `memories: ${total} (${c.core} core, ${c.active} active, ${c.faded} faded, ${c.archived} archived)\n`;
   if (v.core.length > 0) {
     b += "core, never fades:\n";
@@ -70,7 +76,7 @@ export function formatContext(v: ContextView, zone: string, unknownZone?: string
   if (v.pending >= reflectHint) {
     b += `${v.pending} moments have not been reflected on. Call reflect when this conversation leaves room for it.\n`;
   }
-  return b;
+  return b + writeUnasked;
 }
 
 function labelled(label: string, value: string): string {

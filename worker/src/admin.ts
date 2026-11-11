@@ -21,6 +21,8 @@ export interface Note {
   // token, or, on the consent page, the token or the admin secret.
   cred?: "token" | "oauth" | "admin";
   protocol?: string;
+  // What an MCP request asked for, as one of a fixed list of words.
+  rpc?: string;
   // An OAuth step: the endpoint, what it came to in fixed words, the check
   // that refused it, and the memory a consent page was for.
   oauth?: string;
