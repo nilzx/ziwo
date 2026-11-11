@@ -329,7 +329,7 @@ async function decide(request: Request, env: Env, issuer: string, note: Note): P
       return messagePage(400, lang, "invalid");
     }
     const client = clipText((await oauth.describeConsent(approved.request)).clientName, 120);
-    const metadata: GrantMetadata = { client, via };
+    const metadata: GrantMetadata = { client, via, instance };
     const props: GrantProps = { memory, client, instance };
     const { redirectTo } = await oauth.completeAuthorization({ request: approved.request, userId: memory, metadata, scope: [], props });
     note.outcome = "approved";

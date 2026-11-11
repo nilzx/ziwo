@@ -289,7 +289,7 @@ describe("the alarm", () => {
     expect(embedSettings({ AI: ai, EMBED_MODEL: "" })).toBeUndefined();
     expect(embedSettings({ AI: ai, EMBED_MODEL: "  " })).toBeUndefined();
     expect(embedSettings({ AI: ai })).toEqual({
-      model: "@cf/qwen/qwen3-embedding-0.6b", dims: 512, minSimilarity: 0.45, queryTimeoutMs: 3000, queryHedgeMs: 1000,
+      model: "@cf/qwen/qwen3-embedding-0.6b", dims: 512, minSimilarity: 0.45, queryTimeoutMs: 6000, queryHedgeMs: 1000,
     });
     expect(embedSettings({
       AI: ai, EMBED_MODEL: "@cf/baai/bge-m3", EMBED_DIMS: "1024", EMBED_MIN_SIMILARITY: "0.6", EMBED_QUERY_TIMEOUT_MS: "500", EMBED_QUERY_HEDGE_MS: "0",

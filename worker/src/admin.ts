@@ -255,15 +255,25 @@ interface GrantRow {
 // serveGrants lists the clients granted access to a memory through OAuth, or
 // revokes one grant (grant is its id). Revoking deletes the grant and its
 // tokens from KV; see the page's words for when a client feels it.
+//
+// A grant made for an earlier memory of the same name, one that a deletion's
+// listing came too soon to see, is not this memory's: it is left out and
+// revoked here. The object refuses its calls in any case.
 async function serveGrants(request: Request, env: Env, name: string, grant: string): Promise<Response> {
-  if ((await env.MEMORY.getByName(name).stats()) === "unknown") return noSuchMemory(name);
+  const instance = await env.MEMORY.getByName(name).instance();
+  if (instance === "unknown") return noSuchMemory(name);
   const oauth = helpersFor(env, new URL(request.url), name);
   const rows: GrantRow[] = [];
+  const stale: string[] = [];
   let cursor: string | undefined;
   do {
     const page = await oauth.listUserGrants(name, cursor === undefined ? {} : { cursor });
     for (const g of page.items) {
       const meta = (g.metadata ?? {}) as Partial<GrantMetadata>;
+      if (typeof meta.instance === "string" && meta.instance !== instance) {
+        stale.push(g.id);
+        continue;
+      }
       rows.push({
         id: g.id,
         client: typeof meta.client === "string" ? meta.client : g.clientId,
@@ -273,6 +283,7 @@ async function serveGrants(request: Request, env: Env, name: string, grant: stri
     }
     cursor = page.cursor;
   } while (cursor !== undefined);
+  for (const id of stale) await oauth.revokeGrant(id, name);
   if (grant === "") {
     rows.sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
     return json(200, { memory: name, grants: rows });

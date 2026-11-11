@@ -48,6 +48,9 @@ export interface GrantProps {
 export interface GrantMetadata {
   client: string;
   via: "admin" | "token";
+  // The memory's instance, as in the props: the admin API tells by it a
+  // grant left over from a memory deleted under the same name.
+  instance?: string;
 }
 
 function loopback(host: string): boolean {

@@ -217,6 +217,13 @@ describe("deleting a memory", () => {
     // A grant made for the new memory does reach it.
     const g2 = await grant(m.name);
     expect((await callTool(m.name, g2.tokens.access_token)).isError).toBe(false);
+    // The list of grants shows the new memory's alone, and revokes the one
+    // left over: its token is then refused before it reaches anything.
+    expect((await toolsList(m.name, g.tokens.access_token)).status).toBe(200);
+    expect(await grantIds(m.name)).toHaveLength(1);
+    expect((await toolsList(m.name, g.tokens.access_token)).status).toBe(401);
+    expect((await callTool(m.name, g2.tokens.access_token)).isError).toBe(false);
+    expect(await grantIds(m.name)).toHaveLength(1);
   });
 
   it("refuses a call let in just before the deletion, without building anything", async () => {

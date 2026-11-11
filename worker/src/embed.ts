@@ -14,7 +14,10 @@ export const defaultDims = 512;
 export const defaultMinSimilarity = 0.45;
 // Measured on the platform (2026-11-11): a call takes 0.6 to 1.4 s as a rule
 // and now and then more than 2 s; at 2 s one recall in nine went without.
-export const defaultQueryTimeoutMs = 3000;
+// With a second call beside a slow first (2026-11-12) two recalls in nine
+// still ran out 3 s: when the model is slow, both calls are. A recall that
+// waits is better than one that misses what it would have found, so 6 s.
+export const defaultQueryTimeoutMs = 6000;
 // A query's embedding is asked for a second time, beside the first call,
 // when the first has not answered after this long; 0 switches it off. The
 // first real client (2026-11-12) saw recalls of 2.0 to 3.3 s spent waiting
