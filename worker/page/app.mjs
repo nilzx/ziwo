@@ -296,6 +296,7 @@ async function memoryView(name) {
     issued === undefined ? null : tokenBox(name, issued),
     figures(m, address),
     connectSection(address, issued),
+    grantsSection(name),
     tokenSection(name),
     settingsSection(name, m),
     checkSection(name),
@@ -335,15 +336,60 @@ function tokenBox(name, token) {
     h("p", {}, done));
 }
 
+/** @param {{ text: string, code?: string }[]} steps */
+function stepList(steps) {
+  return h("ol", {}, steps.map((s) => h("li", {}, h("p", { text: s.text }), s.code === undefined ? null : codeBlock(s.code))));
+}
+
 /** @param {string} address @param {string | undefined} token */
 function connectSection(address, token) {
   const guide = connectGuide(t, { address, token });
   return h("section", {},
     h("h3", { text: t("connectTitle") }),
+    h("p", { text: t("connectIntro") }),
     h("p", { text: token === undefined ? t("connectNoToken", { placeholder: t("tokenPlaceholder") }) : t("connectWithToken") }),
     guide.map((c) =>
       h("details", {}, h("summary", { text: c.title }),
-        h("ol", {}, c.steps.map((s) => h("li", {}, h("p", { text: s.text }), s.code === undefined ? null : codeBlock(s.code)))))));
+        h("h4", { text: t("guideSignIn") }), stepList(c.oauth),
+        h("h4", { text: t("guideToken") }), stepList(c.token),
+        c.either.length === 0 ? null : [h("h4", { text: t("guideEither") }), stepList(c.either)])));
+}
+
+// The clients granted access through sign-in, each with a way to revoke it.
+/** @param {string} name */
+function grantsSection(name) {
+  const api = /** @type {ReturnType<typeof makeApi>} */ (state.api);
+  const out = outBox();
+  const list = h("div", { class: "scroll" });
+  const refresh = /** @type {HTMLButtonElement} */ (h("button", { type: "button", text: t("refresh") }));
+  const fill = async () => {
+    const grants = /** @type {{ grants: { id: string, client: string, createdAt: number, expiresAt: number | null }[] }} */ (await api.grants(name)).grants;
+    if (grants.length === 0) return list.replaceChildren(h("p", { text: t("grantsNone") }));
+    const head = [t("colClient"), t("colApproved"), t("colLapses"), t("colGrant"), ""].map((text) => h("th", { scope: "col", text }));
+    const rows = grants.map((g) => {
+      const button = /** @type {HTMLButtonElement} */ (h("button", { type: "button", text: t("revoke") }));
+      button.addEventListener("click", () => {
+        if (!confirm(t("confirmRevoke", { client: g.client, name }))) return;
+        act(button, out, async () => {
+          await api.revokeGrant(name, g.id);
+          await fill();
+          say(out, t("revoked"));
+        });
+      });
+      return h("tr", {}, h("th", { scope: "row", text: g.client }), h("td", { text: when(g.createdAt) }), // No expiry yet: approved, but the client has not fetched its tokens.
+        h("td", { text: g.expiresAt === null ? t("grantPending") : when(g.expiresAt) }),
+        h("td", {}, h("code", { text: g.id })), h("td", {}, button));
+    });
+    list.replaceChildren(h("table", {}, h("caption", { class: "sr", text: t("grantsTitle") }), h("thead", {}, h("tr", {}, head)), h("tbody", {}, rows)));
+  };
+  const load = () => act(refresh, out, async () => {
+    await fill();
+    say(out);
+  });
+  refresh.addEventListener("click", load);
+  load();
+  return h("section", {}, h("h3", { text: t("grantsTitle") }), h("p", { text: t("grantsIntro") }), h("p", { class: "warn", text: t("grantsRevokeWhen") }),
+    list, h("p", {}, refresh), out);
 }
 
 /** @param {string} name */
@@ -358,7 +404,7 @@ function tokenSection(name) {
       await render();
     });
   });
-  return h("section", {}, h("h3", { text: t("tokenSectionTitle") }), h("p", { text: t("tokenIntro") }), button, out);
+  return h("section", {}, h("h3", { text: t("tokenSectionTitle") }), h("p", { text: t("tokenIntro") }), h("p", { text: t("tokenGrantsNote") }), button, out);
 }
 
 /** @param {string} name @param {Record<string, any>} m */

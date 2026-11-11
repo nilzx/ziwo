@@ -1,16 +1,19 @@
 // The Worker in front of the memories. It holds no state: it routes a request
-// to the memory its path names, checks the memory's token with the memory's
-// Durable Object, and serves MCP itself, so that a long-lived stream such as
-// subscriptions/listen is held here and never by the object. Port of the
-// routing, the token check and the access log of Go's host.go.
+// to the memory its path names, checks the memory's fixed token with the
+// memory's Durable Object or an OAuth access token with KV (oauth.ts), and
+// serves MCP itself, so that a long-lived stream such as subscriptions/listen
+// is held here and never by the object. Port of the routing, the token check
+// and the access log of Go's host.go; OAuth is new.
 
 import { CLIENT_INFO_META_KEY, DEFAULT_MAX_REQUEST_BODY_SIZE, PROTOCOL_VERSION_META_KEY } from "@modelcontextprotocol/server";
 import { createMcpHandler } from "agents/mcp/server";
 import { type Note, serveAdmin } from "./admin";
+import { serveAuthorize } from "./consent";
 import { Directory } from "./directory";
 import { type EmbedEnv, queryEmbedding } from "./embed";
-import { base64url, bearer, encoder, notFound, plain, sha256Hex, unauthorized, validName } from "./http";
+import { base64url, bearer, encoder, notFound, plain, sha256Hex, validName } from "./http";
 import { Memory } from "./memory-object";
+import { challenge, isOAuthPath, isOAuthToken, issuerOf, oauthAccess, serveOAuth } from "./oauth";
 import { isPagePath, servePage } from "./page";
 import { buildServer } from "./mcp/server";
 import { clipText, type LogFields, logLine } from "./log";
@@ -24,6 +27,9 @@ export interface Env extends EmbedEnv {
   DIRECTORY: DurableObjectNamespace<Directory>;
   // The secret of the admin API; without it the admin API is not there.
   ADMIN_SECRET?: string;
+  // OAuth's clients, grants and tokens (workers-oauth-provider). Never read
+  // for a request that carries a memory's fixed token.
+  OAUTH_KV: KVNamespace;
   // Search by meaning, off without AI: see embed.ts. AI is the Workers AI
   // binding; EMBED_MODEL (set empty to switch it off), EMBED_DIMS,
   // EMBED_MIN_SIMILARITY and EMBED_QUERY_TIMEOUT_MS are vars.
@@ -95,28 +101,50 @@ function peek(body: unknown): Peek {
 }
 
 async function serveMemory(request: Request, env: Env, name: string, note: Note): Promise<Response> {
+  const url = new URL(request.url);
   const token = bearer(request);
   if (token === null) {
     note.auth = "missing";
-    return unauthorized();
+    return challenge(url, name, false);
   }
   if (token === undefined) {
     note.auth = "rejected";
-    return unauthorized();
+    return challenge(url, name, false);
   }
   const stub = env.MEMORY.getByName(name);
-  let access;
-  try {
-    access = await stub.authorize(await sha256Hex(token));
-  } catch (err) {
-    logLine({ msg: "memory unavailable", memory: name, error: err instanceof Error ? err.name : "unknown" });
-    return plain(503, "this memory cannot be opened right now; see the server log");
-  }
-  // The same answer for a wrong token and for a name that names nothing, so
-  // the names of memories do not leak.
-  if (access !== "ok") {
-    note.auth = "rejected";
-    return unauthorized();
+  // The client a grant was made for, when the token is an OAuth one.
+  let granted: string | undefined;
+  if (isOAuthToken(token)) {
+    note.cred = "oauth";
+    const issuer = issuerOf(url);
+    let props;
+    try {
+      props = issuer === undefined ? null : await oauthAccess(env, issuer, name, token);
+    } catch (err) {
+      logLine({ msg: "grants unavailable", memory: name, error: err instanceof Error ? err.name : "unknown" });
+      return plain(503, "this memory cannot be opened right now; see the server log");
+    }
+    if (props === null) {
+      note.auth = "rejected";
+      return challenge(url, name, true);
+    }
+    granted = props.client;
+  } else {
+    // A fixed token: as before, the memory's object alone decides.
+    note.cred = "token";
+    let access;
+    try {
+      access = await stub.authorize(await sha256Hex(token));
+    } catch (err) {
+      logLine({ msg: "memory unavailable", memory: name, error: err instanceof Error ? err.name : "unknown" });
+      return plain(503, "this memory cannot be opened right now; see the server log");
+    }
+    // The same answer for a wrong token and for a name that names nothing, so
+    // the names of memories do not leak.
+    if (access !== "ok") {
+      note.auth = "rejected";
+      return challenge(url, name, true);
+    }
   }
   note.auth = "ok";
 
@@ -137,11 +165,13 @@ async function serveMemory(request: Request, env: Env, name: string, note: Note)
   const p = peek(parsed);
   note.protocol = request.headers.get("mcp-protocol-version") ?? p.protocol;
   // New generation: every request names its client. Old generation: the
-  // name given at initialize comes back in the session id. Else the agent.
+  // name given at initialize comes back in the session id. Else the name the
+  // client registered for its grant, else the agent.
   const client =
     p.metaClient ??
     p.initializeClient ??
     (clientFromSessionId(request.headers.get("mcp-session-id")) ||
+      (granted ?? "") ||
       clipText(request.headers.get("user-agent") ?? "", 120));
 
   const embedQuery = queryEmbedding(env);
@@ -159,7 +189,7 @@ function healthz(request: Request): Response {
   return plain(405, "Method Not Allowed", { allow: "GET, HEAD" });
 }
 
-async function route(request: Request, env: Env, path: string, note: Note): Promise<Response> {
+async function route(request: Request, env: Env, ctx: ExecutionContext | undefined, path: string, note: Note): Promise<Response> {
   const parts = path.split("/");
   if (path === "/healthz") return healthz(request);
   // The admin page: static files, never a Durable Object.
@@ -170,15 +200,17 @@ async function route(request: Request, env: Env, path: string, note: Note): Prom
   }
   // /admin/...
   if (parts[0] === "" && parts[1] === "admin") return serveAdmin(request, env, parts, note);
+  // /oauth/... and /.well-known/...: the authorization server and metadata.
+  if (isOAuthPath(path)) return serveOAuth(request, env, ctx, path, note, (issuer) => serveAuthorize(request, env, issuer, note));
   return notFound();
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
     const start = Date.now();
     const path = new URL(request.url).pathname;
     const note: Note = {};
-    const res = await route(request, env, path, note);
+    const res = await route(request, env, ctx, path, note);
     // A stream is logged when its answer starts, not when it ends.
     const fields: LogFields = {
       msg: "request",
@@ -188,8 +220,16 @@ export default {
       dur_ms: Date.now() - start,
     };
     if (note.auth !== undefined) fields.auth = note.auth;
-    fields.agent = clipText(request.headers.get("user-agent") ?? "", 120);
+    if (note.cred !== undefined) fields.cred = note.cred;
+    // The consent page is a person's browser: its agent is not logged.
+    if (note.oauth !== "authorize") fields.agent = clipText(request.headers.get("user-agent") ?? "", 120);
     if (note.protocol !== undefined) fields.mcp_version = clipText(note.protocol, 32);
+    // An OAuth step: which endpoint, the outcome, the check that refused it
+    // and the memory a consent was for. Never a code, a token or a secret.
+    if (note.oauth !== undefined) fields.oauth = note.oauth;
+    if (note.outcome !== undefined) fields.outcome = note.outcome;
+    if (note.reason !== undefined) fields.reason = note.reason;
+    if (note.memory !== undefined) fields.memory = note.memory;
     logLine(fields);
     return res;
   },

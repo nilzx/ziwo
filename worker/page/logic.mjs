@@ -99,6 +99,10 @@ export function makeApi({ base = "", secret, fetch: doFetch = globalThis.fetch.b
     },
     /** @param {string} name @param {Uint8Array} bytes */
     importClear: (name, bytes) => call("POST", memoryPath(name, "import"), { body: bytes, type: "application/x-ndjson" }),
+    // The clients granted access through OAuth, and revoking one.
+    grants: (/** @type {string} */ name) => call("GET", memoryPath(name, "grants")),
+    /** @param {string} name @param {string} id */
+    revokeGrant: (name, id) => call("DELETE", memoryPath(name, `grants/${encodeURIComponent(id)}`)),
   };
 }
 

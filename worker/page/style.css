@@ -105,6 +105,9 @@ code, pre { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; fo
 details { margin: 0.5rem 0; border: 1px solid var(--line); border-radius: 6px; padding: 0.25rem 0.75rem; }
 summary { cursor: pointer; font-weight: 600; min-height: 2.25rem; display: list-item; padding-top: 0.4rem; }
 ol { padding-left: 1.25rem; }
+details h4 { margin: 1rem 0 0; }
+.actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--bg); }
 li > p { margin: 0.5rem 0 0.25rem; }
 @media (max-width: 30rem) {
   dl.figures { grid-template-columns: 1fr; }

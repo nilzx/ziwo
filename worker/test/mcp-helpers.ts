@@ -15,7 +15,7 @@ export const legacy = "2025-06-18";
 
 // testEnv is the Worker's environment; null leaves ADMIN_SECRET unset.
 export function testEnv(secret: string | null = adminSecret): Env {
-  const bindings = { MEMORY: env.MEMORY, DIRECTORY: env.DIRECTORY };
+  const bindings = { MEMORY: env.MEMORY, DIRECTORY: env.DIRECTORY, OAUTH_KV: env.OAUTH_KV };
   return secret === null ? bindings : { ...bindings, ADMIN_SECRET: secret };
 }
 

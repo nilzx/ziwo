@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, it } from "node:test";
-import { connectGuide, hookScript, hookSettings, mcpJson } from "../../page/connect.mjs";
+import { codexTomlOAuth, connectGuide, hookScript, hookSettings, mcpJson, mcpJsonOAuth } from "../../page/connect.mjs";
 import { makeH } from "../../page/dom.mjs";
 import {
   ApiError, defaultParams, errorText, makeApi, memoryHash, memoryPath, paramNames, pickLanguage, reportGroups, reportText, route,
@@ -86,10 +86,12 @@ describe("the admin API calls", () => {
     await api.check("a-1");
     await api.rebuild("a-1");
     await api.importClear("a-1", bytes);
+    await api.grants("a-1");
+    await api.revokeGrant("a-1", "Ab_-0123456789xy");
     const want = [
       ["GET", "/admin/memories"], ["GET", "/admin/memories/a-1"], ["POST", "/admin/memories/a-1"], ["POST", "/admin/memories/a-1/token"],
       ["PUT", "/admin/memories/a-1/settings"], ["GET", "/admin/memories/a-1/check"], ["POST", "/admin/memories/a-1/rebuild"],
-      ["POST", "/admin/memories/a-1/import"],
+      ["POST", "/admin/memories/a-1/import"], ["GET", "/admin/memories/a-1/grants"], ["DELETE", "/admin/memories/a-1/grants/Ab_-0123456789xy"],
     ];
     assert.deepEqual(calls.map((c) => [c.init.method, c.url]), want.map(([m, p]) => [m, `https://z.example${p}`]));
     for (const c of calls) {
@@ -232,18 +234,30 @@ describe("the page's decisions", () => {
 describe("the instructions for each client", () => {
   const address = "https://ziwo.example/alice/mcp";
   const token = "ziwo_TESTTOKEN0000000000000000000000000000000";
-  const all = (/** @type {ReturnType<typeof connectGuide>} */ g) => g.flatMap((c) => c.steps.flatMap((s) => [s.text, s.code ?? ""])).join("\n");
+  /** @typedef {ReturnType<typeof connectGuide>[number]} GuideClient */
+  const steps = (/** @type {GuideClient} */ c) => [...c.oauth, ...c.token, ...c.either];
+  const text = (/** @type {import("../../page/connect.mjs").Step[]} */ list) => list.flatMap((s) => [s.text, s.code ?? ""]).join("\n");
+  const all = (/** @type {GuideClient[]} */ g) => g.map((c) => text(steps(c))).join("\n");
 
   for (const lang of /** @type {const} */ (["en", "zh"])) {
-    it(`cover the four kinds of client, with the address, in ${lang}`, () => {
+    it(`cover the five kinds of client, sign-in first and with the address, in ${lang}`, () => {
       const g = connectGuide(words(lang), { address, token });
-      assert.deepEqual(g.map((c) => c.id), ["claude-code", "claude-apps", "codex", "other"]);
-      for (const c of g) assert.ok(all([c]).includes(address), c.id);
+      assert.deepEqual(g.map((c) => c.id), ["claude-code", "claude-apps", "chatgpt", "codex", "other"]);
+      for (const c of g) {
+        assert.ok(text(c.oauth).includes(address), c.id);
+        assert.ok(c.oauth.some((s) => s.text === texts[lang].signInPage), `${c.id} says what the sign-in page asks`);
+        assert.ok(c.token.length > 0, c.id);
+        // Signing in needs no token: none is in any of its steps.
+        assert.equal(text(c.oauth).includes(token), false, c.id);
+        assert.equal(text(c.oauth).includes(texts[lang].tokenPlaceholder), false, c.id);
+      }
+      // ChatGPT on the web has sign-in alone.
+      assert.equal(text(g[2].token).includes(token), false);
     });
 
     it(`put a token just issued where it is typed, and only a placeholder otherwise, in ${lang}`, () => {
       const g = connectGuide(words(lang), { address, token });
-      const codes = (/** @type {string} */ id) => g.find((c) => c.id === id)?.steps.map((s) => s.code ?? "").join("\n") ?? "";
+      const codes = (/** @type {string} */ id) => g.find((c) => c.id === id)?.token.map((s) => s.code ?? "").join("\n") ?? "";
       assert.ok(codes("claude-code").includes(`export ZIWO_TOKEN=${token}`));
       assert.ok(codes("claude-apps").includes(`Bearer ${token}`));
       assert.ok(codes("codex").includes(`export ZIWO_TOKEN=${token}`));
@@ -257,6 +271,18 @@ describe("the instructions for each client", () => {
     });
   }
 
+  it("give Claude Code and Codex, for sign-in, the same entries without a token", () => {
+    const g = connectGuide(words("en"), { address, token });
+    assert.deepEqual(JSON.parse(mcpJsonOAuth(address)), { mcpServers: { ziwo: { type: "http", alwaysLoad: true, url: address } } });
+    const { headers: _h, ...entry } = JSON.parse(mcpJson(address)).mcpServers.ziwo;
+    assert.deepEqual(JSON.parse(mcpJsonOAuth(address)).mcpServers.ziwo, entry);
+    assert.equal(g[0].oauth[0].code, mcpJsonOAuth(address));
+    assert.equal(g[0].oauth[1].code, "claude mcp login ziwo");
+    assert.equal(codexTomlOAuth(address), `[mcp_servers.ziwo]\nurl = "${address}"\n`);
+    assert.equal(g[3].oauth[0].code, codexTomlOAuth(address));
+    assert.equal(g[3].oauth[1].code, "codex mcp login ziwo");
+  });
+
   it("give Claude Code the entry, the hook and its settings that the Go build documents", async () => {
     const ex = path.join(repoRoot, "examples/claude-code");
     const example = JSON.parse(await readFile(path.join(ex, "mcp.json"), "utf8"));
@@ -268,15 +294,18 @@ describe("the instructions for each client", () => {
 
   it("give the ChatGPT desktop app and Codex a configuration that reads the token from ZIWO_TOKEN", () => {
     const g = connectGuide(words("en"), { address, token });
-    assert.equal(g[2].steps[0].code, `[mcp_servers.ziwo]\nurl = "${address}"\nbearer_token_env_var = "ZIWO_TOKEN"\n`);
+    assert.equal(g[3].token[0].code, `[mcp_servers.ziwo]\nurl = "${address}"\nbearer_token_env_var = "ZIWO_TOKEN"\n`);
   });
 
-  it("tell the Claude apps: no sign-in, the authorization header, the preference line, always allow the writing tools", () => {
+  it("tell the Claude apps: sign in now, or no sign-in with the authorization header; then the preference line and the writing tools", () => {
     const g = connectGuide(words("en"), { address, token });
-    const text = all([g[1]]);
-    for (const needle of ["Customize > Connectors", "custom connector", "No sign-in", "authorization", "personal preferences",
-      "get_context", "Always allow", "Remember a moment", "Reflect on what happened", "Amend a memory", "Erase a memory for good"]) {
-      assert.ok(text.includes(needle), needle);
+    for (const needle of ["Customize > Connectors", "Add custom connector", "Sign in now", "Use Claude's published identity", "Connect"]) {
+      assert.ok(text(g[1].oauth).includes(needle), needle);
+    }
+    for (const needle of ["No sign-in", "authorization", `Bearer ${token}`]) assert.ok(text(g[1].token).includes(needle), needle);
+    for (const needle of ["personal preferences", "get_context", "Always allow", "Remember a moment", "Reflect on what happened", "Amend a memory",
+      "Erase a memory for good"]) {
+      assert.ok(text(g[1].either).includes(needle), needle);
     }
   });
 

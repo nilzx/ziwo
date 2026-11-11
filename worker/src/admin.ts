@@ -1,13 +1,14 @@
 // The admin API: what the owner of a deployment uses to run it. Every route
 // needs the bearer ADMIN_SECRET and is not there without one. No route but
-// export returns what a memory says: figures, ids, names, settings and the
-// check report only.
+// export returns what a memory says: figures, ids, names, settings, the check
+// report and the clients granted access only.
 
 import { directoryName, type Listed } from "./directory";
 import { bearer, encoder, invalidNameMessage, json, type JSONRecord, newToken, notFound, sha256Hex, unauthorized, validName } from "./http";
 import type { Env } from "./index";
 import { logLine } from "./log";
 import { maxBytesInOneGo, tooManyBytes } from "./memory-object";
+import { type GrantMetadata, helpersFor } from "./oauth";
 import { readParams, type SettingsChange } from "./settings";
 import { reportText } from "./store/check";
 import type { LogStats } from "./store/types";
@@ -15,10 +16,19 @@ import type { LogStats } from "./store/types";
 // What the access log learns about one request while it is served.
 export interface Note {
   auth?: "ok" | "missing" | "rejected";
+  // Which credential was weighed: a memory's fixed token, an OAuth access
+  // token, or, on the consent page, the token or the admin secret.
+  cred?: "token" | "oauth" | "admin";
   protocol?: string;
+  // An OAuth step: the endpoint, what it came to in fixed words, the check
+  // that refused it, and the memory a consent page was for.
+  oauth?: string;
+  outcome?: string;
+  reason?: string;
+  memory?: string;
 }
 
-type Action = "create" | "describe" | "token" | "settings" | "check" | "rebuild" | "export" | "import";
+type Action = "create" | "describe" | "token" | "settings" | "check" | "rebuild" | "export" | "import" | "grants" | "revoke";
 
 // The routes under /admin/memories/<name>, by last segment and method.
 const memoryRoutes: Record<string, Record<string, Action>> = {
@@ -29,7 +39,11 @@ const memoryRoutes: Record<string, Record<string, Action>> = {
   rebuild: { POST: "rebuild" },
   export: { GET: "export" },
   import: { POST: "import" },
+  grants: { GET: "grants" },
 };
+
+// A grant's id, as the library draws it.
+const grantIdRE = /^[A-Za-z0-9_-]{16}$/;
 
 // adminAllowed compares the presented secret with ADMIN_SECRET in constant
 // time, by hashing both to the same length.
@@ -52,12 +66,18 @@ function errorName(err: unknown): string {
 export async function serveAdmin(request: Request, env: Env, parts: string[], note: Note): Promise<Response> {
   let action: Action | "list" | undefined;
   let name = "";
+  let grant = "";
   if (parts[2] === "memories") {
     if (parts.length === 3) {
       if (request.method === "GET") action = "list";
     } else if (parts[3] !== undefined && parts[3] !== "" && parts.length <= 5) {
       name = parts[3];
       action = memoryRoutes[parts[4] ?? ""]?.[request.method];
+    } else if (parts.length === 6 && parts[3] !== "" && parts[4] === "grants" && parts[5] !== "" && request.method === "DELETE") {
+      // /admin/memories/<name>/grants/<id>
+      name = parts[3]!;
+      grant = parts[5]!;
+      action = "revoke";
     }
   }
   if (action === undefined) return notFound();
@@ -67,7 +87,9 @@ export async function serveAdmin(request: Request, env: Env, parts: string[], no
   if (note.auth !== "ok") return unauthorized();
   if (action !== "list" && !validName(name)) return json(400, { error: invalidNameMessage(name) });
   try {
-    return action === "list" ? await list(env) : await serveMemoryAdmin(request, env, name, action);
+    if (action === "list") return await list(env);
+    if (action === "grants" || action === "revoke") return await serveGrants(request, env, name, grant);
+    return await serveMemoryAdmin(request, env, name, action);
   } catch (err) {
     logLine({ msg: "admin failed", memory: name, action, error: errorName(err) });
     return json(500, { error: "the request could not be served; see the server log" });
@@ -105,7 +127,7 @@ async function list(env: Env): Promise<Response> {
   return json(200, { memories: rows });
 }
 
-async function serveMemoryAdmin(request: Request, env: Env, name: string, action: Action): Promise<Response> {
+async function serveMemoryAdmin(request: Request, env: Env, name: string, action: Exclude<Action, "grants" | "revoke">): Promise<Response> {
   const stub = env.MEMORY.getByName(name);
   const endpoint = `/${name}/mcp`;
   switch (action) {
@@ -198,6 +220,46 @@ async function serveMemoryAdmin(request: Request, env: Env, name: string, action
       return json(201, out);
     }
   }
+}
+
+interface GrantRow {
+  id: string;
+  client: string;
+  createdAt: number;
+  // null until the client exchanges its code; the grant then lapses in 10 minutes.
+  expiresAt: number | null;
+}
+
+// serveGrants lists the clients granted access to a memory through OAuth, or
+// revokes one grant (grant is its id). Revoking deletes the grant and its
+// tokens from KV; see the page's words for when a client feels it.
+async function serveGrants(request: Request, env: Env, name: string, grant: string): Promise<Response> {
+  if ((await env.MEMORY.getByName(name).stats()) === "unknown") return noSuchMemory(name);
+  const oauth = helpersFor(env, new URL(request.url), name);
+  const rows: GrantRow[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await oauth.listUserGrants(name, cursor === undefined ? {} : { cursor });
+    for (const g of page.items) {
+      const meta = (g.metadata ?? {}) as Partial<GrantMetadata>;
+      rows.push({
+        id: g.id,
+        client: typeof meta.client === "string" ? meta.client : g.clientId,
+        createdAt: g.createdAt * 1000,
+        expiresAt: g.expiresAt === undefined ? null : g.expiresAt * 1000,
+      });
+    }
+    cursor = page.cursor;
+  } while (cursor !== undefined);
+  if (grant === "") {
+    rows.sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
+    return json(200, { memory: name, grants: rows });
+  }
+  if (!grantIdRE.test(grant) || !rows.some((r) => r.id === grant)) {
+    return json(404, { error: `no such grant: ${JSON.stringify(grant)}` });
+  }
+  await oauth.revokeGrant(grant, name);
+  return json(200, { memory: name, revoked: grant });
 }
 
 // stamp writes a time as Go's export file names do, in UTC: 20261111-080000.

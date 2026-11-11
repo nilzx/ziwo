@@ -6,9 +6,15 @@
   "name": "ziwo",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-01",
-  "compatibility_flags": ["nodejs_compat"],
+  // global_fetch_strictly_public: OAuth fetches the metadata document a client
+  // names as its id (CIMD); the flag keeps such a fetch on the public internet.
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   // The admin page's files are served as they are, never run by the Worker.
   "rules": [{ "type": "Text", "globs": ["**/page/*.html", "**/page/*.mjs", "**/page/*.css"], "fallthrough": true }],
+  // OAuth's clients, grants and tokens. No id: the first deploy creates the
+  // namespace (ziwo-oauth-kv) and later deploys find it on the Worker;
+  // wrangler dev simulates it.
+  "kv_namespaces": [{ "binding": "OAUTH_KV" }],
   "durable_objects": {
     "bindings": [
       { "name": "MEMORY", "class_name": "Memory" },

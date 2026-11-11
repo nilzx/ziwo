@@ -137,10 +137,14 @@ describe("admin API", () => {
 describe("tokens", () => {
   it("answers a missing, a wrong and a malformed token as the Go host does, and lets the right one in", async () => {
     const m = await createMemory();
+    // As Go's host, with the pointer to the memory's OAuth metadata added, and
+    // invalid_token when a bearer token was presented (RFC 6750, section 3).
+    const metadata = `resource_metadata="${origin}/.well-known/oauth-protected-resource/${m.name}/mcp"`;
     for (const auth of [null, "Bearer wrong", `Bearer ${m.token}x`, `Basic ${m.token}`, `Bearer`, ""]) {
       const res = await mcpPost(m.name, auth);
       expect(res.status, String(auth)).toBe(401);
-      expect(res.headers.get("www-authenticate")).toBe('Bearer realm="ziwo"');
+      const presented = auth !== null && auth.toLowerCase().startsWith("bearer");
+      expect(res.headers.get("www-authenticate"), String(auth)).toBe(`Bearer realm="ziwo", ${metadata}${presented ? ', error="invalid_token"' : ""}`);
       expect(res.headers.get("content-type")).toBe("text/plain; charset=utf-8");
       expect(await res.text()).toBe("unauthorized\n");
     }
@@ -164,12 +168,15 @@ describe("tokens", () => {
 
   it("answers a name never created exactly as a wrong token, and its database stays empty", async () => {
     const m = await createMemory();
-    const wrong = await mcpPost(m.name, "Bearer ziwo_wrong");
     const name = freshName();
-    for (const auth of [null, "Bearer ziwo_wrong", `Bearer ${m.token}`]) {
+    // The answer at the name never created, with the memory's own name put
+    // back where the metadata address holds it, is the answer at the memory.
+    const same = (headers: Headers) => [...headers.entries()].map(([k, v]) => [k, v.replaceAll(`/${name}/mcp`, `/${m.name}/mcp`)]);
+    for (const [auth, there] of [[null, null], ["Bearer ziwo_wrong", "Bearer ziwo_wrong"], [`Bearer ${m.token}`, "Bearer ziwo_wrong"]] as const) {
+      const wrong = await mcpPost(m.name, there);
       const res = await mcpPost(name, auth);
       expect(res.status).toBe(wrong.status);
-      expect([...res.headers.entries()]).toEqual([...wrong.headers.entries()]);
+      expect(same(res.headers)).toEqual([...wrong.headers.entries()]);
       expect(await res.text()).toBe("unauthorized\n");
     }
     expect(await tablesOf(name)).toEqual([]);
@@ -328,7 +335,7 @@ describe("the access log", () => {
         expect(Object.keys(p).sort()).toEqual(["dur_ms", "memory", "msg", "outcome", "tool"]);
       } else {
         expect(p.msg).toBe("request");
-        for (const k of Object.keys(p)) expect(["msg", "method", "path", "status", "dur_ms", "auth", "agent", "mcp_version"]).toContain(k);
+        for (const k of Object.keys(p)) expect(["msg", "method", "path", "status", "dur_ms", "auth", "cred", "agent", "mcp_version"]).toContain(k);
       }
     }
     const tools = parsed.filter((p) => p.msg === "tool");
