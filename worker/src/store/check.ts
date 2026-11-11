@@ -124,9 +124,17 @@ export function checkStore(db: Db): Report {
 // checkLog checks the record itself: the events and what the memories say.
 function checkLog(c: Checker, db: Db): void {
   const format = db.getMeta(metaLogFormat) ?? "";
-  const ofKind = (kind: string): number => c.one(`SELECT count(*) FROM events WHERE kind = ?`, kind);
+  // One pass over the log for all the counts, not one per kind.
+  const kinds = new Map<string, number>();
+  let events = 0;
+  for (const row of db.all(`SELECT kind, count(*) AS c FROM events GROUP BY kind`)) {
+    const n = Number(row.c);
+    kinds.set(text(row.kind), n);
+    events += n;
+  }
+  const ofKind = (kind: string): number => kinds.get(kind) ?? 0;
   c.figure("log",
-    `format ${format}, ${c.one(`SELECT count(*) FROM events`)} events: ${ofKind(kindSession)} sessions, ` +
+    `format ${format}, ${events} events: ${ofKind(kindSession)} sessions, ` +
     `${ofKind(kindRemember)} memories written, ${ofKind(kindRecall)} listings, ${ofKind(kindExpand)} readings, ` +
     `${ofKind(kindAmend)} amendments, ${ofKind(kindReflect)} rounds of reflection, ${ofKind(kindErase)} erased, ` +
     `${ofKind(kindRestore)} restores`);
@@ -135,6 +143,7 @@ function checkLog(c: Checker, db: Db): void {
   const lost: string[] = [];
   const altered: string[] = [];
   const lingering: string[] = [];
+  const said = new Set<string>(); // memories in the log whose content is there
   // One row at a time: this reads every memory's content.
   db.each(
     `SELECT json_extract(e.payload, '$.id') AS id, COALESCE(json_extract(e.payload, '$.hash'), '') AS hash, c.data AS data
@@ -143,6 +152,7 @@ function checkLog(c: Checker, db: Db): void {
     (row) => {
       const id = text(row.id);
       const data = row.data === null ? null : text(row.data);
+      if (data !== null) said.add(id);
       if (data === null && !erased.has(id)) lost.push(id);
       else if (data !== null && erased.has(id)) lingering.push(id);
       else if (data !== null && sha256Hex(data) !== text(row.hash)) altered.push(id);
@@ -159,8 +169,11 @@ function checkLog(c: Checker, db: Db): void {
   if (lingering.length > 0) {
     c.find(LevelProblem, "erase-incomplete", lingering, `${lingering.length} erased memories still have their content in the file`);
   }
-  const orphaned = c.one(`SELECT count(*) FROM contents c WHERE NOT EXISTS
-    (SELECT 1 FROM events e WHERE e.kind = ? AND json_extract(e.payload, '$.id') = c.id)`, kindRemember);
+  // Content that belongs to no memory in the log is what is left of the
+  // contents once those seen above are taken away. Go asks the database, for
+  // each piece of content, whether some event names it; with no index on a
+  // payload's id that reads the whole log once per memory.
+  const orphaned = c.one(`SELECT count(*) FROM contents`) - said.size;
   if (orphaned > 0) c.find(LevelProblem, "content-orphaned", [], `${orphaned} pieces of content belong to no memory in the log`);
   c.flag(LevelProblem, "session-unknown", "memories were written in a conversation the log does not know",
     `SELECT json_extract(payload, '$.id') FROM events WHERE kind = ?1 AND json_extract(payload, '$.session') NOT IN

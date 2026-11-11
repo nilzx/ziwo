@@ -190,6 +190,7 @@ describe("scale", () => {
             ],
           }))).toHaveLength(3);
         }),
+        check: measure(() => obj.check()),
         tiers: obj.store.tierCounts(obj.store.clock()),
       };
     });
@@ -204,6 +205,9 @@ describe("scale", () => {
     // A search reads its matches and looks each one up, not the whole table.
     expect(figures.recall.rowsRead).toBeLessThan(1000);
     expect(figures.expand.rowsRead).toBeLessThan(40);
+    // The check walks the log and the tables a fixed number of times; it
+    // must never read the log once per memory.
+    expect(figures.check.rowsRead).toBeLessThan(40 * 2001);
     // Amending reads and writes the memory it is about, and little else.
     expect(figures.amendPin.rowsRead).toBeLessThan(40);
     expect(figures.amendCorrect.rowsRead).toBeLessThan(60);
