@@ -6,52 +6,22 @@
 
 import { CLIENT_INFO_META_KEY, DEFAULT_MAX_REQUEST_BODY_SIZE, PROTOCOL_VERSION_META_KEY } from "@modelcontextprotocol/server";
 import { createMcpHandler } from "agents/mcp/server";
+import { type Note, serveAdmin } from "./admin";
+import { Directory } from "./directory";
+import { base64url, bearer, encoder, notFound, plain, sha256Hex, unauthorized, validName } from "./http";
 import { Memory } from "./memory-object";
 import { buildServer } from "./mcp/server";
 import { clipText, type LogFields, logLine } from "./log";
 
-export { Memory };
+export { Directory, Memory };
+export { newToken, validName } from "./http";
 
 export interface Env {
   MEMORY: DurableObjectNamespace<Memory>;
+  // The list of memories the admin API keeps; never reached by MCP.
+  DIRECTORY: DurableObjectNamespace<Directory>;
   // The secret of the admin API; without it the admin API is not there.
   ADMIN_SECRET?: string;
-}
-
-// The name rule of Go's host: lower case so a name means the same thing
-// everywhere, and plain enough to sit in a URL path.
-const nameRE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
-
-export function validName(name: string): boolean {
-  return nameRE.test(name) && name !== "healthz";
-}
-
-function invalidNameMessage(name: string): string {
-  return `invalid memory name ${JSON.stringify(name)}: use 1 to 32 lower-case letters, digits, - or _, starting with a letter or digit`;
-}
-
-// plain answers as Go's http.Error does.
-function plain(status: number, text: string, headers: Record<string, string> = {}): Response {
-  return new Response(text + "\n", {
-    status,
-    headers: { "content-type": "text/plain; charset=utf-8", "x-content-type-options": "nosniff", ...headers },
-  });
-}
-
-const notFound = (): Response => plain(404, "404 page not found");
-const unauthorized = (): Response => plain(401, "unauthorized", { "www-authenticate": 'Bearer realm="ziwo"' });
-
-const encoder = new TextEncoder();
-
-async function sha256Hex(s: string): Promise<string> {
-  const d = await crypto.subtle.digest("SHA-256", encoder.encode(s));
-  return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-function base64url(bytes: Uint8Array): string {
-  let bin = "";
-  for (const b of bytes) bin += String.fromCharCode(b);
-  return btoa(bin).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
 }
 
 function fromBase64url(s: string): Uint8Array | undefined {
@@ -61,22 +31,6 @@ function fromBase64url(s: string): Uint8Array | undefined {
   } catch {
     return undefined;
   }
-}
-
-// newToken draws a token in Go's form: ziwo_ and 256 random bits.
-export function newToken(): string {
-  return "ziwo_" + base64url(crypto.getRandomValues(new Uint8Array(32)));
-}
-
-// bearer reads the token of an Authorization header as Go's host does: the
-// scheme in any case, the token trimmed. null means no header at all.
-function bearer(request: Request): string | null | undefined {
-  const h = request.headers.get("authorization");
-  if (h === null) return null;
-  const at = h.indexOf(" ");
-  const scheme = at < 0 ? h : h.slice(0, at);
-  if (scheme.toLowerCase() !== "bearer") return undefined;
-  return h.slice(at + 1).trim();
 }
 
 // The session id handed out at initialize to clients of the old protocol
@@ -133,12 +87,6 @@ function peek(body: unknown): Peek {
     }
   }
   return out;
-}
-
-// What the access log learns about one request while it is served.
-interface Note {
-  auth?: "ok" | "missing" | "rejected";
-  protocol?: string;
 }
 
 async function serveMemory(request: Request, env: Env, name: string, note: Note): Promise<Response> {
@@ -199,59 +147,21 @@ async function serveMemory(request: Request, env: Env, name: string, note: Note)
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
 }
 
-// adminAllowed compares the presented secret with ADMIN_SECRET in constant
-// time, by hashing both to the same length.
-async function adminAllowed(request: Request, secret: string): Promise<"ok" | "missing" | "rejected"> {
-  const got = bearer(request);
-  if (got === null) return "missing";
-  if (got === undefined) return "rejected";
-  const [a, b] = await Promise.all([sha256Hex(got), sha256Hex(secret)]);
-  return crypto.subtle.timingSafeEqual(encoder.encode(a), encoder.encode(b)) ? "ok" : "rejected";
-}
-
-function json(status: number, body: JSONRecord): Response {
-  return new Response(JSON.stringify(body) + "\n", { status, headers: { "content-type": "application/json" } });
-}
-
-// serveAdmin creates a memory or gives it a new token. Each answer that
-// carries a token is the only place it is ever shown: the object keeps its
-// SHA-256 alone.
-async function serveAdmin(request: Request, env: Env, name: string, action: "create" | "token", note: Note): Promise<Response> {
-  const secret = env.ADMIN_SECRET;
-  if (secret === undefined || secret === "") return notFound();
-  if (request.method !== "POST") return notFound();
-  note.auth = await adminAllowed(request, secret);
-  if (note.auth !== "ok") return unauthorized();
-  if (!validName(name)) return json(400, { error: invalidNameMessage(name) });
-  const stub = env.MEMORY.getByName(name);
-  const token = newToken();
-  const hash = await sha256Hex(token);
-  const endpoint = `/${name}/mcp`;
-  if (action === "create") {
-    if ((await stub.create(hash)) === "exists") return json(409, { error: `memory ${JSON.stringify(name)} already exists` });
-    return json(201, {
-      memory: name, endpoint, token,
-      note: "The token is shown this once. Only its hash is stored.",
-    });
-  }
-  if ((await stub.replaceToken(hash)) === "unknown") return json(404, { error: `no such memory: ${JSON.stringify(name)}` });
-  return json(200, {
-    memory: name, endpoint, token,
-    note: "The old token no longer works. The new one is shown this once.",
-  });
+// healthz answers the probe as Go's host does: GET (and so HEAD) only.
+function healthz(request: Request): Response {
+  if (request.method === "GET" || request.method === "HEAD") return plain(200, "ok");
+  return plain(405, "Method Not Allowed", { allow: "GET, HEAD" });
 }
 
 async function route(request: Request, env: Env, path: string, note: Note): Promise<Response> {
   const parts = path.split("/");
+  if (path === "/healthz") return healthz(request);
   // /<name>/mcp
   if (parts.length === 3 && parts[0] === "" && parts[2] === "mcp" && validName(parts[1]!)) {
     return serveMemory(request, env, parts[1]!, note);
   }
-  // /admin/memories/<name> and /admin/memories/<name>/token
-  if (parts[0] === "" && parts[1] === "admin" && parts[2] === "memories" && parts[3] !== undefined && parts[3] !== "") {
-    if (parts.length === 4) return serveAdmin(request, env, parts[3], "create", note);
-    if (parts.length === 5 && parts[4] === "token") return serveAdmin(request, env, parts[3], "token", note);
-  }
+  // /admin/...
+  if (parts[0] === "" && parts[1] === "admin") return serveAdmin(request, env, parts, note);
   return notFound();
 }
 

@@ -15,7 +15,8 @@ export const legacy = "2025-06-18";
 
 // testEnv is the Worker's environment; null leaves ADMIN_SECRET unset.
 export function testEnv(secret: string | null = adminSecret): Env {
-  return secret === null ? { MEMORY: env.MEMORY } : { MEMORY: env.MEMORY, ADMIN_SECRET: secret };
+  const bindings = { MEMORY: env.MEMORY, DIRECTORY: env.DIRECTORY };
+  return secret === null ? bindings : { ...bindings, ADMIN_SECRET: secret };
 }
 
 export function fetchWorker(path: string, init: RequestInit = {}, e: Env = testEnv()): Promise<Response> {

@@ -206,6 +206,12 @@ export function decodeExpand(payload: string): ExpandEvent {
   return { session: str(o, "session"), ids: strs(o, "ids"), clock: int(o, "clock") };
 }
 
+// encodeRestore writes the payload Go's Import appends (restoreEvent in
+// export.go): from is left out when the export named no instance.
+export function encodeRestore(e: RestoreEvent): string {
+  return goJSON({ from: omit(e.from), exported_at: e.exportedAt, events: e.events });
+}
+
 export function decodeRestore(payload: string): RestoreEvent {
   const o = parseObject(payload, kindRestore);
   return { from: str(o, "from"), exportedAt: int(o, "exported_at"), events: int(o, "events") };

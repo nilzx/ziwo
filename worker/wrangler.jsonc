@@ -5,7 +5,13 @@
   "compatibility_date": "2026-10-01",
   "compatibility_flags": ["nodejs_compat"],
   "durable_objects": {
-    "bindings": [{ "name": "MEMORY", "class_name": "Memory" }]
+    "bindings": [
+      { "name": "MEMORY", "class_name": "Memory" },
+      { "name": "DIRECTORY", "class_name": "Directory" }
+    ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Memory"] }]
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["Memory"] },
+    { "tag": "v2", "new_sqlite_classes": ["Directory"] }
+  ]
 }

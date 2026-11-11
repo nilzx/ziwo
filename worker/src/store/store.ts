@@ -50,6 +50,7 @@ import {
   decodeRestore,
   decodeSession,
   encodeExpand,
+  encodeRestore,
   encodeRecall,
   encodeSession,
   kindAmend,
@@ -62,6 +63,7 @@ import {
   kindSession,
 } from "./events";
 import { NoSessionError } from "./errors";
+import type { ParsedExport } from "./export";
 import { contentHash, newID } from "./ids";
 import { abandonReflect, applyReflect, beginReflect, type Entry, finishReflect } from "./reflect";
 import { matchQuery } from "./segment";
@@ -163,7 +165,8 @@ function paramsJSON(p: Params): string {
   });
 }
 
-function parseParams(v: string): Params {
+// parseParams reads the parameters kept in meta.
+export function parseParams(v: string): Params {
   const o: unknown = JSON.parse(v);
   if (typeof o !== "object" || o === null) throw new InvalidParamsError(`meta: unreadable params`);
   const p = defaultParams();
@@ -748,17 +751,35 @@ export class Store {
 
   // logStats reads what the event log and the memory's settings say about it.
   logStats(): LogStats {
-    const r = this.db.first(
-      `SELECT count(*) FILTER (WHERE kind = ?) AS memories, count(*) AS events, COALESCE(MAX(at), 0) AS last FROM events`,
-      kindRemember,
-    );
-    const last = num(r?.last);
-    return {
-      memories: num(r?.memories),
-      events: num(r?.events),
-      lastEventAt: last > 0 ? last : null,
-      hasToken: this.db.getMeta(metaTokenHash) !== undefined,
-    };
+    return readLogStats(this.db);
+  }
+
+  // restore fills a memory whose log is empty from a checked export, as Go's
+  // Import does: the events keep their seq and at, what the memories say is
+  // stored with them, the token hash is the export's or else tokenHash, and
+  // a restore event is appended. The derived tables are built in the same
+  // transaction, so a log that cannot be replayed leaves nothing written. The
+  // keyword index existed before this transaction (see indexSchema), so its
+  // rollback is an ordinary one.
+  //
+  // settings, already checked, are those the export carried: they are stored
+  // first, so the tables are built once, with them.
+  restore(x: ParsedExport, at: number, tokenHash: string, settings?: { params: Params; timeZone?: string }): void {
+    this.tx(() => {
+      if (num(this.db.first(`SELECT count(*) AS c FROM events`)?.c) !== 0) throw new Error("restore: the log is not empty");
+      if (settings !== undefined) {
+        this.p = { ...settings.params };
+        this.db.setMeta(metaParams, paramsJSON(this.p));
+        if (settings.timeZone !== undefined) this.db.setMeta(metaZone, settings.timeZone);
+      }
+      for (const e of x.events) {
+        this.db.run(`INSERT INTO events(seq, at, kind, payload) VALUES(?, ?, ?, ?)`, e.seq, e.at, e.kind, e.payload);
+        if (e.contentId !== undefined) this.db.run(`INSERT INTO contents(id, data) VALUES(?, ?)`, e.contentId, e.content ?? "");
+      }
+      this.db.setMeta(metaTokenHash, x.tokenHash !== "" ? x.tokenHash : tokenHash);
+      this.appendEvent(at, kindRestore, encodeRestore({ from: x.instance, exportedAt: x.exportedAt, events: x.events.length }));
+      this.rebuildInTx();
+    });
   }
 
   // tokenHash returns the hash of the access token set for this memory, or
@@ -836,6 +857,23 @@ export class Store {
     );
     return [...new Set(rows.map((r) => num(r.n)))];
   }
+}
+
+// readLogStats reads what the event log and the memory's settings say about
+// it. It needs the log tables alone, as Go's LogOnly store does, so that it
+// can be read without building, or rebuilding, the derived tables.
+export function readLogStats(db: Db): LogStats {
+  const r = db.first(
+    `SELECT count(*) FILTER (WHERE kind = ?) AS memories, count(*) AS events, COALESCE(MAX(at), 0) AS last FROM events`,
+    kindRemember,
+  );
+  const last = num(r?.last);
+  return {
+    memories: num(r?.memories),
+    events: num(r?.events),
+    lastEventAt: last > 0 ? last : null,
+    hasToken: db.getMeta(metaTokenHash) !== undefined,
+  };
 }
 
 function toMemory(r: Row): Memory {

@@ -4,10 +4,15 @@ import type { AmendRequest, EntryRequest, EraseRequest, ReflectView } from "./me
 import { type ContextView, type Result, Service } from "./memory/service";
 import { formatBatch, formatContext, formatExpand, formatRecall, formatWritten } from "./mcp/format";
 import { reportText, type Report } from "./store/check";
-import type { Usage } from "./store/db";
-import { InvalidParamsError, type Params } from "./store/decay";
-import { metaTokenHash } from "./store/schema";
-import { Store } from "./store/store";
+import {
+  isDefault, paramsDiffer, readParams, resolveSettings, type Settings, type SettingsChange, unknownZoneMessage,
+} from "./settings";
+import { Db, type Usage } from "./store/db";
+import { defaultParams, InvalidParamsError, type Params } from "./store/decay";
+import { ExportError, FormatRefusal, type ParsedExport, parseExport, TooLargeError, writeExport } from "./store/export";
+import { logFormat, metaParams, metaTokenHash, metaZone } from "./store/schema";
+import { LogFormatError, parseParams, readLogStats, ReplayError, Store } from "./store/store";
+import type { LogStats } from "./store/types";
 import { knownZone, UTC } from "./zone";
 import type { Env } from "./index";
 
@@ -76,6 +81,8 @@ export class Memory extends DurableObject<Env> {
   // The wall clock in unix milliseconds. Tests replace it; an instance
   // field is not reachable over RPC.
   now: () => number = () => Date.now();
+  // The limit in bytes of an import or an export; tests lower it.
+  byteLimit = maxBytesInOneGo;
 
   private get parts(): { store: Store; service: Service } {
     if (this.built === undefined) {
@@ -139,7 +146,7 @@ export class Memory extends DurableObject<Env> {
   // names it.
   setTimeZone(zone: string): string | Invalid {
     const known = knownZone(trimSpace(zone));
-    if (known === undefined) return { invalid: `unknown time zone ${JSON.stringify(zone)}: give an IANA name such as Asia/Shanghai` };
+    if (known === undefined) return { invalid: unknownZoneMessage(zone) };
     this.store.setDefaultZone(known);
     return known;
   }
@@ -285,4 +292,245 @@ export class Memory extends DurableObject<Env> {
     if (reset) this.store.resetUsage();
     return u;
   }
+
+  // ---- The owner's methods, behind the admin API. Each answers "unknown"
+  // for a memory that was never created, without building anything.
+
+  private exists(): boolean {
+    return this.storedTokenHash() !== undefined;
+  }
+
+  // eventCount counts the log without building the store, so that a memory
+  // too large to replay is refused before anything replays it.
+  private eventCount(): number {
+    return this.ctx.storage.sql.exec<{ c: number }>(`SELECT count(*) AS c FROM events`).one().c;
+  }
+
+  private tooLarge(what: string): TooLarge | undefined {
+    const n = this.eventCount();
+    if (n <= maxEventsInOneGo) return undefined;
+    return {
+      tooLarge: `this memory holds ${n} events, more than this build can ${what} in one go (at most ${maxEventsInOneGo})`,
+    };
+  }
+
+  // logDb reads the log tables without building the store, as Go's LogOnly
+  // store does: listing or exporting a memory never replays its log.
+  private logDb(): Db {
+    return new Db(this.ctx.storage.sql);
+  }
+
+  // stats reports what the log says about the memory.
+  stats(): LogStats | "unknown" {
+    return this.exists() ? readLogStats(this.logDb()) : "unknown";
+  }
+
+  // describe reports the figures of stats, the forgetting parameters and the
+  // default time zone.
+  describe(): MemorySettings & { stats: LogStats } | "unknown" {
+    if (!this.exists()) return "unknown";
+    return { stats: this.store.logStats(), params: this.store.params(), timeZone: this.store.defaultZone() };
+  }
+
+  // changeSettings sets the forgetting parameters given (the others stay as
+  // they are), the default time zone, or both. Both are checked before
+  // either is stored, so an invalid value changes nothing.
+  changeSettings(change: SettingsChange): MemorySettings | Invalid | TooLarge | "unknown" {
+    if (!this.exists()) return "unknown";
+    const now = this.store.params();
+    const next = resolveSettings(change, now);
+    if (typeof next === "string") return { invalid: next };
+    if (paramsDiffer(now, next.params)) {
+      // New parameters replay the log, as a rebuild does.
+      const big = this.tooLarge("replay");
+      if (big !== undefined) return big;
+      this.store.setParams(next.params);
+    }
+    if (next.timeZone !== undefined) this.store.setDefaultZone(next.timeZone);
+    return { params: this.store.params(), timeZone: this.store.defaultZone() };
+  }
+
+  // report looks the memory over, as the check tool does.
+  report(): Report | "unknown" {
+    return this.exists() ? this.service.check() : "unknown";
+  }
+
+  // rebuildAll replays the whole log into fresh derived tables and reports
+  // how many memories they hold and how many events were replayed.
+  rebuildAll(): { memories: number; events: number } | TooLarge | "unknown" {
+    if (!this.exists()) return "unknown";
+    const big = this.tooLarge("rebuild");
+    if (big !== undefined) return big;
+    this.store.rebuild();
+    return this.store.counts();
+  }
+
+  // exportAll writes the memory as Go's plain export. The whole file is made
+  // in this one call, which has no await in it, so no other call runs on the
+  // object between its first read and its last: it describes one state of
+  // the memory. Only then is it handed back, as a stream, which also keeps a
+  // large file clear of the 32 MiB limit on an RPC message.
+  exportAll(): ExportFile | TooLarge | "unknown" {
+    if (!this.exists()) return "unknown";
+    const big = this.tooLarge("export");
+    if (big !== undefined) return big;
+    // The file is built in memory: what it is mostly made of is weighed first.
+    const bytes = this.ctx.storage.sql
+      .exec<{ n: number }>(
+        `SELECT (SELECT COALESCE(sum(octet_length(payload)), 0) FROM events)
+              + (SELECT COALESCE(sum(octet_length(data)), 0) FROM contents) AS n`,
+      )
+      .one().n;
+    if (bytes > this.byteLimit) {
+      return {
+        tooLarge: `this memory holds ${bytes} bytes of payloads and contents, more than this build can export in one go (at most ${this.byteLimit})`,
+      };
+    }
+    const db = this.logDb();
+    const stored = db.getMeta(metaParams);
+    const settings = { params: stored === undefined ? defaultParams() : parseParams(stored), timeZone: db.getMeta(metaZone) ?? UTC };
+    const exportedAt = this.now();
+    const { text, events } = writeExport(
+      db,
+      exportedAt,
+      isDefault(settings) ? undefined : { params: settings.params, timezone: settings.timeZone },
+    );
+    return { events, exportedAt, body: new Response(text).body! };
+  }
+
+  // importFrom creates this memory from an export. tokenHash is used when
+  // the export holds none. Reading the body is the only await: everything
+  // after it, from the check that the memory does not exist to the last
+  // write, runs in one synchronous stretch, so no other call sees a part of
+  // it. Every check Go makes is made before the database is touched; if the
+  // log then cannot be replayed, the transaction that wrote it rolls back and
+  // the tables the store created are deleted, so the object stores nothing.
+  async importFrom(body: ReadableStream<Uint8Array>, tokenHash: string): Promise<ImportOutcome> {
+    // The body is counted as it is read, and reading stops at the limit:
+    // the Worker's look at content-length can be fooled.
+    const reader = body.getReader();
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > this.byteLimit) {
+        await reader.cancel();
+        return { tooLarge: tooManyBytes(this.byteLimit) };
+      }
+      chunks.push(value);
+    }
+    const bytes = new Uint8Array(size);
+    let off = 0;
+    for (const c of chunks) {
+      bytes.set(c, off);
+      off += c.byteLength;
+    }
+    chunks.length = 0;
+    // A byte order mark is kept, so that it is refused as Go refuses it; a
+    // byte that is not UTF-8 reads as U+FFFD, as Go reads it in a string.
+    const file = new TextDecoder("utf-8", { fatal: false, ignoreBOM: true }).decode(bytes);
+    if (this.hasLog()) return { exists: true };
+    let parsed: ParsedExport;
+    try {
+      parsed = parseExport(file, maxEventsInOneGo, (f) => new LogFormatError(f, f > logFormat).message);
+    } catch (err) {
+      if (err instanceof TooLargeError) return { tooLarge: err.message };
+      if (err instanceof ExportError || err instanceof FormatRefusal) return { invalid: err.message };
+      throw err;
+    }
+    // The settings the export carries are checked as the settings route
+    // checks them, before anything is written.
+    let settings: { params: Params; timeZone?: string } | undefined;
+    if (parsed.settings !== undefined) {
+      const s = exportSettings(parsed.settings);
+      if (typeof s === "string") return { invalid: `not a usable export: its settings are invalid: ${s}` };
+      settings = s;
+    }
+    try {
+      this.store.restore(parsed, this.now(), tokenHash, settings);
+    } catch (err) {
+      this.built = undefined;
+      // On SQLite storage this empties the database at once and atomically;
+      // the promise only reports that the write was confirmed.
+      void this.ctx.storage.deleteAll();
+      if (err instanceof ReplayError) return { invalid: `not a usable export: ${err.message}` };
+      throw err;
+    }
+    return {
+      imported: {
+        events: parsed.events.length,
+        memories: parsed.memories,
+        exportedAt: parsed.exportedAt,
+        keptToken: parsed.tokenHash !== "",
+      },
+    };
+  }
+
+  // hasLog reports whether the database holds a log, even one without a
+  // token: the store creates these tables before anything else. Tables the
+  // runtime keeps for itself (such as wrangler dev's __miniflare_do_name)
+  // do not count.
+  private hasLog(): boolean {
+    return (
+      this.ctx.storage.sql
+        .exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name IN ('events', 'meta', 'contents', 'vectors') LIMIT 1`)
+        .toArray().length > 0
+    );
+  }
 }
+
+// maxEventsInOneGo is the most events a rebuild, an export or an import
+// handles; each runs in one call to the object for now.
+export const maxEventsInOneGo = 50_000;
+
+// maxBytesInOneGo is the largest export an import reads, and the most bytes
+// of payloads and contents an export is built from. An object has 128 MB,
+// and an import holds the body, its text and its parsed lines at once.
+export const maxBytesInOneGo = 24 * 1024 * 1024;
+
+export function tooManyBytes(limit: number): string {
+  return `the export holds more than ${limit} bytes, more than this build can bring back in one go`;
+}
+
+// exportSettings checks the settings an export's header carries, in the
+// form {"params": {...}, "timezone": "..."}, either part optional, and
+// returns them resolved against the defaults, or says what is wrong.
+function exportSettings(v: unknown): { params: Params; timeZone?: string } | string {
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return "settings must be an object";
+  const change: SettingsChange = {};
+  for (const [k, x] of Object.entries(v as Record<string, unknown>)) {
+    if (k === "params") {
+      const p = readParams(x);
+      if (typeof p === "string") return p;
+      change.params = p;
+    } else if (k === "timezone") {
+      if (typeof x !== "string") return "timezone must be a string, an IANA name such as Asia/Shanghai";
+      change.timeZone = x;
+    } else {
+      return `unknown setting ${JSON.stringify(k)}: give params, timezone or both`;
+    }
+  }
+  return resolveSettings(change, defaultParams());
+}
+
+// TooLarge is a memory or an export with more events than one call handles.
+export interface TooLarge {
+  tooLarge: string;
+}
+
+export type MemorySettings = Settings;
+
+export interface ExportFile {
+  events: number;
+  exportedAt: number;
+  body: ReadableStream<Uint8Array>;
+}
+
+export type ImportOutcome =
+  | { imported: { events: number; memories: number; exportedAt: number; keptToken: boolean } }
+  | { exists: true }
+  | TooLarge
+  | Invalid;
+
