@@ -4,7 +4,7 @@
 // never contacts a Cloudflare account.
 
 import { spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { openSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import net from "node:net";
@@ -113,4 +113,43 @@ export async function tool(base, memory, token, name, args) {
   const msg = JSON.parse(line);
   const text = (msg.result?.content ?? []).map((/** @type {{ text?: string }} */ c) => c.text ?? "").join("");
   return { status: res.status, text: msg.result?.isError ? `ERROR: ${text}` : text };
+}
+
+/**
+ * approveClient registers an OAuth client and approves it on the consent
+ * page with the memory's token, as a browser would, leaving a grant whose
+ * code is never exchanged.
+ * @param {string} base @param {string} memory @param {string} token @param {string} clientName
+ */
+export async function approveClient(base, memory, token, clientName) {
+  const redirect = "https://client.example/callback";
+  const reg = await fetch(`${base}/oauth/register`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ client_name: clientName, redirect_uris: [redirect], token_endpoint_auth_method: "none" }),
+  });
+  if (reg.status !== 201) throw new Error(`register: ${reg.status}`);
+  const { client_id: clientId } = await reg.json();
+  const challenge = createHash("sha256").update(randomBytes(32).toString("base64url")).digest("base64url");
+  const q = new URLSearchParams({
+    response_type: "code", client_id: clientId, redirect_uri: redirect, state: "s", code_challenge: challenge, code_challenge_method: "S256",
+    resource: `${base}/${memory}/mcp`,
+  });
+  const page = await fetch(`${base}/oauth/authorize?${q}`);
+  const html = await page.text();
+  if (page.status !== 200) throw new Error(`consent page: ${page.status}`);
+  const cookie = page.headers.getSetCookie().map((c) => c.split(";")[0]).join("; ");
+  /** @type {Record<string, string>} */
+  const fields = {};
+  for (const m of html.matchAll(/<input type="hidden" name="([^"]+)" value="([^"]*)">/g)) {
+    fields[m[1]] = m[2].replace(/&#(\d+);/g, (_w, c) => String.fromCharCode(Number(c)));
+  }
+  const res = await fetch(`${base}/oauth/authorize`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded", origin: base, cookie },
+    body: new URLSearchParams({ ...fields, decision: "approve", credential: token }).toString(),
+    redirect: "manual",
+  });
+  await res.arrayBuffer();
+  if (res.status !== 302) throw new Error(`approve: ${res.status}`);
 }

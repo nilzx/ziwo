@@ -9,7 +9,7 @@ import { describe, it } from "node:test";
 import { codexTomlOAuth, connectGuide, hookScript, hookSettings, mcpJson, mcpJsonOAuth } from "../../page/connect.mjs";
 import { makeH } from "../../page/dom.mjs";
 import {
-  ApiError, defaultParams, errorText, makeApi, memoryHash, memoryPath, paramNames, pickLanguage, reportGroups, reportText, route,
+  ApiError, defaultParams, errorText, makeApi, memoryHash, memoryPath, namesMatch, paramNames, pickLanguage, reportGroups, reportText, route,
   SecretError, sealedFileName, settingsChange, utcStamp,
 } from "../../page/logic.mjs";
 import { format, texts } from "../../page/texts.mjs";
@@ -88,10 +88,14 @@ describe("the admin API calls", () => {
     await api.importClear("a-1", bytes);
     await api.grants("a-1");
     await api.revokeGrant("a-1", "Ab_-0123456789xy");
+    await api.deleteMemory("a-1", "a-1");
+    await api.deleteMemory("a-1", "a 1/?&");
     const want = [
       ["GET", "/admin/memories"], ["GET", "/admin/memories/a-1"], ["POST", "/admin/memories/a-1"], ["POST", "/admin/memories/a-1/token"],
       ["PUT", "/admin/memories/a-1/settings"], ["GET", "/admin/memories/a-1/check"], ["POST", "/admin/memories/a-1/rebuild"],
       ["POST", "/admin/memories/a-1/import"], ["GET", "/admin/memories/a-1/grants"], ["DELETE", "/admin/memories/a-1/grants/Ab_-0123456789xy"],
+      // The name repeated as typed, so that the API is what decides it matches.
+      ["DELETE", "/admin/memories/a-1?confirm=a-1"], ["DELETE", "/admin/memories/a-1?confirm=a%201%2F%3F%26"],
     ];
     assert.deepEqual(calls.map((c) => [c.init.method, c.url]), want.map(([m, p]) => [m, `https://z.example${p}`]));
     for (const c of calls) {
@@ -224,6 +228,19 @@ describe("the page's decisions", () => {
     assert.equal(pickLanguage(["fr", "de"]), "en");
     assert.equal(pickLanguage([]), "en");
     assert.equal(pickLanguage(["zhx"]), "en");
+  });
+
+  it("delete only when the name typed is the memory's", () => {
+    assert.equal(namesMatch("alice", "alice"), true);
+    assert.equal(namesMatch("  alice \n", "alice"), true);
+    for (const typed of ["", "Alice", "alic", "alice2", "a lice", "bob"]) assert.equal(namesMatch(typed, "alice"), false, typed);
+  });
+
+  it("say, where it deletes, that an export is the only way back, and where it lists grants, that a new one can take seconds to show", () => {
+    assert.match(texts.en.deleteNoWayBack, /only way back/);
+    assert.match(texts.zh.deleteNoWayBack, /唯一的退路/);
+    assert.match(texts.en.grantsLag, /some seconds/);
+    assert.match(texts.zh.grantsLag, /几秒/);
   });
 
   it("write times as Go's list does", () => {

@@ -27,6 +27,9 @@ Usage:
   ziwo-admin rebuild <name>           rebuild a memory's tables from its event log
   ziwo-admin export <name> [-o file]  write the memory to a sealed file, as a backup
   ziwo-admin import <name> <file>     bring a sealed export back as a new memory
+  ziwo-admin grants <name>            list the clients signed in to a memory (OAuth)
+  ziwo-admin revoke <name> <id>       revoke one of them, by the id grants shows
+  ziwo-admin delete <name> <name>     delete a memory for good: give its name twice
 
 Environment:
   ZIWO_URL            the deployment's address, such as https://ziwo.example.workers.dev
@@ -34,6 +37,8 @@ Environment:
   ZIWO_PASSPHRASE     the passphrase of an export; asked for, without echo, when unset
 
 Changing a forgetting parameter replays the whole memory from its log.
+A client approved a moment ago can take some seconds to show up in grants.
+Deleting cannot be undone: export the memory first; an export is the only way back.
 `;
 
 // UsageError is a mistake in the command line; it exits 2, as Go's flag
@@ -282,6 +287,35 @@ const commands = {
       await fh.close();
     }
     out(`exported ${JSON.stringify(name)} to ${file} (${sealed.length} bytes, sealed)\nIt opens only with its passphrase. Keep both.`);
+  },
+
+  async grants(args) {
+    const [name] = positional(args, 1, "the name of the memory");
+    const { api: a } = api();
+    const { grants } = await a.grants(name);
+    if (grants.length === 0) {
+      out(`no client has signed in to ${name}; one approved a moment ago can take some seconds to show up`);
+      return;
+    }
+    /** @type {(string | number)[][]} */
+    const rows = [["ID", "APPROVED", "LAPSES UNLESS USED", "CLIENT"]];
+    for (const g of grants) rows.push([g.id, when(g.createdAt), g.expiresAt === null ? "not yet used" : when(g.expiresAt), g.client]);
+    out(table(rows));
+  },
+
+  async revoke(args) {
+    const [name, id] = positional(args, 2, "the name of the memory and the id of the grant, as grants shows it");
+    const { api: a } = api();
+    const r = await a.revokeGrant(name, id);
+    out(`revoked ${r.revoked} from ${r.memory}\nIts client is refused at its next request; Cloudflare may take a minute or so to carry that everywhere.`);
+  },
+
+  async delete(args) {
+    const [name, again] = positional(args, 2, "the name of the memory twice, to confirm: ziwo-admin delete <name> <name>");
+    if (again !== name) throw new UsageError(`the two names differ: give the name of the memory twice, to confirm`);
+    const { api: a } = api();
+    const r = await a.deleteMemory(name, again);
+    out(`deleted ${r.memory}: ${r.revokedGrants} signed-in client(s) revoked; the name is free`);
   },
 
   async import(args) {

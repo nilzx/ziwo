@@ -103,7 +103,20 @@ export function makeApi({ base = "", secret, fetch: doFetch = globalThis.fetch.b
     grants: (/** @type {string} */ name) => call("GET", memoryPath(name, "grants")),
     /** @param {string} name @param {string} id */
     revokeGrant: (name, id) => call("DELETE", memoryPath(name, `grants/${encodeURIComponent(id)}`)),
+    // Deleting a memory for good: the API wants its name repeated, as the
+    // person typed it.
+    /** @param {string} name @param {string} typed */
+    deleteMemory: (name, typed) => call("DELETE", memoryPath(name) + `?confirm=${encodeURIComponent(typed)}`),
   };
+}
+
+/**
+ * namesMatch says whether what the person typed to confirm a deletion is the
+ * memory's name: exactly, but for spaces around it.
+ * @param {string} typed @param {string} name
+ */
+export function namesMatch(typed, name) {
+  return typed.trim() === name;
 }
 
 /**

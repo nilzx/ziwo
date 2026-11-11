@@ -11,7 +11,7 @@ import path from "node:path";
 import { after, before, describe, it } from "node:test";
 import { open, seal } from "../../page/seal.mjs";
 import { buildSealHelper, buildZiwo, goSeal, haveGo, removeScratch, scratch, workerDir } from "./go.mjs";
-import { startWorker, tool } from "./worker-dev.mjs";
+import { approveClient, startWorker, tool } from "./worker-dev.mjs";
 
 const script = path.join(workerDir, "bin/ziwo-admin.mjs");
 const marker = "clitestmarker";
@@ -64,7 +64,7 @@ sys.exit(os.waitstatus_to_exitcode(status))
 // Everything the script printed, to look through at the end.
 const printed = /** @type {string[]} */ ([]);
 // Tokens that were issued, and so may be printed once, each by its own command.
-const tokens = { a: "", b: "", delta: "" };
+const tokens = { a: "", b: "", delta: "", zeta1: "", zeta2: "" };
 
 /**
  * cli runs the script with the deployment's address and secret in its
@@ -101,12 +101,15 @@ describe("ziwo-admin without a deployment", () => {
     const none = spawnSync(process.execPath, [script], { encoding: "utf8" });
     assert.equal(none.status, 2);
     assert.match(none.stdout, /^ziwo-admin runs a ziwo deployment/);
-    for (const cmd of ["list", "new", "token", "show", "set", "check", "rebuild", "export", "import"]) assert.match(none.stdout, new RegExp(`ziwo-admin ${cmd}\\b`));
+    for (const cmd of ["list", "new", "token", "show", "set", "check", "rebuild", "export", "import", "grants", "revoke", "delete"]) {
+      assert.match(none.stdout, new RegExp(`ziwo-admin ${cmd}\\b`));
+    }
+    assert.match(none.stdout, /an export is the only way back/);
     const help = spawnSync(process.execPath, [script, "--help"], { encoding: "utf8" });
     assert.equal(help.status, 0);
-    const odd = spawnSync(process.execPath, [script, "delete", "x"], { encoding: "utf8" });
+    const odd = spawnSync(process.execPath, [script, "destroy", "x"], { encoding: "utf8" });
     assert.equal(odd.status, 2);
-    assert.match(odd.stderr, /^ziwo-admin: unknown command "delete"/);
+    assert.match(odd.stderr, /^ziwo-admin: unknown command "destroy"/);
   });
 
   it("needs ZIWO_URL and ZIWO_ADMIN_SECRET, and https for another machine", () => {
@@ -392,15 +395,81 @@ describe("ziwo-admin against the Worker under wrangler dev", () => {
     assert.equal(rowsOf(cli(["show", "epsilon"]).out).memories, "3");
   });
 
+  it("lists the clients signed in to a memory, and revokes one by its id", async () => {
+    let r = cli(["grants", "alpha"]);
+    assert.equal(r.code, 0, r.err);
+    assert.equal(r.out, "no client has signed in to alpha; one approved a moment ago can take some seconds to show up\n");
+    await approveClient(worker.base, "alpha", tokens.b, "cli test client");
+    r = cli(["grants", "alpha"]);
+    assert.equal(r.code, 0, r.err);
+    const [head, row, more] = r.out.trim().split("\n");
+    assert.match(head ?? "", /^ID\s+APPROVED\s+LAPSES UNLESS USED\s+CLIENT$/);
+    const m = /^([A-Za-z0-9_-]{16})\s+\d{4}-\d\d-\d\d \d\d:\d\dZ\s+not yet used\s+cli test client$/.exec(row ?? "");
+    assert.ok(m, row);
+    assert.equal(more, undefined);
+    const id = m[1];
+    r = cli(["revoke", "alpha", id]);
+    assert.equal(r.code, 0, r.err);
+    assert.match(r.out, new RegExp(`^revoked ${id} from alpha\n`));
+    r = cli(["revoke", "alpha", id]);
+    assert.equal(r.code, 1);
+    assert.equal(r.err, `ziwo-admin revoke: HTTP 404: no such grant: "${id}"\n`);
+    assert.match(cli(["grants", "alpha"]).out, /^no client has signed in to alpha/);
+    assert.equal(cli(["revoke", "alpha"]).code, 2);
+    assert.equal(cli(["grants"]).code, 2);
+    r = cli(["grants", "ghost"]);
+    assert.equal(r.code, 1);
+    assert.equal(r.err, `ziwo-admin grants: HTTP 404: no such memory: "ghost"\n`);
+  });
+
+  it("deletes a memory only when its name is given twice, and the name can be used again", async () => {
+    let r = cli(["new", "zeta"]);
+    assert.equal(r.code, 0, r.err);
+    tokens.zeta1 = tokenRE.exec(r.out)?.[1] ?? "";
+    assert.equal((await tool(worker.base, "zeta", tokens.zeta1, "check", {})).status, 200);
+    for (const args of [["delete", "zeta"], ["delete", "zeta", "zet"], ["delete", "zeta", "Zeta"], ["delete"]]) {
+      r = cli(args);
+      assert.equal(r.code, 2, args.join(" "));
+    }
+    assert.equal(cli(["delete", "zeta", "zetax"]).err, "ziwo-admin delete: the two names differ: give the name of the memory twice, to confirm\n");
+    assert.equal((await tool(worker.base, "zeta", tokens.zeta1, "check", {})).status, 200);
+    r = cli(["delete", "zeta", "zeta"]);
+    assert.equal(r.code, 0, r.err);
+    assert.equal(r.out, "deleted zeta: 0 signed-in client(s) revoked; the name is free\n");
+    assert.equal((await tool(worker.base, "zeta", tokens.zeta1, "check", {})).status, 401);
+    assert.equal(cli(["show", "zeta"]).err, `ziwo-admin show: HTTP 404: no such memory: "zeta"\n`);
+    assert.equal(/^zeta\b/m.test(cli(["list"]).out), false);
+    r = cli(["delete", "zeta", "zeta"]);
+    assert.equal(r.code, 1);
+    assert.equal(r.err, `ziwo-admin delete: HTTP 404: no such memory: "zeta"\n`);
+    r = cli(["new", "zeta"]);
+    assert.equal(r.code, 0, r.err);
+    tokens.zeta2 = tokenRE.exec(r.out)?.[1] ?? "";
+    assert.equal(rowsOf(cli(["show", "zeta"]).out).memories, "0");
+    assert.equal((await tool(worker.base, "zeta", tokens.zeta1, "check", {})).status, 401);
+    assert.equal((await tool(worker.base, "zeta", tokens.zeta2, "check", {})).status, 200);
+  });
+
   it("never printed the secret, a token it did not just create, or what a memory says", () => {
     const all = printed.join("\n");
     assert.equal(all.includes(worker.secret), false);
     assert.equal(all.includes(marker), false);
     assert.equal(all.includes(pass), false);
     // Each token appears where it was issued, once.
-    for (const t of [tokens.a, tokens.b, tokens.delta]) {
+    for (const t of [tokens.a, tokens.b, tokens.delta, tokens.zeta1, tokens.zeta2]) {
       if (t === "") continue;
       assert.equal(all.split(t).length - 1, 1, "a token was printed more than once");
+    }
+  });
+
+  // Last: it holds this machine's address for a minute.
+  it("is held after ten wrong secrets in a minute, in the API's words, and the right one is held too", () => {
+    // One wrong secret was spent at the start.
+    for (let i = 0; i < 9; i++) assert.equal(cli(["list"], { ZIWO_ADMIN_SECRET: `wrong-${i}` }).err, "ziwo-admin list: HTTP 401: unauthorized\n");
+    for (const secret of ["wrong-again", worker.secret]) {
+      const r = cli(["list"], { ZIWO_ADMIN_SECRET: secret });
+      assert.equal(r.code, 1);
+      assert.match(r.err, /^ziwo-admin list: HTTP 429: too many wrong attempts from this address; try again in \d+ seconds\n$/);
     }
   });
 });

@@ -15,6 +15,11 @@ export const defaultMinSimilarity = 0.45;
 // Measured on the platform (2026-11-11): a call takes 0.6 to 1.4 s as a rule
 // and now and then more than 2 s; at 2 s one recall in nine went without.
 export const defaultQueryTimeoutMs = 3000;
+// A query's embedding is asked for a second time, beside the first call,
+// when the first has not answered after this long; 0 switches it off. The
+// first real client (2026-11-12) saw recalls of 2.0 to 3.3 s spent waiting
+// on one call, while most calls answer within a second.
+export const defaultQueryHedgeMs = 1000;
 
 // The most texts the model takes in one call (its input schema's limit).
 export const maxTextsPerCall = 32;
@@ -34,6 +39,7 @@ export interface EmbedSettings {
   dims: number;
   minSimilarity: number;
   queryTimeoutMs: number;
+  queryHedgeMs: number;
 }
 
 // What of the Worker's environment the settings are read from.
@@ -43,6 +49,7 @@ export interface EmbedEnv {
   EMBED_DIMS?: string;
   EMBED_MIN_SIMILARITY?: string;
   EMBED_QUERY_TIMEOUT_MS?: string;
+  EMBED_QUERY_HEDGE_MS?: string;
 }
 
 export function labelOf(s: EmbedSettings): Label {
@@ -78,7 +85,8 @@ export function embedSettings(env: EmbedEnv): EmbedSettings | undefined {
   const dims = number(env.EMBED_DIMS, "EMBED_DIMS", defaultDims, (x) => Number.isInteger(x) && x >= 1 && x <= maxDims);
   const min = number(env.EMBED_MIN_SIMILARITY, "EMBED_MIN_SIMILARITY", defaultMinSimilarity, (x) => x >= -1 && x <= 1);
   const timeout = number(env.EMBED_QUERY_TIMEOUT_MS, "EMBED_QUERY_TIMEOUT_MS", defaultQueryTimeoutMs, (x) => Number.isInteger(x) && x >= 1 && x <= 60_000);
-  for (const x of [dims, min, timeout]) {
+  const hedge = number(env.EMBED_QUERY_HEDGE_MS, "EMBED_QUERY_HEDGE_MS", defaultQueryHedgeMs, (x) => Number.isInteger(x) && x >= 0 && x <= 60_000);
+  for (const x of [dims, min, timeout, hedge]) {
     if (typeof x === "string") {
       if (!loggedUnreadable.has(x)) {
         loggedUnreadable.add(x);
@@ -87,7 +95,9 @@ export function embedSettings(env: EmbedEnv): EmbedSettings | undefined {
       return undefined;
     }
   }
-  return { model, dims: dims as number, minSimilarity: min as number, queryTimeoutMs: timeout as number };
+  return {
+    model, dims: dims as number, minSimilarity: min as number, queryTimeoutMs: timeout as number, queryHedgeMs: hedge as number,
+  };
 }
 
 // Embedder turns text into vectors, as the model returns them. Documents
@@ -180,44 +190,83 @@ export interface QueryVector {
   values: Float32Array;
 }
 
+// SecondCall says whether a query's second call was made, in fixed words:
+// off (the setting is 0), not_needed (none was made: the first answered,
+// or the limit ran out, before the delay), after_delay, or after_failure
+// (the first failed before the delay ran out).
+export type SecondCall = "off" | "not_needed" | "after_delay" | "after_failure";
+
+// QueryEmbedding is a query's vector, if one was made in time, and figures
+// for the tool's line in the access log. took is absent when no call was
+// made: the query was empty.
+export interface QueryEmbedding {
+  vector?: QueryVector;
+  took?: { ms: number; second: SecondCall; answer: "first" | "second" | "none" };
+}
+
 // queryEmbedding returns what embeds a recall's query in the Worker, or
 // undefined when search by meaning is off.
-export function queryEmbedding(env: EmbedEnv, embedder?: Embedder): ((query: string) => Promise<QueryVector | undefined>) | undefined {
+export function queryEmbedding(env: EmbedEnv, embedder?: Embedder): ((query: string) => Promise<QueryEmbedding>) | undefined {
   const settings = embedSettings(env);
   if (settings === undefined) return undefined;
   const emb = embedder ?? new WorkersAI(env.AI!, settings.model);
   return (query) => embedQuery(emb, settings, query);
 }
 
-class QueryTimeout extends Error {
-  override name = "QueryTimeout";
-}
-
-// embedQuery embeds the query recall will read, within the time limit. On
-// failure or when the limit runs out it returns undefined, and recall
-// answers from keywords.
-export async function embedQuery(emb: Embedder, s: EmbedSettings, query: string): Promise<QueryVector | undefined> {
+// embedQuery embeds the query recall will read, within the time limit. It
+// makes one call and, if that has not answered after queryHedgeMs, a second
+// beside it; a first call that fails before then starts the second at once.
+// Whichever answers first with a usable vector is used and the other is
+// aborted; an answer that comes later is dropped. On failure, or when the
+// limit runs out, the vector is absent and recall answers from keywords.
+export function embedQuery(emb: Embedder, s: EmbedSettings, query: string): Promise<QueryEmbedding> {
   const text = clip(trimSpace(query), queryMaxRunes);
-  if (text === "") return undefined;
+  if (text === "") return Promise.resolve({});
+  const start = Date.now();
   const stop = new AbortController();
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const limit = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
-      stop.abort();
-      reject(new QueryTimeout());
-    }, s.queryTimeoutMs);
+  return new Promise<QueryEmbedding>((resolve) => {
+    let settled = false;
+    let second: SecondCall = s.queryHedgeMs > 0 ? "not_needed" : "off";
+    let running = 0;
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    const finish = (answer: "first" | "second" | "none", values?: Float32Array, failure?: unknown) => {
+      if (settled) return;
+      settled = true;
+      for (const t of timers) clearTimeout(t);
+      stop.abort(); // the call still running, if any, is not waited for
+      if (values === undefined) {
+        const timedOut = failure === undefined;
+        logLine({
+          msg: "query embedding failed", reason: timedOut ? "timeout" : "error",
+          ...(timedOut ? { limit_ms: s.queryTimeoutMs } : { error: failure instanceof Error ? failure.name : "unknown" }),
+        });
+      }
+      const took = { ms: Date.now() - start, second, answer };
+      resolve(values === undefined ? { took } : { vector: { model: s.model, dims: s.dims, values }, took });
+    };
+    const call = (which: "first" | "second") => {
+      running++;
+      // A vector the settings cannot use counts as that call's failure.
+      Promise.resolve()
+        .then(() => emb.query(text, stop.signal))
+        .then((raw) => prepare(raw, s.dims))
+        .then(
+          (values) => finish(which, values),
+          (err: unknown) => {
+            running--;
+            if (settled) return;
+            if (which === "first" && second === "not_needed") startSecond("after_failure");
+            else if (running === 0) finish("none", undefined, err ?? new EmbedError("the call failed"));
+          },
+        );
+    };
+    const startSecond = (why: "after_delay" | "after_failure") => {
+      if (settled || second !== "not_needed") return;
+      second = why;
+      call("second");
+    };
+    call("first");
+    if (s.queryHedgeMs > 0) timers.push(setTimeout(() => startSecond("after_delay"), s.queryHedgeMs));
+    timers.push(setTimeout(() => finish("none"), s.queryTimeoutMs));
   });
-  try {
-    const raw = await Promise.race([emb.query(text, stop.signal), limit]);
-    return { model: s.model, dims: s.dims, values: prepare(raw, s.dims) };
-  } catch (err) {
-    const timedOut = err instanceof QueryTimeout;
-    logLine({
-      msg: "query embedding failed", reason: timedOut ? "timeout" : "error",
-      ...(timedOut ? { limit_ms: s.queryTimeoutMs } : { error: err instanceof Error ? err.name : "unknown" }),
-    });
-    return undefined;
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
 }

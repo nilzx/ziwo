@@ -10,6 +10,7 @@ import { createMcpHandler } from "agents/mcp/server";
 import { type Note, serveAdmin } from "./admin";
 import { serveAuthorize } from "./consent";
 import { Directory } from "./directory";
+import { Guard } from "./guard";
 import { type EmbedEnv, queryEmbedding } from "./embed";
 import { base64url, bearer, encoder, notFound, plain, sha256Hex, validName } from "./http";
 import { Memory } from "./memory-object";
@@ -18,13 +19,16 @@ import { isPagePath, servePage } from "./page";
 import { buildServer } from "./mcp/server";
 import { clipText, type LogFields, logLine } from "./log";
 
-export { Directory, Memory };
+export { Directory, Guard, Memory };
 export { newToken, validName } from "./http";
 
 export interface Env extends EmbedEnv {
   MEMORY: DurableObjectNamespace<Memory>;
   // The list of memories the admin API keeps; never reached by MCP.
   DIRECTORY: DurableObjectNamespace<Directory>;
+  // The limit on guessing at the consent page and the admin API, one object
+  // per address (guard.ts); never reached by MCP.
+  GUARD: DurableObjectNamespace<Guard>;
   // The secret of the admin API; without it the admin API is not there.
   ADMIN_SECRET?: string;
   // OAuth's clients, grants and tokens (workers-oauth-provider). Never read
@@ -32,7 +36,8 @@ export interface Env extends EmbedEnv {
   OAUTH_KV: KVNamespace;
   // Search by meaning, off without AI: see embed.ts. AI is the Workers AI
   // binding; EMBED_MODEL (set empty to switch it off), EMBED_DIMS,
-  // EMBED_MIN_SIMILARITY and EMBED_QUERY_TIMEOUT_MS are vars.
+  // EMBED_MIN_SIMILARITY, EMBED_QUERY_TIMEOUT_MS and EMBED_QUERY_HEDGE_MS are
+  // vars.
 }
 
 function fromBase64url(s: string): Uint8Array | undefined {
@@ -112,8 +117,10 @@ async function serveMemory(request: Request, env: Env, name: string, note: Note)
     return challenge(url, name, false);
   }
   const stub = env.MEMORY.getByName(name);
-  // The client a grant was made for, when the token is an OAuth one.
+  // The client a grant was made for, and the memory's instance it was made
+  // for, when the token is an OAuth one.
   let granted: string | undefined;
+  let instance: string | undefined;
   if (isOAuthToken(token)) {
     note.cred = "oauth";
     const issuer = issuerOf(url);
@@ -129,6 +136,7 @@ async function serveMemory(request: Request, env: Env, name: string, note: Note)
       return challenge(url, name, true);
     }
     granted = props.client;
+    instance = props.instance;
   } else {
     // A fixed token: as before, the memory's object alone decides.
     note.cred = "token";
@@ -175,7 +183,9 @@ async function serveMemory(request: Request, env: Env, name: string, note: Note)
       clipText(request.headers.get("user-agent") ?? "", 120));
 
   const embedQuery = queryEmbedding(env);
-  const handler = createMcpHandler(() => buildServer({ memory: name, client, stub, embedQuery }), { route: `/${name}/mcp` });
+  const handler = createMcpHandler(() => buildServer({ memory: name, client, stub, embedQuery, ...(instance === undefined ? {} : { instance }) }), {
+    route: `/${name}/mcp`,
+  });
   const res = await handler.fetch(served, parsed === undefined ? undefined : { parsedBody: parsed });
   if (p.initializeClient === undefined || !res.ok) return res;
   const headers = new Headers(res.headers);

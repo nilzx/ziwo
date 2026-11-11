@@ -18,11 +18,14 @@
   "durable_objects": {
     "bindings": [
       { "name": "MEMORY", "class_name": "Memory" },
-      { "name": "DIRECTORY", "class_name": "Directory" }
+      { "name": "DIRECTORY", "class_name": "Directory" },
+      // The limit on guessing at the consent page and the admin API.
+      { "name": "GUARD", "class_name": "Guard" }
     ]
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["Memory"] },
-    { "tag": "v2", "new_sqlite_classes": ["Directory"] }
+    { "tag": "v2", "new_sqlite_classes": ["Directory"] },
+    { "tag": "v3", "new_sqlite_classes": ["Guard"] }
   ]
 }

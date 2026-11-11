@@ -4,6 +4,7 @@
 // report and the clients granted access only.
 
 import { directoryName, type Listed } from "./directory";
+import { waitFor } from "./guard";
 import { bearer, encoder, invalidNameMessage, json, type JSONRecord, newToken, notFound, sha256Hex, unauthorized, validName } from "./http";
 import type { Env } from "./index";
 import { logLine } from "./log";
@@ -28,11 +29,12 @@ export interface Note {
   memory?: string;
 }
 
-type Action = "create" | "describe" | "token" | "settings" | "check" | "rebuild" | "export" | "import" | "grants" | "revoke";
+type Action =
+  | "create" | "describe" | "delete" | "token" | "settings" | "check" | "rebuild" | "export" | "import" | "grants" | "revoke";
 
 // The routes under /admin/memories/<name>, by last segment and method.
 const memoryRoutes: Record<string, Record<string, Action>> = {
-  "": { POST: "create", GET: "describe" },
+  "": { POST: "create", GET: "describe", DELETE: "delete" },
   token: { POST: "token" },
   settings: { PUT: "settings" },
   check: { GET: "check" },
@@ -56,6 +58,14 @@ async function adminAllowed(request: Request, secret: string): Promise<"ok" | "m
 }
 
 const noSuchMemory = (name: string): Response => json(404, { error: `no such memory: ${JSON.stringify(name)}` });
+
+// tooMany answers an address that guessed too often (guard.ts).
+function tooMany(seconds: number): Response {
+  return new Response(JSON.stringify({ error: `too many wrong attempts from this address; try again in ${seconds} seconds` }) + "\n", {
+    status: 429,
+    headers: { "content-type": "application/json", "retry-after": String(seconds) },
+  });
+}
 
 function errorName(err: unknown): string {
   return err instanceof Error ? err.name : "unknown";
@@ -84,11 +94,21 @@ export async function serveAdmin(request: Request, env: Env, parts: string[], no
   const secret = env.ADMIN_SECRET;
   if (secret === undefined || secret === "") return notFound();
   note.auth = await adminAllowed(request, secret);
+  // A secret presented, right or wrong, is weighed against the limit on
+  // guessing; a request without one guesses nothing.
+  if (note.auth !== "missing") {
+    const wait = await waitFor(env, request, note.auth === "ok");
+    if (wait > 0) {
+      note.outcome = "too_many";
+      return tooMany(wait);
+    }
+  }
   if (note.auth !== "ok") return unauthorized();
   if (action !== "list" && !validName(name)) return json(400, { error: invalidNameMessage(name) });
   try {
     if (action === "list") return await list(env);
     if (action === "grants" || action === "revoke") return await serveGrants(request, env, name, grant);
+    if (action === "delete") return await serveDelete(request, env, name);
     return await serveMemoryAdmin(request, env, name, action);
   } catch (err) {
     logLine({ msg: "admin failed", memory: name, action, error: errorName(err) });
@@ -127,7 +147,9 @@ async function list(env: Env): Promise<Response> {
   return json(200, { memories: rows });
 }
 
-async function serveMemoryAdmin(request: Request, env: Env, name: string, action: Exclude<Action, "grants" | "revoke">): Promise<Response> {
+async function serveMemoryAdmin(
+  request: Request, env: Env, name: string, action: Exclude<Action, "grants" | "revoke" | "delete">,
+): Promise<Response> {
   const stub = env.MEMORY.getByName(name);
   const endpoint = `/${name}/mcp`;
   switch (action) {
@@ -260,6 +282,70 @@ async function serveGrants(request: Request, env: Env, name: string, grant: stri
   }
   await oauth.revokeGrant(grant, name);
   return json(200, { memory: name, revoked: grant });
+}
+
+// The step of a deletion that failed, for the log.
+class DeleteStep extends Error {
+  constructor(
+    readonly step: "grants" | "object" | "directory",
+    readonly failure: unknown,
+  ) {
+    super(step);
+  }
+}
+
+async function step<T>(name: DeleteStep["step"], fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    throw new DeleteStep(name, err);
+  }
+}
+
+// serveDelete deletes a memory for good. The name must be repeated in the
+// request as ?confirm=<name>, so that a slip cannot delete one.
+//
+// Three steps, in this order, each of which a repeat does again:
+//  1. every grant of the memory is revoked, with its tokens (KV);
+//  2. the memory's object is emptied: tables, keys and alarm;
+//  3. the name is taken off the directory.
+// A failure in 1 leaves the memory as it was, less the grants revoked so
+// far; in 2, the memory as it was with no grant; in 3, no memory, listed as
+// one that does not exist. Grants go first so that nothing is destroyed
+// while a client can still be let in by one; a grant listed too late to be
+// revoked (KV lists lag by seconds) is refused by the object, which knows it
+// was made for an instance that is gone (memory-object.ts, instance).
+// Answers 404 when there was nothing to delete: no grant, nothing held and
+// not listed, which is also what a repeat after a complete deletion gets.
+async function serveDelete(request: Request, env: Env, name: string): Promise<Response> {
+  const confirm = new URL(request.url).searchParams.get("confirm");
+  if (confirm !== name) {
+    return json(400, {
+      error: `to delete memory ${JSON.stringify(name)} for good, repeat its name: DELETE /admin/memories/${name}?confirm=${name}`,
+    });
+  }
+  try {
+    const revoked = await step("grants", async () => {
+      const oauth = helpersFor(env, new URL(request.url), name);
+      const ids: string[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = await oauth.listUserGrants(name, cursor === undefined ? {} : { cursor });
+        for (const g of page.items) ids.push(g.id);
+        cursor = page.cursor;
+      } while (cursor !== undefined);
+      for (const id of ids) await oauth.revokeGrant(id, name);
+      return ids.length;
+    });
+    const emptied = (await step("object", () => env.MEMORY.getByName(name).remove())) === "removed";
+    const unlisted = await step("directory", () => env.DIRECTORY.getByName(directoryName).unregister(name));
+    if (revoked === 0 && !emptied && !unlisted) return noSuchMemory(name);
+    return json(200, { memory: name, deleted: true, revokedGrants: revoked, emptied, unlisted });
+  } catch (err) {
+    if (!(err instanceof DeleteStep)) throw err;
+    logLine({ msg: "admin failed", memory: name, action: "delete", step: err.step, error: errorName(err.failure) });
+    return json(500, { error: `the memory was not fully deleted (the ${err.step} step failed); repeat the request to finish` });
+  }
 }
 
 // stamp writes a time as Go's export file names do, in UTC: 20261111-080000.

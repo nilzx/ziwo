@@ -32,6 +32,7 @@ const en = {
   detail: "The server said: {detail}",
   cimd: "The client's description at {url} could not be fetched, or is not valid. Try again later.",
   unavailable: "This memory cannot be opened right now. Try again in a moment.",
+  tooMany: "Too many attempts from here were not accepted. Wait {seconds} seconds, then go back to the form and try again.",
 };
 
 export type TextKey = keyof typeof en;
@@ -65,6 +66,7 @@ const zh: Record<TextKey, string> = {
   detail: "服务器的说明:{detail}",
   cimd: "无法获取 {url} 上的客户端描述,或者它无效。请稍后再试。",
   unavailable: "这个记忆体现在打不开。请稍后再试。",
+  tooMany: "从这里提交的未通过次数太多。请等 {seconds} 秒,再返回表单重试。",
 };
 
 export const consentTexts: Record<Lang, Record<TextKey, string>> = { en, zh };

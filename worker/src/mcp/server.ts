@@ -3,7 +3,7 @@
 // Durable Object in one RPC.
 
 import { type CallToolResult, McpServer } from "@modelcontextprotocol/server";
-import type { QueryVector } from "../embed";
+import type { QueryEmbedding } from "../embed";
 import type { Memory } from "../memory-object";
 import { check, instructions, listed, tools } from "./tools";
 import { logLine } from "../log";
@@ -22,7 +22,11 @@ export interface Call {
   stub: DurableObjectStub<Memory>;
   // Embeds a recall's query within its time limit; absent when search by
   // meaning is off. The object never embeds a query itself.
-  embedQuery?: (query: string) => Promise<QueryVector | undefined>;
+  embedQuery?: (query: string) => Promise<QueryEmbedding>;
+  // The instance of the memory an OAuth grant was given for, when the grant
+  // recorded one: the object refuses a call made for another instance, a
+  // memory deleted and created again under the same name.
+  instance?: string;
 }
 
 function toolError(text: string): CallToolResult {
@@ -46,6 +50,7 @@ export function buildServer(call: Call): McpServer {
         const start = Date.now();
         let outcome: "ok" | "invalid" | "error" = "ok";
         let failed = "";
+        let embedded: QueryEmbedding["took"];
         try {
           const checked = check(def, raw, call.client);
           if ("invalid" in checked) {
@@ -55,9 +60,17 @@ export function buildServer(call: Call): McpServer {
           let toolCall = checked.ok;
           if (toolCall.tool === "recall" && call.embedQuery !== undefined) {
             const meaning = await call.embedQuery(toolCall.query);
-            if (meaning !== undefined) toolCall = { ...toolCall, meaning };
+            embedded = meaning.took;
+            if (meaning.vector !== undefined) toolCall = { ...toolCall, meaning: meaning.vector };
           }
-          const answer = await call.stub.answer(toolCall);
+          const answer = await call.stub.answer(toolCall, call.instance);
+          if ("gone" in answer) {
+            // The memory was deleted, or deleted and made again, after the
+            // credential was checked: the existing words for a failure.
+            outcome = "error";
+            failed = "NoSuchMemory";
+            return toolError(internalError);
+          }
           if ("invalid" in answer) {
             outcome = "invalid";
             return toolError(answer.invalid);
@@ -72,6 +85,8 @@ export function buildServer(call: Call): McpServer {
           logLine({
             msg: "tool", memory: call.memory, tool: def.name, outcome, dur_ms: Date.now() - start,
             ...(failed === "" ? {} : { error: failed }),
+            // Figures and fixed words about the query's embedding, never the query.
+            ...(embedded === undefined ? {} : { embed_ms: embedded.ms, embed_second: embedded.second, embed_answer: embedded.answer }),
           });
         }
       },

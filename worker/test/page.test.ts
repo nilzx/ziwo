@@ -42,7 +42,8 @@ function untouchable(): { env: Env; touched: string[] } {
     });
   return {
     env: {
-      MEMORY: ns("MEMORY") as Env["MEMORY"], DIRECTORY: ns("DIRECTORY") as Env["DIRECTORY"], OAUTH_KV: ns("OAUTH_KV") as Env["OAUTH_KV"],
+      MEMORY: ns("MEMORY") as Env["MEMORY"], DIRECTORY: ns("DIRECTORY") as Env["DIRECTORY"], GUARD: ns("GUARD") as Env["GUARD"],
+      OAUTH_KV: ns("OAUTH_KV") as Env["OAUTH_KV"],
       ADMIN_SECRET: adminSecret,
     },
     touched,

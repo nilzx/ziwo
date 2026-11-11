@@ -33,7 +33,7 @@ export function topicVector(text: string): number[] {
   return v;
 }
 
-export const topicSettings: EmbedSettings = { model: "topic-test", dims: topicDims, minSimilarity: 0.45, queryTimeoutMs: 2000 };
+export const topicSettings: EmbedSettings = { model: "topic-test", dims: topicDims, minSimilarity: 0.45, queryTimeoutMs: 2000, queryHedgeMs: 1000 };
 
 // TopicEmbedder counts its calls and texts; down fails every call, refuse
 // fails any call with a text containing it, as an over-long input would be.

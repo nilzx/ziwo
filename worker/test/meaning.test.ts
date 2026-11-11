@@ -107,6 +107,39 @@ describe("the query", () => {
     ]);
   });
 
+  it("puts its figures on the recall's line in the access log, in fixed words, and nothing of the query", async () => {
+    const s = await setup({ EMBED_QUERY_HEDGE_MS: "50" });
+    const log = vi.spyOn(console, "log");
+    await s.c.ok("recall", { query: "feline", session_id: s.session });
+    await s.c.ok("expand", { ids: [s.cat], session_id: s.session });
+    s.workerAI.fail = true;
+    await s.c.ok("recall", { query: "部署", session_id: s.session });
+    s.workerAI.fail = false;
+    s.workerAI.delay = 5000; // both calls slow: the limit ends it
+    s.c.env = { ...s.c.env, EMBED_QUERY_TIMEOUT_MS: "200" };
+    await s.c.ok("recall", { query: "部署", session_id: s.session });
+    const lines = logLines(log);
+    const tools = lines.filter((l) => l.msg === "tool");
+    expect(tools.map((l) => [l.tool, l.embed_second, l.embed_answer])).toEqual([
+      ["recall", "not_needed", "first"],
+      ["expand", undefined, undefined],
+      ["recall", "after_failure", "none"],
+      ["recall", "after_delay", "none"],
+    ]);
+    for (const l of tools.filter((t) => t.tool === "recall")) {
+      expect(typeof l.embed_ms).toBe("number");
+      expect(Object.keys(l).sort()).toEqual(["dur_ms", "embed_answer", "embed_ms", "embed_second", "memory", "msg", "outcome", "tool"]);
+    }
+    expect(tools[3]!.embed_ms as number).toBeGreaterThanOrEqual(150);
+    // Two calls for each of the last two recalls.
+    expect(s.workerAI.calls.filter((x) => x.form === "queries")).toHaveLength(5);
+    expect(lines.filter((l) => l.msg === "query embedding failed")).toEqual([
+      { msg: "query embedding failed", reason: "error", error: "Error" },
+      { msg: "query embedding failed", reason: "timeout", limit_ms: 200 },
+    ]);
+    for (const l of lines) for (const w of ["feline", "部署"]) expect(JSON.stringify(l)).not.toContain(w);
+  });
+
   it("is not embedded when search by meaning is off", async () => {
     const s = await setup();
     s.c.env = { ...s.c.env, EMBED_MODEL: "" };

@@ -31,6 +31,12 @@ export class Directory extends DurableObject<Env> {
     this.ctx.storage.sql.exec(`INSERT INTO memories(name, created_at) VALUES(?, ?) ON CONFLICT(name) DO NOTHING`, name, at);
   }
 
+  // unregister takes a deleted memory off the list, and says whether it was
+  // on it.
+  unregister(name: string): boolean {
+    return this.ctx.storage.sql.exec(`DELETE FROM memories WHERE name = ? RETURNING name`, name).toArray().length > 0;
+  }
+
   // list returns every memory listed, by name.
   list(): Listed[] {
     return this.ctx.storage.sql

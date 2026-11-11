@@ -39,6 +39,9 @@ export const paths = {
 export interface GrantProps {
   memory: string;
   client: string;
+  // The memory's instance when the grant was given (memory-object.ts); a
+  // grant from before instances were recorded has none and is not checked.
+  instance?: string;
 }
 
 // What the admin page shows of a grant, unsealed in KV.

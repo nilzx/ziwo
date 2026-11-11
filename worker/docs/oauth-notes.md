@@ -15,6 +15,14 @@ Fetched 2026-11-12. The code is `src/oauth.ts` (authorization server, metadata, 
 
 The library fixes its list of resources at construction. The Worker builds a server per request with the one resource the request concerns: `https://<origin>/<name>/mcp` from the path, from the `resource` parameter, or from the memory name the library puts in front of each code and token (the grant's `userId` is the memory's name). The issuer is the request's origin (https, or http on a loopback host). Addresses given to clients are unchanged.
 
+## Deleting a memory, and the limit on guessing
+
+Fetched 2026-11-12: Durable Object storage (`deleteAll`, the synchronous KV API): https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/index.md; alarms: https://developers.cloudflare.com/durable-objects/api/alarms/index.md; the rate limiting binding: https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/index.md.
+
+- `DELETE /admin/memories/<name>?confirm=<name>` revokes the memory's grants, empties its object and unlists the name (`serveDelete` in `src/admin.ts`). KV lists lag, so a grant given seconds before can be missed and outlive the memory in KV; each grant records the memory's instance id (`meta.instance`, drawn anew for every memory made), and the object refuses a tool call whose grant names another instance or that reaches it empty. Discovery and `tools/list` do not reach the object and still answer such a token until KV forgets it.
+- `deleteAll()` also deletes the alarm from compatibility date 2026-02-24; `remove()` calls `deleteAlarm()` as well.
+- The limit on guessing (`src/guard.ts`) is a Durable Object per address, not the rate limiting binding: `limit()` always counts, so it cannot refuse a right credential during a lock without counting it; its counts are per location and approximate; it needs a `namespace_id` unique in the deployer's account.
+
 ## Steps in the page not checked against a running client
 
 None of the client steps were run against a client: every step for the Claude apps, Claude Code, ChatGPT, Codex and the ChatGPT desktop app is written from the documentation above. The flow itself was checked with curl and Chrome against `wrangler dev`.

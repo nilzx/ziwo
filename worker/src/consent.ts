@@ -20,6 +20,7 @@ import {
 } from "@cloudflare/workers-oauth-provider";
 import type { Note } from "./admin";
 import { consentTexts, type Lang, pickLang, type TextKey } from "./consent-texts";
+import { waitFor } from "./guard";
 import { encoder, plain, sha256Hex, validName } from "./http";
 import type { Env } from "./index";
 import { clipText } from "./log";
@@ -253,17 +254,19 @@ async function readForm(request: Request): Promise<URLSearchParams | undefined> 
 }
 
 // weigh says which credential approves a grant for memory: the memory's own
-// token, or the admin secret for a memory that exists. The memory's object is
-// asked once whatever was typed, so the answer takes as long either way.
-async function weigh(env: Env, memory: string, typed: string): Promise<"token" | "admin" | undefined> {
+// token, or the admin secret for a memory that exists; and the memory's
+// instance, which the grant records. The memory's object is asked the same
+// whatever was typed, so the answer takes as long either way.
+async function weigh(env: Env, memory: string, typed: string): Promise<{ via?: "token" | "admin"; instance: string }> {
   const credential = typed.trim();
   const hash = await sha256Hex(credential);
-  const access = await env.MEMORY.getByName(memory).authorize(hash);
-  if (access === "ok") return "token";
+  const stub = env.MEMORY.getByName(memory);
+  const [access, instance] = await Promise.all([stub.authorize(hash), stub.instance()]);
+  if (access === "ok") return { via: "token", instance };
   const secret = env.ADMIN_SECRET;
-  if (secret === undefined || secret === "" || credential === "") return undefined;
+  if (secret === undefined || secret === "" || credential === "") return { instance };
   const same = crypto.subtle.timingSafeEqual(encoder.encode(hash), encoder.encode(await sha256Hex(secret)));
-  return same && access !== "unknown" ? "admin" : undefined;
+  return same && access !== "unknown" ? { via: "admin", instance } : { instance };
 }
 
 // decide answers the consent form.
@@ -295,13 +298,24 @@ async function decide(request: Request, env: Env, issuer: string, note: Note): P
   }
 
   let via: "token" | "admin" | undefined;
+  let instance: string;
   try {
-    via = await weigh(env, memory, form.get("credential") ?? "");
+    ({ via, instance } = await weigh(env, memory, form.get("credential") ?? ""));
   } catch {
     note.outcome = "unavailable";
     return messagePage(503, lang, "unavailable");
   }
-  if (via === undefined) {
+  // The limit on guessing (guard.ts). The handle is left unused, so the
+  // person can go back to the form once the wait is over; nothing here
+  // writes to KV, however often it is asked.
+  const wait = await waitFor(env, request, via !== undefined);
+  if (wait > 0) {
+    note.outcome = "too_many";
+    const res = messagePage(429, lang, "tooMany", { seconds: String(wait) });
+    res.headers.set("retry-after", String(wait));
+    return res;
+  }
+  if (via === undefined || instance === "unknown") {
     // The handle is left unused; a fresh page is made from the request.
     return authorizePage(env, issuer, new URL(`${issuer}${paths.authorize}?${form.get("q") ?? ""}`), lang, note, true);
   }
@@ -316,7 +330,7 @@ async function decide(request: Request, env: Env, issuer: string, note: Note): P
     }
     const client = clipText((await oauth.describeConsent(approved.request)).clientName, 120);
     const metadata: GrantMetadata = { client, via };
-    const props: GrantProps = { memory, client };
+    const props: GrantProps = { memory, client, instance };
     const { redirectTo } = await oauth.completeAuthorization({ request: approved.request, userId: memory, metadata, scope: [], props });
     note.outcome = "approved";
     note.cred = via;

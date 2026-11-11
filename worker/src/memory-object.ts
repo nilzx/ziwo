@@ -14,7 +14,7 @@ import {
 import { Db, type Usage } from "./store/db";
 import { defaultParams, InvalidParamsError, type Params } from "./store/decay";
 import { ExportError, FormatRefusal, type ParsedExport, parseExport, TooLargeError, writeExport } from "./store/export";
-import { logFormat, metaParams, metaTokenHash, metaZone } from "./store/schema";
+import { logFormat, metaInstance, metaParams, metaTokenHash, metaZone } from "./store/schema";
 import { LogFormatError, parseParams, readLogStats, ReplayError, Store } from "./store/store";
 import type { LogStats } from "./store/types";
 import { knownZone, UTC } from "./zone";
@@ -53,8 +53,15 @@ export type ToolCall =
   | { tool: "erase"; args: EraseRequest }
   | { tool: "check" };
 
-// Answer is the text of a tool's answer, or what was wrong with the call.
-export type Answer = { text: string } | Invalid;
+// Gone is a call to a memory that no longer exists, or that was deleted and
+// made again since the grant the call came with was given.
+export interface Gone {
+  gone: true;
+}
+
+// Answer is the text of a tool's answer, what was wrong with the call, or
+// that the memory is gone.
+export type Answer = { text: string } | Invalid | Gone;
 
 // Access is what a token presented for this memory comes to: the memory's
 // own, another, or a memory that was never created.
@@ -96,6 +103,10 @@ export class Memory extends DurableObject<Env> {
   alarmNow: () => number = () => Date.now();
   // Whether this instance set an alarm that has not run yet.
   private wakeSet = false;
+  // The alarm's run under way, if any: a deletion waits for it.
+  private alarmRun?: Promise<void>;
+  // The memory's instance id, once read: see instance.
+  private instanceId?: string;
 
   private get parts(): { store: Store; service: Service } {
     if (this.built === undefined) {
@@ -149,6 +160,16 @@ export class Memory extends DurableObject<Env> {
   // alarm embeds one batch of what waits and sets itself again while more
   // waits, or after a growing delay when the model cannot be used.
   override async alarm(): Promise<void> {
+    const run = this.alarmOnce();
+    this.alarmRun = run;
+    try {
+      await run;
+    } finally {
+      if (this.alarmRun === run) this.alarmRun = undefined;
+    }
+  }
+
+  private async alarmOnce(): Promise<void> {
     this.wakeSet = false;
     const emb = this.emb;
     // An object that holds no memory is left without tables.
@@ -243,6 +264,50 @@ export class Memory extends DurableObject<Env> {
     // Compare equal lengths only, and always compare.
     const same = crypto.subtle.timingSafeEqual(a, a.byteLength === b.byteLength ? b : a) && a.byteLength === b.byteLength;
     return same ? "ok" : "rejected";
+  }
+
+  // instance names this memory as it was made: drawn when it was created or
+  // brought back, never carried by an export, and new when a name is used
+  // again after a deletion. A grant records it (consent.ts), so that what
+  // was granted for one memory is refused by the next under the same name.
+  instance(): string | "unknown" {
+    if (!this.exists()) return "unknown";
+    if (this.instanceId === undefined) {
+      // The store draws it when it is first built, which a memory that was
+      // created or brought back always was; building it again draws it if not.
+      if (this.logDb().getMeta(metaInstance) === undefined) void this.store;
+      this.instanceId = this.logDb().getMeta(metaInstance) ?? "";
+    }
+    return this.instanceId;
+  }
+
+  // holdsMemory says whether this object holds a memory, cheaply once the
+  // store is built: only a memory that exists builds it, and a deletion
+  // drops it.
+  private holdsMemory(): boolean {
+    return this.built !== undefined || this.storedTokenHash() !== undefined;
+  }
+
+  // remove empties this object: every table, every key and the alarm, so
+  // that its name answers as one never used, and a memory made under it
+  // later starts empty. An embedding batch under way is let finish first;
+  // it would otherwise write into what is made next. Repeated, it does the
+  // same and says "unknown".
+  async remove(): Promise<"removed" | "unknown"> {
+    while (this.alarmRun !== undefined) await this.alarmRun.catch(() => undefined);
+    // From here to the calls below nothing awaits, so no other call sees a
+    // part of it.
+    const held = this.hasLog();
+    this.built = undefined;
+    this.instanceId = undefined;
+    this.wakeSet = false;
+    // What the model refused is known by row numbers, which start again.
+    if (this.embedding) this.embedding = new Embedding(this.embedding.settings, this.embedding.embedder);
+    // On SQLite storage both take effect at once; the promises only report
+    // that the writes were confirmed. deleteAll drops the alarm too from
+    // compatibility date 2026-02-24 on; deleteAlarm says so here.
+    await Promise.all([this.ctx.storage.deleteAlarm(), this.ctx.storage.deleteAll()]);
+    return held ? "removed" : "unknown";
   }
 
   // create makes this memory with the given token hash, unless it exists.
@@ -352,7 +417,12 @@ export class Memory extends DurableObject<Env> {
 
   // answer carries out one tool call and lays its answer out as text, as
   // Go's server does, with times in the zone of the session that asked.
-  answer(call: ToolCall): Answer {
+  // instance, when given, is the one the call's grant was made for.
+  answer(call: ToolCall, instance?: string): Answer {
+    // Never build a store for a name that holds nothing: a call let in just
+    // before a deletion, or by a grant that outlived it, would make one.
+    if (!this.holdsMemory()) return { gone: true };
+    if (instance !== undefined && instance !== this.instance()) return { gone: true };
     return outcome((): Answer => {
       switch (call.tool) {
         case "get_context": {
@@ -583,6 +653,7 @@ export class Memory extends DurableObject<Env> {
       this.store.restore(parsed, this.now(), tokenHash, settings);
     } catch (err) {
       this.built = undefined;
+      this.instanceId = undefined;
       // On SQLite storage this empties the database at once and atomically;
       // the promise only reports that the write was confirmed.
       void this.ctx.storage.deleteAll();

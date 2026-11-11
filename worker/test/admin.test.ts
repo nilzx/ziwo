@@ -130,7 +130,9 @@ describe("the admin routes", () => {
     const m = await createMemory();
     for (const [method, path] of [
       ["POST", "/admin/memories"], ["PUT", "/admin/memories"], ["GET", "/admin/memories/"], ["GET", "/admin"], ["GET", "/admin/other"],
-      ["DELETE", `/admin/memories/${m.name}`], ["GET", `/admin/memories/${m.name}/settings`], ["POST", `/admin/memories/${m.name}/settings`],
+      // DELETE on a memory is a route now (delete.test.ts).
+      ["PATCH", `/admin/memories/${m.name}`], ["DELETE", `/admin/memories/${m.name}/check`],
+      ["GET", `/admin/memories/${m.name}/settings`], ["POST", `/admin/memories/${m.name}/settings`],
       ["POST", `/admin/memories/${m.name}/check`], ["GET", `/admin/memories/${m.name}/rebuild`], ["POST", `/admin/memories/${m.name}/export`],
       ["GET", `/admin/memories/${m.name}/import`], ["GET", `/admin/memories/${m.name}/token`], ["GET", `/admin/memories/${m.name}/check/x`],
       ["GET", `/admin/memories/${m.name}/other`],

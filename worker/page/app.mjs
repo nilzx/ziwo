@@ -6,7 +6,7 @@
 import { connectGuide } from "./connect.mjs";
 import { makeH } from "./dom.mjs";
 import {
-  ApiError, defaultParams, makeApi, SecretError, memoryHash, paramNames, pickLanguage, reportGroups, route, sealedFileName,
+  ApiError, defaultParams, makeApi, SecretError, memoryHash, namesMatch, paramNames, pickLanguage, reportGroups, route, sealedFileName,
   settingsChange,
 } from "./logic.mjs";
 import { minPassphrase, open, seal, SealError } from "./seal.mjs";
@@ -21,6 +21,8 @@ const state = {
   issued: undefined,
   /** @type {{ name: string, lines: string[] } | undefined} what an import reported */
   flash: undefined,
+  /** @type {string | undefined} what a deletion reported, shown once on the list */
+  notice: undefined,
 };
 
 /** @param {string} key @param {Record<string, string | number>} [vars] */
@@ -154,6 +156,7 @@ function lock() {
   state.api = undefined;
   state.issued = undefined;
   state.flash = undefined;
+  state.notice = undefined;
   history.replaceState(null, "", "#/");
   render();
 }
@@ -199,7 +202,10 @@ async function listView() {
       say(out);
     });
   refresh.addEventListener("click", load);
-  show(t("memoriesTitle"), table, h("p", {}, refresh), out, createSection(), importSection());
+  const notice = state.notice;
+  state.notice = undefined;
+  show(t("memoriesTitle"), notice === undefined ? null : h("div", { class: "flash", role: "status" }, h("p", { text: notice })),
+    table, h("p", {}, refresh), out, createSection(), importSection());
   await load();
 }
 
@@ -301,7 +307,8 @@ async function memoryView(name) {
     settingsSection(name, m),
     checkSection(name),
     rebuildSection(name),
-    exportSection(name));
+    exportSection(name),
+    deleteSection(name));
 }
 
 /** @param {Record<string, any>} m @param {string} address */
@@ -389,7 +396,7 @@ function grantsSection(name) {
   refresh.addEventListener("click", load);
   load();
   return h("section", {}, h("h3", { text: t("grantsTitle") }), h("p", { text: t("grantsIntro") }), h("p", { class: "warn", text: t("grantsRevokeWhen") }),
-    list, h("p", {}, refresh), out);
+    list, h("p", { class: "hint", text: t("grantsLag") }), h("p", {}, refresh), out);
 }
 
 /** @param {string} name */
@@ -518,7 +525,41 @@ function exportSection(name) {
       });
     },
   }, h("p", { text: t("exportIntro") }), pass.wrap, again.wrap, button);
-  return h("section", {}, h("h3", { text: t("exportTitle") }), form, out);
+  return h("section", {}, h("h3", { id: "export-title", tabindex: -1, text: t("exportTitle") }), form, out);
+}
+
+// Deleting asks for the name typed out, says that an export is the only way
+// back, and offers the export first. The API wants the name repeated too.
+/** @param {string} name */
+function deleteSection(name) {
+  const typed = field(t("deleteNameLabel", { name }), { required: true, autocomplete: "off", autocapitalize: "none", spellcheck: "false" }, t("deleteNameHint"));
+  const out = outBox();
+  const toExport = h("button", {
+    type: "button",
+    text: t("deleteExportFirst"),
+    onclick: () => {
+      const title = document.getElementById("export-title");
+      title?.scrollIntoView({ block: "start" });
+      title?.focus();
+    },
+  });
+  const button = h("button", { type: "submit", text: t("deleteButton") });
+  const form = h("form", {
+    onsubmit: (/** @type {Event} */ e) => {
+      e.preventDefault();
+      const value = typed.input.value;
+      if (!namesMatch(value, name)) return sayError(out, t("deleteMismatch", { name }));
+      act(/** @type {HTMLButtonElement} */ (button), out, async () => {
+        const r = await /** @type {ReturnType<typeof makeApi>} */ (state.api).deleteMemory(name, value.trim());
+        state.issued = undefined;
+        state.flash = undefined;
+        state.notice = t("deleted", { name, grants: num(r.revokedGrants) });
+        go("#/");
+      });
+    },
+  }, typed.wrap, button);
+  return h("section", {}, h("h3", { text: t("deleteTitle") }), h("p", { text: t("deleteIntro") }),
+    h("p", { class: "warn", text: t("deleteNoWayBack") }), h("p", {}, toExport), form, out);
 }
 
 // ---------------------------------------------------------------- routing
