@@ -2,18 +2,29 @@ package store
 
 // The database has two kinds of tables.
 //
-// The log tables are the record: events is the only source of truth and can
-// never be updated or deleted from. vectors is kept alongside it because
-// embeddings are expensive to recompute, although they too can be rebuilt.
+// The log tables are the record: events is the only source of truth and is
+// append-only. vectors is kept alongside it because embeddings are expensive
+// to recompute, although they too can be rebuilt. meta holds what describes
+// the file itself: the log format, the access token's hash, and what the
+// derived tables were built from.
 //
 // The derived tables are a projection of the event log. They are dropped and
-// replayed from events whenever derivedVersion changes, so their layout can
-// change freely between releases without migrations.
+// replayed from events whenever derivedVersion or the forgetting parameters
+// change, so their layout can change freely between releases.
+
+// logFormat is the format of the event log: which kinds of event exist and
+// what their payloads hold. The log is the one thing that cannot be rebuilt,
+// so its format is versioned. A file written in an older format is upgraded
+// by the migrations in format.go; a file written in a newer one is refused.
+//
+//	0  before the format was versioned. Reading a memory in full was logged
+//	   as a "recall" event without a query.
+//	1  "recall" lists memories; reading in full is its own "expand" event.
+const logFormat = 1
 
 // derivedVersion identifies the layout of the derived tables and the logic
-// that fills them. Bump it whenever either changes. The forgetting parameters
-// are tracked alongside it, so a change to them also triggers a replay.
-const derivedVersion = "2"
+// that fills them. Bump it whenever either changes.
+const derivedVersion = "3"
 
 const logSchema = `
 CREATE TABLE IF NOT EXISTS events (
@@ -22,12 +33,6 @@ CREATE TABLE IF NOT EXISTS events (
   kind    TEXT    NOT NULL,
   payload TEXT    NOT NULL  -- JSON
 ) STRICT;
-
-CREATE TRIGGER IF NOT EXISTS events_no_update BEFORE UPDATE ON events
-BEGIN SELECT RAISE(ABORT, 'events is append-only'); END;
-
-CREATE TRIGGER IF NOT EXISTS events_no_delete BEFORE DELETE ON events
-BEGIN SELECT RAISE(ABORT, 'events is append-only'); END;
 
 CREATE TABLE IF NOT EXISTS vectors (
   n     INTEGER NOT NULL, -- memories.n
@@ -40,6 +45,22 @@ CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 ) STRICT, WITHOUT ROWID;
+` + appendOnlyTriggers
+
+// appendOnlyTriggers make the database itself refuse to change or remove an
+// event. A format migration is the one thing that lifts them, inside its own
+// transaction.
+const appendOnlyTriggers = `
+CREATE TRIGGER IF NOT EXISTS events_no_update BEFORE UPDATE ON events
+BEGIN SELECT RAISE(ABORT, 'events is append-only'); END;
+
+CREATE TRIGGER IF NOT EXISTS events_no_delete BEFORE DELETE ON events
+BEGIN SELECT RAISE(ABORT, 'events is append-only'); END;
+`
+
+const dropAppendOnlyTriggers = `
+DROP TRIGGER IF EXISTS events_no_update;
+DROP TRIGGER IF EXISTS events_no_delete;
 `
 
 const dropDerived = `
@@ -51,12 +72,13 @@ DROP TABLE IF EXISTS sessions;
 
 const derivedSchema = `
 CREATE TABLE sessions (
-  id         TEXT PRIMARY KEY,
-  started_at INTEGER NOT NULL,
-  model      TEXT    NOT NULL, -- self-reported by the model; '' when unknown
-  client     TEXT    NOT NULL  -- MCP client name; '' when unknown
+  id             TEXT PRIMARY KEY,
+  started_at     INTEGER NOT NULL,
+  last_active_at INTEGER NOT NULL, -- last time it started, wrote or recalled
+  model          TEXT    NOT NULL, -- self-reported by the model; '' when unknown
+  client         TEXT    NOT NULL  -- MCP client name; '' when unknown
 ) STRICT;
-CREATE INDEX sessions_by_client ON sessions(client, started_at);
+CREATE INDEX sessions_by_activity ON sessions(last_active_at);
 
 -- One row per model that has ever loaded this memory.
 CREATE TABLE carriers (
@@ -84,12 +106,15 @@ CREATE TABLE memories (
   pointer          TEXT    NOT NULL,
   hash             TEXT    NOT NULL,
   last_recalled_at INTEGER NOT NULL,
-  recall_count     INTEGER NOT NULL,
-  -- Forgetting. See decay.go. A core memory never fades and has no crossings.
-  core             INTEGER NOT NULL, -- 0 or 1
-  strength         REAL    NOT NULL, -- days
-  fade_at          INTEGER,          -- when only the gist stays findable
-  archive_at       INTEGER           -- when it leaves ordinary search
+  recall_count     INTEGER NOT NULL, -- times listed or read
+  -- Forgetting. See decay.go. The clock is the largest ord.
+  ord              INTEGER NOT NULL UNIQUE, -- 1 for the first memory written, 2 for the next
+  touched_ord      INTEGER NOT NULL, -- clock when it last came to mind: listed or read
+  read_ord         INTEGER NOT NULL, -- clock when it was last read in full
+  core             INTEGER NOT NULL, -- 0 or 1; a core memory never fades
+  strength         REAL    NOT NULL, -- counted in memories
+  fade_at          REAL,             -- clock value from which only the gist stays findable
+  archive_at       REAL              -- clock value from which it leaves ordinary search
 ) STRICT;
 CREATE INDEX memories_by_hash ON memories(hash, created_at);
 CREATE INDEX memories_by_archive ON memories(archive_at) WHERE core = 0;

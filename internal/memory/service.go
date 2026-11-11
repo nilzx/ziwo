@@ -1,5 +1,5 @@
-// Package memory is the behaviour of the memory system: what may be written,
-// how memories are found again, and the background work that keeps writes and
+// Package memory is the behaviour of one memory: what may be written, how
+// memories are found again, and the background work that keeps writes and
 // reads fast.
 package memory
 
@@ -32,15 +32,11 @@ const (
 	MaxRecall     = 20
 	MaxExpand     = 10
 
-	// SessionWindow is how long after a session starts a memory written
-	// without a session id is still attached to it.
-	SessionWindow = 30 * time.Minute
-
 	embedBatchSize = 16
 
 	// relevanceFloor drops results whose relevance is below this share of the
-	// best result's. Being returned strengthens a memory, so a memory that
-	// only brushes the query must not be returned.
+	// best result's. Being listed restarts a memory's decay, so a memory that
+	// only brushes the query must not be listed.
 	relevanceFloor = 0.3
 )
 
@@ -67,6 +63,9 @@ type Config struct {
 	RecentLimit int
 	// CoreLimit is how many core memories a new session is shown. Default 12.
 	CoreLimit int
+	// ParallelWindow is how recently another session must have been active
+	// for a new session to be told about it. Default 15 minutes.
+	ParallelWindow time.Duration
 	// SweepEvery is how often the vectors of archived memories are dropped.
 	// Default one hour.
 	SweepEvery time.Duration
@@ -74,7 +73,7 @@ type Config struct {
 	Now        func() time.Time
 }
 
-// Service ties the store, the embedder and the vector index together.
+// Service ties one store to the embedder and its vector index.
 type Service struct {
 	st  *store.Store
 	emb embed.Embedder // nil: keyword search only
@@ -90,7 +89,6 @@ type Service struct {
 	skip    map[int64]bool // memories the embedding server refuses
 
 	mu      sync.Mutex
-	bound   map[string]string // MCP connection id -> session id
 	pending []store.RecallNote
 }
 
@@ -111,6 +109,9 @@ func New(ctx context.Context, st *store.Store, emb embed.Embedder, cfg Config) (
 	if cfg.CoreLimit == 0 {
 		cfg.CoreLimit = 12
 	}
+	if cfg.ParallelWindow == 0 {
+		cfg.ParallelWindow = 15 * time.Minute
+	}
 	if cfg.SweepEvery == 0 {
 		cfg.SweepEvery = time.Hour
 	}
@@ -122,9 +123,8 @@ func New(ctx context.Context, st *store.Store, emb embed.Embedder, cfg Config) (
 	}
 	s := &Service{
 		st: st, emb: emb, ix: vector.New(), cfg: cfg, log: cfg.Logger,
-		wake:  make(chan struct{}, 1),
-		skip:  make(map[int64]bool),
-		bound: make(map[string]string),
+		wake: make(chan struct{}, 1),
+		skip: make(map[int64]bool),
 	}
 	if emb != nil {
 		err := st.Vectors(ctx, emb.Model(), func(n int64, vec []float32) error {
@@ -164,21 +164,18 @@ func (s *Service) Sync(ctx context.Context) error {
 	if err := s.flushRecalls(ctx); err != nil {
 		return err
 	}
-	if err := s.Sweep(ctx); err != nil {
-		return err
-	}
-	if s.emb == nil {
-		return nil
-	}
-	for {
+	for s.emb != nil {
 		n, err := s.embedBatch(ctx)
 		if err != nil {
 			return err
 		}
 		if n == 0 {
-			return nil
+			break
 		}
 	}
+	// Last, so that it also catches a vector the background worker finished
+	// for a memory that was archived in the meantime.
+	return s.Sweep(ctx)
 }
 
 // Indexed reports how many memories can be found by meaning.
@@ -188,25 +185,29 @@ func (s *Service) Indexed() int { return s.ix.Len() }
 type ContextView struct {
 	Session store.Session
 	Carrier store.CarrierNote
-	Core    []store.Memory // memories that never fade, most important first
-	Recent  []store.Memory // newest memories not archived and not listed under Core
+	Core    []store.Memory  // memories that never fade, most important first
+	Recent  []store.Memory  // newest memories not archived and not listed under Core
+	Others  []store.Session // other sessions active within the parallel window
 	Counts  store.TierCounts
-	Now     time.Time
+	Clock   int64     // the experience clock when the session started
+	Now     time.Time // the wall clock when the session started
 }
 
 // Context starts a session for the given carrier and returns what it should
-// know before the conversation begins. conn identifies the MCP connection, so
-// later writes on it can be attached to this session. Being shown here does
-// not count as a recall.
-func (s *Service) Context(ctx context.Context, model, client, conn string) (ContextView, error) {
+// know before the conversation begins. The session's id is what ties later
+// writes to this conversation, on whatever device it continues. Being shown
+// here does not count as coming to mind.
+func (s *Service) Context(ctx context.Context, model, client string) (ContextView, error) {
 	model, client = clip(model, 120), clip(client, 120)
 	now := s.cfg.Now()
 	sess, note, err := s.st.StartSession(ctx, now, model, client)
 	if err != nil {
 		return ContextView{}, err
 	}
-	s.bind(conn, sess.ID)
 	view := ContextView{Session: sess, Carrier: note, Now: now}
+	if view.Clock, err = s.st.Clock(ctx); err != nil {
+		return ContextView{}, err
+	}
 	if view.Core, err = s.st.Core(ctx, s.cfg.CoreLimit); err != nil {
 		return ContextView{}, err
 	}
@@ -214,7 +215,7 @@ func (s *Service) Context(ctx context.Context, model, client, conn string) (Cont
 	for _, m := range view.Core {
 		shown[m.ID] = true
 	}
-	recent, err := s.st.Recent(ctx, now, s.cfg.RecentLimit+len(view.Core))
+	recent, err := s.st.Recent(ctx, view.Clock, s.cfg.RecentLimit+len(view.Core))
 	if err != nil {
 		return ContextView{}, err
 	}
@@ -223,40 +224,33 @@ func (s *Service) Context(ctx context.Context, model, client, conn string) (Cont
 			view.Recent = append(view.Recent, m)
 		}
 	}
-	if view.Counts, err = s.st.TierCounts(ctx, now); err != nil {
+	if view.Counts, err = s.st.TierCounts(ctx, view.Clock); err != nil {
+		return ContextView{}, err
+	}
+	if view.Others, err = s.st.ActiveSessions(ctx, now.Add(-s.cfg.ParallelWindow), sess.ID, 3); err != nil {
 		return ContextView{}, err
 	}
 	return view, nil
 }
 
-// RememberRequest is a memory to write, plus what is known about who is writing.
-type RememberRequest struct {
-	store.RememberInput
-	Client string
-	Conn   string
-}
-
-// Remember validates and stores one memory. It returns the memory's id and
-// the session it was attached to. dup is true when the same memory had just
-// been written and nothing new was stored.
-func (s *Service) Remember(ctx context.Context, req RememberRequest) (id, session string, dup bool, err error) {
-	in, err := clean(req.RememberInput)
-	if err != nil {
-		return "", "", false, err
+// Remember validates and stores one memory and returns its id. The memory
+// must name the session it belongs to. dup is true when the same memory had
+// just been written and nothing new was stored.
+func (s *Service) Remember(ctx context.Context, in store.RememberInput) (id string, dup bool, err error) {
+	if in, err = clean(in); err != nil {
+		return "", false, err
 	}
-	now := s.cfg.Now()
-	in.SessionID, err = s.resolveSession(ctx, in.SessionID, req.Conn, clip(req.Client, 120), now)
-	if err != nil {
-		return "", "", false, err
+	id, dup, err = s.st.Remember(ctx, s.cfg.Now(), in)
+	if errors.Is(err, store.ErrNoSession) {
+		return "", false, invalid("unknown session_id %q: call get_context and pass the session id it returns", in.SessionID)
 	}
-	id, dup, err = s.st.Remember(ctx, now, in)
 	if err != nil {
-		return "", "", false, err
+		return "", false, err
 	}
 	if !dup {
 		s.wakeEmbedder()
 	}
-	return id, in.SessionID, dup, nil
+	return id, dup, nil
 }
 
 func clean(in store.RememberInput) (store.RememberInput, error) {
@@ -268,6 +262,9 @@ func clean(in store.RememberInput) (store.RememberInput, error) {
 	in.Pointer = strings.TrimSpace(in.Pointer)
 	in.SessionID = strings.TrimSpace(in.SessionID)
 
+	if in.SessionID == "" {
+		return in, invalid("session_id is required: call get_context first and pass the session id it returns")
+	}
 	if in.Gist == "" {
 		return in, invalid("gist is required: one sentence saying what happened")
 	}
@@ -327,63 +324,10 @@ func clean(in store.RememberInput) (store.RememberInput, error) {
 	return in, nil
 }
 
-// resolveSession decides which session a write belongs to: the one it names,
-// else the one this connection started, else a recent one from the same
-// client, else a new one. A model that never called get_context still gets
-// its memories grouped.
-func (s *Service) resolveSession(ctx context.Context, explicit, conn, client string, now time.Time) (string, error) {
-	if explicit != "" {
-		_, ok, err := s.st.Session(ctx, explicit)
-		if err != nil {
-			return "", err
-		}
-		if !ok {
-			return "", invalid("unknown session_id %q: leave it out, or call get_context to get one", explicit)
-		}
-		return explicit, nil
-	}
-	if id, ok := s.boundTo(conn); ok {
-		return id, nil
-	}
-	sess, ok, err := s.st.LatestSession(ctx, client, now.Add(-SessionWindow))
-	if err != nil {
-		return "", err
-	}
-	if !ok {
-		if sess, _, err = s.st.StartSession(ctx, now, "", client); err != nil {
-			return "", err
-		}
-	}
-	s.bind(conn, sess.ID)
-	return sess.ID, nil
-}
-
-func (s *Service) bind(conn, session string) {
-	if conn == "" {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if len(s.bound) >= 4096 {
-		clear(s.bound) // connections that lose their binding fall back to the time window
-	}
-	s.bound[conn] = session
-}
-
-func (s *Service) boundTo(conn string) (string, bool) {
-	if conn == "" {
-		return "", false
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	id, ok := s.bound[conn]
-	return id, ok
-}
-
-// Result is one memory found by Recall.
+// Result is one memory found by Recall or returned by Expand.
 type Result struct {
 	store.Memory
-	Tier      store.Tier // at the time of the search, before it counted as a recall
+	Tier      store.Tier // at the time of the call, before it counted as coming to mind
 	Score     float64
 	ByKeyword bool
 	ByMeaning bool
@@ -396,9 +340,11 @@ type Result struct {
 // faded ones by their gist or their meaning. A deep search also reads the
 // details of faded memories and reaches archived ones.
 //
-// Every memory returned counts as recalled: it is strengthened and, if it had
-// faded, becomes active again. That write happens after the answer is returned.
-func (s *Service) Recall(ctx context.Context, query string, limit int, deep bool, conn string) ([]Result, error) {
+// Being listed restarts a memory's decay, so a faded or archived memory that
+// is listed is active again. It does not make the memory stronger; only
+// Expand does. That write happens after the answer is returned. session is
+// the caller's session id and may be empty.
+func (s *Service) Recall(ctx context.Context, query string, limit int, deep bool, session string) ([]Result, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, invalid("query is required")
@@ -411,7 +357,10 @@ func (s *Service) Recall(ctx context.Context, query string, limit int, deep bool
 		limit = MaxRecall
 	}
 	depth := max(4*limit, 20)
-	now := s.cfg.Now()
+	clock, err := s.st.Clock(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	// Embedding the query is the slow part, so it runs alongside the keyword search.
 	var byMeaning chan []vector.Hit
@@ -430,7 +379,7 @@ func (s *Service) Recall(ctx context.Context, query string, limit int, deep bool
 		}()
 	}
 
-	byKeyword, err := s.st.SearchText(ctx, query, now, deep, depth)
+	byKeyword, err := s.st.SearchText(ctx, query, clock, deep, depth)
 	if err != nil {
 		return nil, err
 	}
@@ -495,7 +444,7 @@ func (s *Service) Recall(ctx context.Context, query string, limit int, deep bool
 	var kept []scored
 	var top float64
 	for n, m := range found {
-		tier := m.Tier(now)
+		tier := m.Tier(clock)
 		if tier == store.TierArchived && !deep {
 			continue // its vector has not been swept yet
 		}
@@ -507,7 +456,7 @@ func (s *Service) Recall(ctx context.Context, query string, limit int, deep bool
 			Tier:   tier,
 			// Relevance leads. Importance and how well the memory has been
 			// retained scale it by at most a factor of three between them.
-			Score:     relevance * (0.7 + 0.3*m.Importance) * (0.5 + 0.5*m.Retention(now)),
+			Score:     relevance * (0.7 + 0.3*m.Importance) * (0.5 + 0.5*m.Retention(clock)),
 			ByKeyword: c.byKeyword,
 			ByMeaning: c.byMeans,
 		}})
@@ -535,13 +484,14 @@ func (s *Service) Recall(ctx context.Context, query string, limit int, deep bool
 	for i, r := range results {
 		ids[i] = r.ID
 	}
-	s.noteRecall(now, conn, query, ids)
+	s.note(store.RecallNote{At: s.cfg.Now(), Session: s.knownSession(ctx, session), Query: query, IDs: ids, Clock: clock})
 	return results, nil
 }
 
 // Expand returns memories in full, whatever tier they are in. Reading a
-// memory in full counts as recalling it.
-func (s *Service) Expand(ctx context.Context, ids []string, conn string) ([]Result, error) {
+// memory in full is what strengthens it. session is the caller's session id
+// and may be empty.
+func (s *Service) Expand(ctx context.Context, ids []string, session string) ([]Result, error) {
 	var want []string
 	for _, id := range ids {
 		if id = strings.TrimSpace(id); id != "" && !contains(want, id) {
@@ -558,21 +508,36 @@ func (s *Service) Expand(ctx context.Context, ids []string, conn string) ([]Resu
 	if err != nil || len(ms) == 0 {
 		return nil, err
 	}
-	now := s.cfg.Now()
+	clock, err := s.st.Clock(ctx)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]Result, len(ms))
 	found := make([]string, len(ms))
 	for i, m := range ms {
-		out[i] = Result{Memory: m, Tier: m.Tier(now)}
+		out[i] = Result{Memory: m, Tier: m.Tier(clock)}
 		found[i] = m.ID
 	}
-	s.noteRecall(now, conn, "", found)
+	s.note(store.RecallNote{At: s.cfg.Now(), Session: s.knownSession(ctx, session), Read: true, IDs: found, Clock: clock})
 	return out, nil
 }
 
-func (s *Service) noteRecall(at time.Time, conn, query string, ids []string) {
-	session, _ := s.boundTo(conn)
+// knownSession returns id if it names a session and "" otherwise. A read is
+// never refused over who is asking; an id that names nothing is just not
+// recorded.
+func (s *Service) knownSession(ctx context.Context, id string) string {
+	if id = strings.TrimSpace(id); id == "" {
+		return ""
+	}
+	if _, ok, err := s.st.Session(ctx, id); err != nil || !ok {
+		return ""
+	}
+	return id
+}
+
+func (s *Service) note(n store.RecallNote) {
 	s.mu.Lock()
-	s.pending = append(s.pending, store.RecallNote{At: at, Session: session, Query: query, IDs: ids})
+	s.pending = append(s.pending, n)
 	s.mu.Unlock()
 }
 
@@ -606,7 +571,7 @@ func (s *Service) flushRecalls(ctx context.Context) error {
 		s.mu.Unlock()
 		return err
 	}
-	// A recalled memory that had been archived has no vector any more.
+	// A memory that came back from the archive has no vector any more.
 	s.wakeEmbedder()
 	return nil
 }
@@ -628,9 +593,14 @@ func (s *Service) sweepLoop(ctx context.Context) {
 }
 
 // Sweep drops the vectors of memories that have been archived. Fading and
-// archiving themselves need no sweep: a memory's tier is read off the clock.
+// archiving themselves need no sweep: a memory's tier is read off the
+// experience clock.
 func (s *Service) Sweep(ctx context.Context) error {
-	dropped, err := s.st.DropArchivedVectors(ctx, s.cfg.Now())
+	clock, err := s.st.Clock(ctx)
+	if err != nil {
+		return err
+	}
+	dropped, err := s.st.DropArchivedVectors(ctx, clock)
 	if err != nil {
 		return err
 	}
@@ -685,7 +655,11 @@ func (s *Service) embedBatch(ctx context.Context) (int, error) {
 	s.embedMu.Lock()
 	defer s.embedMu.Unlock()
 
-	fetched, err := s.st.Unembedded(ctx, s.emb.Model(), s.cfg.Now(), embedBatchSize+len(s.skip))
+	clock, err := s.st.Clock(ctx)
+	if err != nil {
+		return 0, err
+	}
+	fetched, err := s.st.Unembedded(ctx, s.emb.Model(), clock, embedBatchSize+len(s.skip))
 	if err != nil {
 		return 0, err
 	}

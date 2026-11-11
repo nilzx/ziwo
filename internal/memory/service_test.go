@@ -78,7 +78,7 @@ func (e *topicEmbedder) set(down bool, refuse string) {
 	e.mu.Unlock()
 }
 
-// testClock is a clock the test moves by hand. The service's background
+// testClock is a wall clock the test moves by hand. The service's background
 // workers read it too, so it is locked.
 type testClock struct {
 	mu sync.Mutex
@@ -97,18 +97,29 @@ func (c *testClock) Advance(d time.Duration) {
 	c.t = c.t.Add(d)
 }
 
+// testParams makes an ordinary memory fade once 13 newer ones are written and
+// leave ordinary recall once 30 are, so tests need tens of memories, not
+// hundreds.
+func testParams() store.Params {
+	p := store.DefaultParams()
+	p.BaseStrength = 10
+	return p
+}
+
 type fixture struct {
-	t     *testing.T
-	path  string
-	st    *store.Store
-	svc   *Service
-	clock *testClock
+	t       *testing.T
+	path    string
+	st      *store.Store
+	svc     *Service
+	clock   *testClock
+	session string // the conversation the fixture writes in; started on first use
+	fillers int
 }
 
 func start(t *testing.T, path string, emb embed.Embedder) *fixture {
 	t.Helper()
 	f := &fixture{t: t, path: path, clock: &testClock{t: time.Date(2026, 11, 11, 8, 0, 0, 0, time.UTC)}}
-	st, err := store.Open(context.Background(), path, store.DefaultParams())
+	st, err := store.Open(context.Background(), path, store.Options{Params: testParams(), Create: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,17 +141,49 @@ func (f *fixture) stop() {
 	}
 }
 
-func (f *fixture) remember(gist, body string) string {
+func (f *fixture) begin(model, client string) ContextView {
 	f.t.Helper()
-	id, _, _, err := f.svc.Remember(context.Background(), RememberRequest{
-		RememberInput: store.RememberInput{Gist: gist, Body: body},
-		Client:        "test", Conn: "conn-1",
-	})
+	view, err := f.svc.Context(context.Background(), model, client)
 	if err != nil {
-		f.t.Fatalf("remember %q: %v", gist, err)
+		f.t.Fatalf("get context: %v", err)
+	}
+	return view
+}
+
+func (f *fixture) sess() string {
+	f.t.Helper()
+	if f.session == "" {
+		f.session = f.begin("model-a", "test").Session.ID
+	}
+	return f.session
+}
+
+func (f *fixture) rememberWith(in store.RememberInput) string {
+	f.t.Helper()
+	if in.SessionID == "" {
+		in.SessionID = f.sess()
+	}
+	id, dup, err := f.svc.Remember(context.Background(), in)
+	if err != nil || dup {
+		f.t.Fatalf("remember %q: err=%v dup=%v", in.Gist, err, dup)
 	}
 	f.clock.Advance(time.Minute)
 	return id
+}
+
+func (f *fixture) remember(gist, body string) string {
+	f.t.Helper()
+	return f.rememberWith(store.RememberInput{Gist: gist, Body: body})
+}
+
+// fill lives through n more ordinary moments. Their text shares nothing with
+// what the tests search for.
+func (f *fixture) fill(n int) {
+	f.t.Helper()
+	for i := 0; i < n; i++ {
+		f.fillers++
+		f.remember(fmt.Sprintf("filler %d", f.fillers), "padding")
+	}
 }
 
 func (f *fixture) sync() {
@@ -152,7 +195,7 @@ func (f *fixture) sync() {
 
 func (f *fixture) recall(query string) []Result {
 	f.t.Helper()
-	rs, err := f.svc.Recall(context.Background(), query, 0, false, "conn-1")
+	rs, err := f.svc.Recall(context.Background(), query, 0, false, f.sess())
 	if err != nil {
 		f.t.Fatalf("recall %q: %v", query, err)
 	}
@@ -161,14 +204,23 @@ func (f *fixture) recall(query string) []Result {
 
 func (f *fixture) deepRecall(query string) []Result {
 	f.t.Helper()
-	rs, err := f.svc.Recall(context.Background(), query, 0, true, "conn-1")
+	rs, err := f.svc.Recall(context.Background(), query, 0, true, f.sess())
 	if err != nil {
 		f.t.Fatalf("deep recall %q: %v", query, err)
 	}
 	return rs
 }
 
-// get reads a memory without it counting as a recall.
+func (f *fixture) expand(id string) Result {
+	f.t.Helper()
+	rs, err := f.svc.Expand(context.Background(), []string{id}, f.sess())
+	if err != nil || len(rs) != 1 {
+		f.t.Fatalf("expand %s: %v, %d results", id, err, len(rs))
+	}
+	return rs[0]
+}
+
+// get reads a memory without it counting as coming to mind.
 func (f *fixture) get(id string) store.Memory {
 	f.t.Helper()
 	ms, err := f.st.Get(context.Background(), []string{id})
@@ -176,6 +228,30 @@ func (f *fixture) get(id string) store.Memory {
 		f.t.Fatalf("get %s: %v, %d memories", id, err, len(ms))
 	}
 	return ms[0]
+}
+
+// lived is the experience clock: how many memories have been written.
+func (f *fixture) lived() int64 {
+	f.t.Helper()
+	c, err := f.st.Clock(context.Background())
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return c
+}
+
+func (f *fixture) tier(id string) store.Tier {
+	f.t.Helper()
+	return f.get(id).Tier(f.lived())
+}
+
+func (f *fixture) counts() store.TierCounts {
+	f.t.Helper()
+	c, err := f.st.TierCounts(context.Background(), f.lived())
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return c
 }
 
 func ids(rs []Result) []string {
@@ -186,7 +262,7 @@ func ids(rs []Result) []string {
 	return out
 }
 
-func tempDB(t *testing.T) string { return filepath.Join(t.TempDir(), "ziwo.db") }
+func tempDB(t *testing.T) string { return filepath.Join(t.TempDir(), "test.ziwo") }
 
 // distinct returns n different short strings.
 func distinct(n int) []string {
@@ -245,19 +321,8 @@ func TestRecallRanksAgreementAboveASingleSignal(t *testing.T) {
 
 func TestImportanceBreaksTies(t *testing.T) {
 	f := start(t, tempDB(t), nil)
-	ctx := context.Background()
-	write := func(gist string, importance float64) string {
-		id, _, _, err := f.svc.Remember(ctx, RememberRequest{
-			RememberInput: store.RememberInput{Gist: gist, Body: "一样的正文", Importance: importance},
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		f.clock.Advance(time.Minute)
-		return id
-	}
-	minor := write("小事：一样的正文", 0.1)
-	major := write("大事：一样的正文", 1)
+	minor := f.rememberWith(store.RememberInput{Gist: "小事：一样的正文", Body: "一样的正文", Importance: 0.4})
+	major := f.rememberWith(store.RememberInput{Gist: "大事：一样的正文", Body: "一样的正文", Importance: 0.85})
 
 	// Keyword rank puts one of them first by a hair; importance has to outweigh that.
 	rs := f.recall("一样的正文")
@@ -341,94 +406,156 @@ func TestVectorsSurviveRestartAndBacklogIsPickedUp(t *testing.T) {
 	}
 }
 
-func TestRecallIsRecorded(t *testing.T) {
+func TestWritesNeedASession(t *testing.T) {
+	f := start(t, tempDB(t), nil)
+	ctx := context.Background()
+
+	for name, session := range map[string]string{"no session id": "", "blank": "  ", "an id that names nothing": "s_nope"} {
+		_, _, err := f.svc.Remember(ctx, store.RememberInput{SessionID: session, Gist: "g", Body: "b"})
+		// The message is what the model sees: it has to say what to do.
+		if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "get_context") {
+			t.Errorf("%s: err = %v, want ErrInvalid pointing at get_context", name, err)
+		}
+	}
+	if total, events, _ := f.st.Counts(ctx); total != 0 || events != 0 {
+		t.Errorf("refused writes left %d memories and %d events behind", total, events)
+	}
+
+	// The session id is all that ties a write to its conversation: the same
+	// id from anywhere lands in the same session, with that session's carrier.
+	a := f.begin("model-a", "phone").Session.ID
+	b := f.begin("model-b", "desktop").Session.ID
+	one := f.rememberWith(store.RememberInput{SessionID: a, Gist: "在手机上发生的事", Body: "正文"})
+	two := f.rememberWith(store.RememberInput{SessionID: b, Gist: "在桌面端发生的事", Body: "正文"})
+	if m := f.get(one); m.SessionID != a || m.Model != "model-a" || m.Client != "phone" {
+		t.Errorf("first memory: session %s as %s via %s", m.SessionID, m.Model, m.Client)
+	}
+	if m := f.get(two); m.SessionID != b || m.Model != "model-b" || m.Client != "desktop" {
+		t.Errorf("second memory: session %s as %s via %s", m.SessionID, m.Model, m.Client)
+	}
+}
+
+func TestReadsDoNotNeedASession(t *testing.T) {
+	f := start(t, tempDB(t), nil)
+	ctx := context.Background()
+	id := f.remember("用户纠正了我", "我理解偏了。")
+
+	for _, session := range []string{"", "s_nope"} {
+		if rs, err := f.svc.Recall(ctx, "纠正", 0, false, session); err != nil || len(rs) != 1 {
+			t.Errorf("recall with session %q: %v, %d results", session, err, len(rs))
+		}
+		if rs, err := f.svc.Expand(ctx, []string{id}, session); err != nil || len(rs) != 1 {
+			t.Errorf("expand with session %q: %v, %d results", session, err, len(rs))
+		}
+	}
+	f.sync()
+	if got := f.get(id).RecallCount; got != 4 {
+		t.Errorf("times it came to mind = %d, want 4", got)
+	}
+}
+
+func TestBeingListedIsRecordedButDoesNotStrengthen(t *testing.T) {
 	f := start(t, tempDB(t), nil)
 	id := f.remember("用户纠正了我", "我理解偏了。")
+	f.fill(5)
 	f.recall("纠正")
 	f.recall("纠正")
 	f.sync()
 
-	if got := f.get(id).RecallCount; got != 2 {
-		t.Errorf("recall count = %d, want 2", got)
+	if m := f.get(id); m.RecallCount != 2 || m.Strength != 10 || m.TouchedOrd != 6 || m.ReadOrd != 1 {
+		t.Errorf("after two listings: count %d, strength %v, touched at %d, read at %d; want 2, 10, 6, 1",
+			m.RecallCount, m.Strength, m.TouchedOrd, m.ReadOrd)
 	}
 }
 
-func TestSessionResolution(t *testing.T) {
+func TestNewSessionIsToldOfOtherRecentOnes(t *testing.T) {
 	f := start(t, tempDB(t), nil)
 	ctx := context.Background()
-	write := func(req RememberRequest) string {
-		t.Helper()
-		req.Gist, req.Body = "第 "+f.clock.Now().Format(time.TimeOnly)+" 条", "正文"
-		_, session, _, err := f.svc.Remember(ctx, req)
-		if err != nil {
-			t.Fatal(err)
+	others := func(v ContextView) []string {
+		out := make([]string, len(v.Others))
+		for i, o := range v.Others {
+			out[i] = o.ID
 		}
-		f.clock.Advance(time.Minute)
-		return session
+		return out
+	}
+	same := func(got []string, want ...string) bool {
+		return len(got) == len(want) && strings.Join(got, ",") == strings.Join(want, ",")
 	}
 
-	view, err := f.svc.Context(ctx, "model-a", "desktop", "conn-a")
-	if err != nil {
+	a := f.begin("model-a", "phone") // minute 0
+	if len(a.Others) != 0 {
+		t.Errorf("the first session was told of others: %v", others(a))
+	}
+	f.clock.Advance(5 * time.Minute)
+	b := f.begin("model-a", "desktop") // minute 5
+	if !same(others(b), a.Session.ID) || b.Others[0].Client != "phone" || !b.Others[0].LastActiveAt.Equal(a.Now) {
+		t.Errorf("second session: others = %+v, want the first one, via phone", b.Others)
+	}
+
+	// Writing keeps a session active. One that has been silent for longer
+	// than the window is not mentioned.
+	f.clock.Advance(25 * time.Minute)
+	f.rememberWith(store.RememberInput{SessionID: a.Session.ID, Gist: "手机上继续聊", Body: "正文"}) // minute 30
+	f.clock.Advance(9 * time.Minute)
+	c := f.begin("model-a", "cli") // minute 40
+	if !same(others(c), a.Session.ID) {
+		t.Errorf("third session: others = %v, want only the one that wrote ten minutes ago", others(c))
+	}
+
+	// Reading keeps a session active too.
+	f.clock.Advance(20 * time.Minute) // minute 60
+	if _, err := f.svc.Recall(ctx, "手机", 0, false, b.Session.ID); err != nil {
 		t.Fatal(err)
 	}
-	a := view.Session.ID
-
-	if got := write(RememberRequest{Client: "desktop", Conn: "conn-a"}); got != a {
-		t.Errorf("same connection: session %s, want %s", got, a)
-	}
-	if got := write(RememberRequest{Client: "cli", Conn: "conn-b", RememberInput: store.RememberInput{SessionID: a}}); got != a {
-		t.Errorf("explicit session id: session %s, want %s", got, a)
-	}
-	// A new connection from the same client soon after: same conversation, as far as can be told.
-	if got := write(RememberRequest{Client: "desktop", Conn: "conn-c"}); got != a {
-		t.Errorf("same client within the window: session %s, want %s", got, a)
-	}
-	// Another client that never called get_context gets a session of its own.
-	web := write(RememberRequest{Client: "web", Conn: "conn-d"})
-	if web == a {
-		t.Errorf("a different client was attached to session %s", a)
-	}
-	if got := write(RememberRequest{Client: "web", Conn: "conn-d"}); got != web {
-		t.Errorf("second write on that connection: session %s, want %s", got, web)
-	}
-	// Long after, with no connection to go by: a new session.
-	f.clock.Advance(2 * SessionWindow)
-	if got := write(RememberRequest{Client: "desktop"}); got == a {
-		t.Errorf("after the window: still session %s", a)
+	f.sync()
+	f.clock.Advance(time.Minute)
+	d := f.begin("model-a", "web") // minute 61
+	if !same(others(d), b.Session.ID) {
+		t.Errorf("fourth session: others = %v, want only the one that searched a minute ago", others(d))
 	}
 
-	_, _, _, err = f.svc.Remember(ctx, RememberRequest{RememberInput: store.RememberInput{
-		Gist: "g", Body: "b", SessionID: "s_nope"}})
-	if !errors.Is(err, ErrInvalid) {
-		t.Errorf("unknown session id: err = %v, want ErrInvalid", err)
+	f.clock.Advance(3 * time.Hour)
+	e := f.begin("model-a", "web")
+	if len(e.Others) != 0 {
+		t.Errorf("hours later: others = %v, want none", others(e))
+	}
+
+	// At most three are listed, the most recently active first.
+	var recent []string
+	for i := 0; i < 4; i++ {
+		f.clock.Advance(time.Minute)
+		recent = append(recent, f.begin("model-a", "web").Session.ID)
+	}
+	f.clock.Advance(time.Minute)
+	last := f.begin("model-a", "web")
+	if !same(others(last), recent[3], recent[2], recent[1]) {
+		t.Errorf("with five others active: %v, want the three most recent, newest first", others(last))
 	}
 }
 
 func TestContextShowsRecentMemoriesAndNewCarriers(t *testing.T) {
 	f := start(t, tempDB(t), nil)
-	ctx := context.Background()
 
-	view, err := f.svc.Context(ctx, "model-a", "desktop", "c1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if view.Counts.Total() != 0 || len(view.Recent) != 0 || view.Carrier.First {
+	view := f.begin("model-a", "desktop")
+	if view.Counts.Total() != 0 || len(view.Recent) != 0 || view.Carrier.First || view.Session.ID == "" {
 		t.Errorf("empty memory: %+v", view)
 	}
+	f.session = view.Session.ID
 	var last string
 	for i := 0; i < 10; i++ {
 		last = f.remember("第 "+string(rune('一'+i))+" 件事", "正文")
 	}
 
-	view, err = f.svc.Context(ctx, "model-b", "cli", "c2")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if view.Counts.Active != 10 || len(view.Recent) != 8 || view.Recent[0].ID != last {
-		t.Errorf("active=%d recent=%d first=%s, want 10, 8, %s", view.Counts.Active, len(view.Recent), view.Recent[0].ID, last)
+	view = f.begin("model-b", "cli")
+	if view.Counts.Active != 10 || view.Clock != 10 || len(view.Recent) != 8 || view.Recent[0].ID != last {
+		t.Errorf("active=%d clock=%d recent=%d first=%s, want 10, 10, 8, %s",
+			view.Counts.Active, view.Clock, len(view.Recent), view.Recent[0].ID, last)
 	}
 	if !view.Carrier.First || len(view.Carrier.Earlier) != 1 || view.Carrier.Earlier[0] != "model-a" {
 		t.Errorf("carrier note = %+v, want model-b flagged as new after model-a", view.Carrier)
+	}
+	if view.Session.ID == f.session {
+		t.Error("two calls to get_context returned the same session")
 	}
 }
 
@@ -436,6 +563,7 @@ func TestRememberValidation(t *testing.T) {
 	f := start(t, tempDB(t), nil)
 	ctx := context.Background()
 	long := func(n int) string { return strings.Repeat("字", n) }
+	sess := f.sess()
 
 	for name, in := range map[string]store.RememberInput{
 		"no gist":         {Body: "b"},
@@ -452,18 +580,19 @@ func TestRememberValidation(t *testing.T) {
 		"intensity alone": {Gist: "g", Body: "b", Intensity: 0.5},
 		"too many people": {Gist: "g", Body: "b", People: distinct(MaxPeople + 1)},
 	} {
-		if _, _, _, err := f.svc.Remember(ctx, RememberRequest{RememberInput: in}); !errors.Is(err, ErrInvalid) {
-			t.Errorf("%s: err = %v, want ErrInvalid", name, err)
+		in.SessionID = sess
+		if _, _, err := f.svc.Remember(ctx, in); !errors.Is(err, ErrInvalid) || strings.Contains(err.Error(), "session") {
+			t.Errorf("%s: err = %v, want ErrInvalid about that field", name, err)
 		}
 	}
-	if total, events, _ := f.st.Counts(ctx); total != 0 || events != 0 {
-		t.Errorf("rejected input left %d memories and %d events behind", total, events)
+	if total, events, _ := f.st.Counts(ctx); total != 0 || events != 1 {
+		t.Errorf("rejected input left %d memories and %d events behind; want 0 and the session alone", total, events)
 	}
 
 	// Limits are counted in characters, not bytes, and defaults are filled in.
-	id, _, _, err := f.svc.Remember(ctx, RememberRequest{RememberInput: store.RememberInput{
+	id, _, err := f.svc.Remember(ctx, store.RememberInput{SessionID: "  " + sess + " ",
 		Gist: "  " + long(MaxGistRunes) + "  ", Body: long(MaxBodyRunes), People: []string{" 年糕 ", "", "年糕"},
-	}})
+	})
 	if err != nil {
 		t.Fatalf("input at the limits was rejected: %v", err)
 	}

@@ -3,7 +3,10 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -13,9 +16,18 @@ import (
 
 var t0 = time.Date(2026, 11, 11, 8, 0, 0, 0, time.UTC)
 
+// testParams make forgetting quick to reach: with a strength of 10, an
+// ordinary memory fades once 13 newer memories have been written without it
+// coming to mind, and is archived after 30.
+func testParams() Params {
+	p := DefaultParams()
+	p.BaseStrength = 10
+	return p
+}
+
 func open(t *testing.T, path string) *Store {
 	t.Helper()
-	s, err := Open(context.Background(), path, DefaultParams())
+	s, err := Open(context.Background(), path, Options{Params: testParams(), Create: true})
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -24,7 +36,7 @@ func open(t *testing.T, path string) *Store {
 }
 
 func newStore(t *testing.T) *Store {
-	return open(t, filepath.Join(t.TempDir(), "ziwo.db"))
+	return open(t, filepath.Join(t.TempDir(), "test.ziwo"))
 }
 
 func session(t *testing.T, s *Store, at time.Time, model, client string) Session {
@@ -50,17 +62,46 @@ func remember(t *testing.T, s *Store, at time.Time, sess, gist, body string) str
 	return id
 }
 
-// searchIDs runs an ordinary search shortly after t0, while every memory the
-// tests write is still active.
-func searchIDs(t *testing.T, s *Store, query string) []string {
+var fillers int
+
+// fill writes n memories that match none of the tests' searches. Each one
+// advances the experience clock by one.
+func fill(t *testing.T, s *Store, sess string, n int) {
 	t.Helper()
-	return searchAt(t, s, query, t0.Add(time.Hour), false)
+	for i := 0; i < n; i++ {
+		fillers++
+		remember(t, s, t0, sess, fmt.Sprintf("filler %d", fillers), "padding")
+	}
 }
 
-func searchAt(t *testing.T, s *Store, query string, now time.Time, deep bool) []string {
+func clock(t *testing.T, s *Store) int64 {
+	t.Helper()
+	c, err := s.Clock(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+func get(t *testing.T, s *Store, id string) Memory {
+	t.Helper()
+	ms, err := s.Get(context.Background(), []string{id})
+	if err != nil || len(ms) != 1 {
+		t.Fatalf("get %s: %v, %d memories", id, err, len(ms))
+	}
+	return ms[0]
+}
+
+// searchIDs runs an ordinary search at the current clock.
+func searchIDs(t *testing.T, s *Store, query string) []string {
+	t.Helper()
+	return search(t, s, query, false)
+}
+
+func search(t *testing.T, s *Store, query string, deep bool) []string {
 	t.Helper()
 	ctx := context.Background()
-	hits, err := s.SearchText(ctx, query, now, deep, 10)
+	hits, err := s.SearchText(ctx, query, clock(t, s), deep, 10)
 	if err != nil {
 		t.Fatalf("search %q: %v", query, err)
 	}
@@ -137,6 +178,46 @@ func TestKeywordSearch(t *testing.T) {
 	}
 }
 
+func TestOpenNeedsCreateForAMissingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing.ziwo")
+	if _, err := Open(context.Background(), path, Options{Params: testParams()}); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("err = %v, want a not-exist error", err)
+	}
+	if _, err := filepath.Glob(path + "*"); err != nil {
+		t.Fatal(err)
+	} else if left, _ := filepath.Glob(path + "*"); len(left) != 0 {
+		t.Errorf("a refused open left files behind: %v", left)
+	}
+}
+
+// A memory file holds a private life. It and the files SQLite keeps next to
+// it are readable by their owner only.
+func TestNewFileIsPrivate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.ziwo")
+	s := open(t, path)
+	sess := session(t, s, t0, "", "cli")
+	remember(t, s, t0, sess.ID, "一件事", "正文")
+	files, err := filepath.Glob(path + "*")
+	if err != nil || len(files) < 2 {
+		t.Fatalf("files while open: %v (err %v), want the memory and its write-ahead log", files, err)
+	}
+	for _, f := range files {
+		if info, err := os.Stat(f); err != nil || info.Mode().Perm() != 0o600 {
+			t.Errorf("%s: mode %v (err %v), want 0600", filepath.Base(f), info.Mode().Perm(), err)
+		}
+	}
+	s.Close()
+
+	// Opening it again leaves the permissions its owner has since chosen.
+	if err := os.Chmod(path, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	open(t, path).Close()
+	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o640 {
+		t.Errorf("after reopening: mode %v (err %v), want 0640 left alone", info.Mode().Perm(), err)
+	}
+}
+
 func TestEventsAreAppendOnly(t *testing.T) {
 	s := newStore(t)
 	session(t, s, t0, "model-a", "desktop")
@@ -174,6 +255,9 @@ func TestRememberDeduplicatesRetries(t *testing.T) {
 	if err != nil || !dup || again != first {
 		t.Errorf("retry: id=%s dup=%v err=%v, want %s as a duplicate", again, dup, err, first)
 	}
+	if got := clock(t, s); got != 1 {
+		t.Errorf("clock after a retried write = %d, want 1: a retry is not a new experience", got)
+	}
 	later, dup, err := s.Remember(ctx, t0.Add(DedupWindow+time.Minute), in)
 	if err != nil || dup || later == first {
 		t.Errorf("after the window: id=%s dup=%v err=%v, want a new memory", later, dup, err)
@@ -188,11 +272,23 @@ func TestRememberNeedsASession(t *testing.T) {
 	_, _, err := s.Remember(context.Background(), t0, RememberInput{
 		SessionID: "s_missing", Moment: "other", Source: "lived", Importance: 0.5, Gist: "g", Body: "b",
 	})
-	if err == nil || !strings.Contains(err.Error(), ErrNoSession.Error()) {
+	if !errors.Is(err, ErrNoSession) {
 		t.Errorf("err = %v, want %v", err, ErrNoSession)
 	}
 	if _, events, _ := s.Counts(context.Background()); events != 0 {
 		t.Errorf("events = %d, want none written", events)
+	}
+
+	// Repeating what a real session just wrote does not get it past the check.
+	sess := session(t, s, t0, "", "cli")
+	remember(t, s, t0, sess.ID, "g", "b")
+	for _, id := range []string{"s_missing", ""} {
+		got, dup, err := s.Remember(context.Background(), t0.Add(time.Second), RememberInput{
+			SessionID: id, Moment: "other", Source: "lived", Importance: 0.5, Gist: "g", Body: "b",
+		})
+		if !errors.Is(err, ErrNoSession) || dup || got != "" {
+			t.Errorf("session %q repeating a recent memory: id=%q dup=%v err=%v, want %v", id, got, dup, err, ErrNoSession)
+		}
 	}
 }
 
@@ -246,29 +342,88 @@ func TestMemoryCarriesItsCarrier(t *testing.T) {
 	}
 }
 
-func TestRecallsAreCounted(t *testing.T) {
+func TestActiveSessions(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
-	sess := session(t, s, t0, "", "cli")
-	id := remember(t, s, t0, sess.ID, "被想起的事", "正文")
-	other := remember(t, s, t0, sess.ID, "没被想起的事", "正文")
+	a := session(t, s, t0, "model-a", "desktop")
+	b := session(t, s, t0.Add(10*time.Minute), "model-b", "cli")
+	c := session(t, s, t0.Add(20*time.Minute), "", "web")
 
-	at := t0.Add(48 * time.Hour)
-	if err := s.LogRecalls(ctx, []RecallNote{
-		{At: at, Session: sess.ID, Query: "想起", IDs: []string{id}},
-		{At: at.Add(time.Hour), Query: "再想起", IDs: []string{id, "m_gone"}},
-	}); err != nil {
+	ids := func(since time.Time, except string) []string {
+		t.Helper()
+		found, err := s.ActiveSessions(ctx, since, except, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := make([]string, len(found))
+		for i, f := range found {
+			out[i] = f.ID
+		}
+		return out
+	}
+	if got := ids(t0.Add(5*time.Minute), c.ID); !reflect.DeepEqual(got, []string{b.ID}) {
+		t.Errorf("active since minute 5, other than c: %v, want only b", got)
+	}
+
+	// Writing and recalling count as activity; the newest activity comes first.
+	m := remember(t, s, t0.Add(30*time.Minute), a.ID, "一件事", "正文")
+	if err := s.LogRecalls(ctx, []RecallNote{{At: t0.Add(40 * time.Minute), Session: b.ID, Query: "q", IDs: []string{m}}}); err != nil {
 		t.Fatal(err)
 	}
-	ms, err := s.Get(ctx, []string{id, other})
+	if got := ids(t0.Add(25*time.Minute), c.ID); !reflect.DeepEqual(got, []string{b.ID, a.ID}) {
+		t.Errorf("after a wrote and b recalled: %v, want b then a", got)
+	}
+	if sess, ok, _ := s.Session(ctx, a.ID); !ok || !sess.LastActiveAt.Equal(t0.Add(30*time.Minute)) || !sess.StartedAt.Equal(t0) {
+		t.Errorf("session a: started %v, last active %v", sess.StartedAt, sess.LastActiveAt)
+	}
+}
+
+func TestLogOnlyLeavesDerivedTablesAlone(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.ziwo")
+	ctx := context.Background()
+
+	// A file can be created, and given a token, without a single derived table.
+	lo, err := Open(ctx, path, Options{Create: true, LogOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ms[0].RecallCount != 2 || !ms[0].LastRecalledAt.Equal(at.Add(time.Hour)) {
-		t.Errorf("recalled memory: count=%d last=%v", ms[0].RecallCount, ms[0].LastRecalledAt)
+	if _, ok, _ := lo.TokenHash(ctx); ok {
+		t.Error("a new file already has a token")
 	}
-	if ms[1].RecallCount != 0 || !ms[1].LastRecalledAt.Equal(t0) {
-		t.Errorf("untouched memory: count=%d last=%v", ms[1].RecallCount, ms[1].LastRecalledAt)
+	if err := lo.SetTokenHash(ctx, "abc123"); err != nil {
+		t.Fatal(err)
+	}
+	var tables int
+	if err := lo.r.QueryRow(`SELECT count(*) FROM sqlite_master WHERE name IN ('memories', 'sessions')`).Scan(&tables); err != nil || tables != 0 {
+		t.Errorf("derived tables after a log-only open: %d (err %v), want none", tables, err)
+	}
+	lo.Close()
+
+	s := open(t, path)
+	sess := session(t, s, t0, "", "cli")
+	remember(t, s, t0.Add(time.Minute), sess.ID, "一件事", "正文")
+	if hash, ok, _ := s.TokenHash(ctx); !ok || hash != "abc123" {
+		t.Errorf("token hash = %q, %v", hash, ok)
+	}
+	before := dump(t, s)
+	s.Close()
+
+	// Opening it log-only again, with no parameters at all, must not rebuild
+	// what the server derived with its own parameters.
+	lo, err = Open(ctx, path, Options{LogOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats, err := lo.LogStats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Memories != 1 || stats.Events != 2 || !stats.HasToken || !stats.LastEventAt.Equal(t0.Add(time.Minute)) {
+		t.Errorf("log stats = %+v", stats)
+	}
+	lo.Close()
+	if after := dump(t, open(t, path)); after != before {
+		t.Errorf("a log-only open changed the derived tables\nbefore:\n%s\nafter:\n%s", before, after)
 	}
 }
 
@@ -281,6 +436,7 @@ func dump(t *testing.T, s *Store) string {
 		`SELECT * FROM carriers ORDER BY model`,
 		`SELECT * FROM memories ORDER BY n`,
 		`SELECT n, model, hex(vec) FROM vectors ORDER BY n, model`,
+		`SELECT value FROM meta WHERE key = 'derived'`,
 	} {
 		rows, err := s.r.Query(q)
 		if err != nil {
@@ -307,6 +463,8 @@ func dump(t *testing.T, s *Store) string {
 	return b.String()
 }
 
+// populate writes a little of everything: two carriers, plain and rich
+// memories, a listing, a reading and a vector.
 func populate(t *testing.T, s *Store) {
 	t.Helper()
 	ctx := context.Background()
@@ -315,20 +473,20 @@ func populate(t *testing.T, s *Store) {
 	m1 := remember(t, s, t0, a.ID, "用户纠正了我", "我理解偏了，用户直接指出来并解释了原因。")
 	m2 := remember(t, s, t0.Add(time.Hour), b.ID, "Proxy trouble", "The proxy dropped the connection twice.")
 	if _, _, err := s.Remember(ctx, t0.Add(2*time.Hour), RememberInput{
-		SessionID: b.ID, Moment: "emotion", Source: "told", Importance: 0.9,
+		SessionID: b.ID, Moment: "emotion", Source: "told", Importance: 0.9, Intensity: 0.4,
 		Gist: "用户说他养了一只猫", Body: "他说猫叫年糕。", Outcome: "聊得很开心", Feeling: "轻松",
 		Lesson: "闲聊也值得认真听", People: []string{"年糕"}, Pointer: "https://example.com/repo",
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.LogRecalls(ctx, []RecallNote{{At: t0.Add(3 * time.Hour), Session: b.ID, Query: "纠正", IDs: []string{m1}}}); err != nil {
+	fill(t, s, b.ID, 4)
+	if err := s.LogRecalls(ctx, []RecallNote{
+		{At: t0.Add(3 * time.Hour), Session: b.ID, Query: "纠正", IDs: []string{m1, m2}},
+		{At: t0.Add(4 * time.Hour), Session: b.ID, Read: true, IDs: []string{m1}},
+	}); err != nil {
 		t.Fatal(err)
 	}
-	ms, err := s.Get(ctx, []string{m1, m2})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := s.SaveVector(ctx, ms[0].N, "embed-x", []float32{0.25, -1.5, 3}); err != nil {
+	if err := s.SaveVector(ctx, get(t, s, m1).N, "embed-x", []float32{0.25, -1.5, 3}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -347,7 +505,7 @@ func TestRebuildReproducesDerivedTables(t *testing.T) {
 }
 
 func TestReopenKeepsEverythingAndUpgradesDerivedTables(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "ziwo.db")
+	path := filepath.Join(t.TempDir(), "test.ziwo")
 	s := open(t, path)
 	populate(t, s)
 	before := dump(t, s)
@@ -377,18 +535,17 @@ func TestVectorsRoundTripPerModel(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
 	sess := session(t, s, t0, "", "cli")
-	id1 := remember(t, s, t0, sess.ID, "一", "一")
+	m1 := get(t, s, remember(t, s, t0, sess.ID, "一", "一"))
 	id2 := remember(t, s, t0, sess.ID, "二", "二")
-	ms, _ := s.Get(ctx, []string{id1, id2})
 
 	want := []float32{0.5, -0.25, 1e-7, 12345.678}
-	if err := s.SaveVector(ctx, ms[0].N, "model-x", []float32{1, 2, 3, 4}); err != nil {
+	if err := s.SaveVector(ctx, m1.N, "model-x", []float32{1, 2, 3, 4}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SaveVector(ctx, ms[0].N, "model-x", want); err != nil { // replaces
+	if err := s.SaveVector(ctx, m1.N, "model-x", want); err != nil { // replaces
 		t.Fatal(err)
 	}
-	if err := s.SaveVector(ctx, ms[0].N, "model-y", []float32{9}); err != nil {
+	if err := s.SaveVector(ctx, m1.N, "model-y", []float32{9}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -396,18 +553,18 @@ func TestVectorsRoundTripPerModel(t *testing.T) {
 	if err := s.Vectors(ctx, "model-x", func(n int64, v []float32) error { got[n] = v; return nil }); err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || !reflect.DeepEqual(got[ms[0].N], want) {
+	if len(got) != 1 || !reflect.DeepEqual(got[m1.N], want) {
 		t.Errorf("vectors for model-x = %v, want only %v", got, want)
 	}
 
-	pending, err := s.Unembedded(ctx, "model-x", t0, 10)
+	pending, err := s.Unembedded(ctx, "model-x", clock(t, s), 10)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(pending) != 1 || pending[0].ID != id2 {
 		t.Errorf("unembedded for model-x = %d memories, want just %s", len(pending), id2)
 	}
-	if pending, _ := s.Unembedded(ctx, "model-z", t0, 10); len(pending) != 2 {
+	if pending, _ := s.Unembedded(ctx, "model-z", clock(t, s), 10); len(pending) != 2 {
 		t.Errorf("unembedded for an unused model = %d, want 2", len(pending))
 	}
 }

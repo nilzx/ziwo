@@ -9,27 +9,31 @@ import (
 	"time"
 )
 
-const day = 24 * time.Hour
+// With testParams the strength of an ordinary memory is 10, so it fades
+// 10*ln(1/0.3) = 12.04 memories after it last came to mind and is archived
+// 10*ln(20) = 29.96 memories after.
+const (
+	fadeAfter    = 12.039728
+	archiveAfter = 29.957323
+)
 
 func near(got, want, tolerance float64) bool { return math.Abs(got-want) <= tolerance }
 
-func get(t *testing.T, s *Store, id string) Memory {
+func listed(t *testing.T, s *Store, ids ...string) {
 	t.Helper()
-	ms, err := s.Get(context.Background(), []string{id})
-	if err != nil || len(ms) != 1 {
-		t.Fatalf("get %s: %v, %d memories", id, err, len(ms))
-	}
-	return ms[0]
-}
-
-func recallAt(t *testing.T, s *Store, at time.Time, ids ...string) {
-	t.Helper()
-	if err := s.LogRecalls(context.Background(), []RecallNote{{At: at, Query: "q", IDs: ids}}); err != nil {
-		t.Fatalf("log recall: %v", err)
+	if err := s.LogRecalls(context.Background(), []RecallNote{{At: t0, Query: "q", IDs: ids}}); err != nil {
+		t.Fatalf("log listing: %v", err)
 	}
 }
 
-func rememberWith(t *testing.T, s *Store, at time.Time, in RememberInput) string {
+func read(t *testing.T, s *Store, ids ...string) {
+	t.Helper()
+	if err := s.LogRecalls(context.Background(), []RecallNote{{At: t0, Read: true, IDs: ids}}); err != nil {
+		t.Fatalf("log reading: %v", err)
+	}
+}
+
+func rememberWith(t *testing.T, s *Store, in RememberInput) string {
 	t.Helper()
 	if in.Moment == "" {
 		in.Moment = "other"
@@ -40,7 +44,7 @@ func rememberWith(t *testing.T, s *Store, at time.Time, in RememberInput) string
 	if in.Importance == 0 {
 		in.Importance = 0.5
 	}
-	id, dup, err := s.Remember(context.Background(), at, in)
+	id, dup, err := s.Remember(context.Background(), t0, in)
 	if err != nil || dup {
 		t.Fatalf("remember %q: err=%v dup=%v", in.Gist, err, dup)
 	}
@@ -48,163 +52,202 @@ func rememberWith(t *testing.T, s *Store, at time.Time, in RememberInput) string
 }
 
 func TestInitialStrength(t *testing.T) {
-	p := DefaultParams()
+	p := DefaultParams() // base strength 100
 	for _, tc := range []struct {
 		importance, intensity float64
 		source                string
-		want                  float64 // days
+		want                  float64
 	}{
-		{0.5, 0, "lived", 30},
-		{1.0, 0, "lived", 120},
-		{0.0, 0, "lived", 7.5},
-		{0.75, 0, "lived", 60},
-		{0.5, 1, "lived", 60},
-		{0.5, 0.5, "lived", 45},
-		{0.5, 0, "told", 21},
-		{0.5, 0, "inferred", 12},
+		{0.5, 0, "lived", 100},
+		{1.0, 0, "lived", 400},
+		{0.0, 0, "lived", 25},
+		{0.75, 0, "lived", 200},
+		{0.5, 1, "lived", 200},
+		{0.5, 0.5, "lived", 150},
+		{0.5, 0, "told", 70},
+		{0.5, 0, "inferred", 40},
 	} {
 		if got := p.initialStrength(tc.importance, tc.intensity, tc.source); !near(got, tc.want, 1e-9) {
-			t.Errorf("initialStrength(%v, %v, %s) = %v days, want %v", tc.importance, tc.intensity, tc.source, got, tc.want)
+			t.Errorf("initialStrength(%v, %v, %s) = %v, want %v", tc.importance, tc.intensity, tc.source, got, tc.want)
 		}
 	}
 }
 
 func TestParamsAreValidated(t *testing.T) {
 	bad := []func(*Params){
-		func(p *Params) { p.BaseStrengthDays = 0 },
+		func(p *Params) { p.BaseStrength = 0 },
 		func(p *Params) { p.RecallBoost = -1 },
 		func(p *Params) { p.FadeBelow = 1 },
 		func(p *Params) { p.ArchiveBelow = 0 },
 		func(p *Params) { p.ArchiveBelow = p.FadeBelow },
 		func(p *Params) { p.CoreImportance = 0 },
-		func(p *Params) { p.BaseStrengthDays = math.NaN() },
+		func(p *Params) { p.BaseStrength = math.NaN() },
 	}
 	for i, change := range bad {
 		p := DefaultParams()
 		change(&p)
-		if s, err := Open(context.Background(), filepath.Join(t.TempDir(), "ziwo.db"), p); err == nil {
+		if s, err := Open(context.Background(), filepath.Join(t.TempDir(), "test.ziwo"), Options{Params: p, Create: true}); err == nil {
 			s.Close()
 			t.Errorf("case %d: Open accepted %+v", i, p)
 		}
 	}
 }
 
-func TestMemoryFadesThenIsArchived(t *testing.T) {
+func TestMemoryFadesAsNewerOnesAreWritten(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
 	sess := session(t, s, t0, "", "cli")
 	id := remember(t, s, t0, sess.ID, "用户给我看了他的猫", "一只橘猫，名字叫年糕。")
 
 	m := get(t, s, id)
-	// Strength 30 days: R falls below 0.3 after 30*ln(1/0.3) = 36.1 days and
-	// below 0.05 after 30*ln(20) = 89.9 days.
-	if !near(m.Strength, 30, 1e-9) || m.Core {
-		t.Fatalf("strength = %v, core = %v; want 30 days, not core", m.Strength, m.Core)
+	if !near(m.Strength, 10, 1e-9) || m.Core || m.Ord != 1 || m.TouchedOrd != 1 || m.ReadOrd != 1 {
+		t.Fatalf("new memory: strength %v, core %v, ord %d/%d/%d", m.Strength, m.Core, m.Ord, m.TouchedOrd, m.ReadOrd)
 	}
-	if got := m.FadeAt.Sub(t0).Hours() / 24; !near(got, 36.12, 0.01) {
-		t.Errorf("fades after %.2f days, want 36.12", got)
+	if !near(m.FadeAt, 1+fadeAfter, 1e-5) || !near(m.ArchiveAt, 1+archiveAfter, 1e-5) {
+		t.Errorf("crossings at clock %.3f and %.3f, want %.3f and %.3f", m.FadeAt, m.ArchiveAt, 1+fadeAfter, 1+archiveAfter)
 	}
-	if got := m.ArchiveAt.Sub(t0).Hours() / 24; !near(got, 89.87, 0.01) {
-		t.Errorf("archived after %.2f days, want 89.87", got)
-	}
-	if got := m.Retention(t0.Add(30 * day)); !near(got, math.Exp(-1), 1e-9) {
-		t.Errorf("retention after one strength = %v, want 1/e", got)
+	if got := m.Retention(11); !near(got, math.Exp(-1), 1e-9) {
+		t.Errorf("retention once 10 memories were written = %v, want 1/e", got)
 	}
 
+	// Time alone forgets nothing: ten years on, with nothing lived through,
+	// the clock has not moved.
+	session(t, s, t0.AddDate(10, 0, 0), "", "cli")
+	if c := clock(t, s); c != 1 || m.Tier(c) != TierActive {
+		t.Fatalf("ten years later: clock %d, tier %s; want 1, active", c, m.Tier(c))
+	}
+
+	written := 0
 	for _, tc := range []struct {
-		after       time.Duration
-		tier        Tier
-		counts      TierCounts
-		gist, body  bool // found by an ordinary search on a gist word, on a body word
-		deepBody    bool
-		shownRecent bool
+		newer            int // memories written after it
+		tier             Tier
+		counts           TierCounts
+		gist, body, deep bool // found by a gist word, by a body word, by a body word in a deep search
+		recent           bool
 	}{
-		{36 * day, TierActive, TierCounts{Active: 1}, true, true, true, true},
-		{37 * day, TierFaded, TierCounts{Faded: 1}, true, false, true, true},
-		{89 * day, TierFaded, TierCounts{Faded: 1}, true, false, true, true},
-		{90 * day, TierArchived, TierCounts{Archived: 1}, false, false, true, false},
-		{3650 * day, TierArchived, TierCounts{Archived: 1}, false, false, true, false},
+		{12, TierActive, TierCounts{Active: 13}, true, true, true, true},
+		{13, TierFaded, TierCounts{Active: 13, Faded: 1}, true, false, true, true},
+		{29, TierFaded, TierCounts{Active: 13, Faded: 17}, true, false, true, true},
+		{30, TierArchived, TierCounts{Active: 13, Faded: 17, Archived: 1}, false, false, true, false},
 	} {
-		now := t0.Add(tc.after)
-		if got := m.Tier(now); got != tc.tier {
-			t.Errorf("day %d: tier %s, want %s", tc.after/day, got, tc.tier)
+		fill(t, s, sess.ID, tc.newer-written)
+		written = tc.newer
+		c := clock(t, s)
+		if got := m.Tier(c); got != tc.tier {
+			t.Errorf("%d newer: tier %s, want %s", tc.newer, got, tc.tier)
 		}
-		if got, err := s.TierCounts(ctx, now); err != nil || got != tc.counts {
-			t.Errorf("day %d: counts %+v (err %v), want %+v", tc.after/day, got, err, tc.counts)
+		// The number of active memories settles at 13 however many are written.
+		if got, err := s.TierCounts(ctx, c); err != nil || got != tc.counts {
+			t.Errorf("%d newer: counts %+v (err %v), want %+v", tc.newer, got, err, tc.counts)
 		}
-		if got := len(searchAt(t, s, "猫", now, false)) == 1; got != tc.gist {
-			t.Errorf("day %d: ordinary search on a gist word found it = %v, want %v", tc.after/day, got, tc.gist)
+		if got := len(search(t, s, "猫", false)) == 1; got != tc.gist {
+			t.Errorf("%d newer: ordinary search on a gist word found it = %v, want %v", tc.newer, got, tc.gist)
 		}
-		if got := len(searchAt(t, s, "年糕", now, false)) == 1; got != tc.body {
-			t.Errorf("day %d: ordinary search on a body word found it = %v, want %v", tc.after/day, got, tc.body)
+		if got := len(search(t, s, "年糕", false)) == 1; got != tc.body {
+			t.Errorf("%d newer: ordinary search on a body word found it = %v, want %v", tc.newer, got, tc.body)
 		}
-		if got := len(searchAt(t, s, "年糕", now, true)) == 1; got != tc.deepBody {
-			t.Errorf("day %d: deep search on a body word found it = %v, want %v", tc.after/day, got, tc.deepBody)
+		if got := len(search(t, s, "年糕", true)) == 1; got != tc.deep {
+			t.Errorf("%d newer: deep search on a body word found it = %v, want %v", tc.newer, got, tc.deep)
 		}
-		recent, err := s.Recent(ctx, now, 10)
+		recent, err := s.Recent(ctx, c, 100)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := len(recent) == 1; got != tc.shownRecent {
-			t.Errorf("day %d: listed as recent = %v, want %v", tc.after/day, got, tc.shownRecent)
+		shown := false
+		for _, r := range recent {
+			shown = shown || r.ID == id
+		}
+		if shown != tc.recent {
+			t.Errorf("%d newer: listed as recent = %v, want %v", tc.newer, shown, tc.recent)
 		}
 	}
 
-	// None of this wrote anything: fading is read off the clock.
-	if _, events, _ := s.Counts(ctx); events != 2 {
-		t.Errorf("events = %d, want only the session and the memory", events)
+	// None of this wrote anything about the memory: its tier is read off the clock.
+	if _, events, _ := s.Counts(ctx); events != 2+31 {
+		t.Errorf("events = %d, want only the 2 sessions and the 31 memories", events)
 	}
 }
 
-func TestRecallStrengthensAndRestores(t *testing.T) {
+func TestListingRestartsDecayWithoutStrengthening(t *testing.T) {
 	s := newStore(t)
 	sess := session(t, s, t0, "", "cli")
-	early := remember(t, s, t0, sess.ID, "十天后被想起", "正文一")
-	late := remember(t, s, t0, sess.ID, "四十天后被想起", "正文二")
-	never := remember(t, s, t0, sess.ID, "没有被想起", "正文三")
-
-	recallAt(t, s, t0.Add(10*day), early)
-	recallAt(t, s, t0.Add(40*day), late)
-
-	// S' = S * (1 + 2*(1 - R)), with R = exp(-t/30).
-	wantEarly := 30 * (1 + 2*(1-math.Exp(-10.0/30)))
-	wantLate := 30 * (1 + 2*(1-math.Exp(-40.0/30)))
-	e, l, n := get(t, s, early), get(t, s, late), get(t, s, never)
-	if !near(e.Strength, wantEarly, 1e-6) || !near(l.Strength, wantLate, 1e-6) || !near(n.Strength, 30, 1e-9) {
-		t.Errorf("strengths = %.3f, %.3f, %.3f; want %.3f, %.3f, 30", e.Strength, l.Strength, n.Strength, wantEarly, wantLate)
-	}
-	if !(l.Strength > e.Strength) {
-		t.Errorf("a recall after a longer gap must strengthen more: %.1f vs %.1f", l.Strength, e.Strength)
+	id := remember(t, s, t0, sess.ID, "被搜到的事", "正文")
+	fill(t, s, sess.ID, 20)
+	if got := get(t, s, id).Tier(clock(t, s)); got != TierFaded {
+		t.Fatalf("after 20 newer memories: %s, want faded", got)
 	}
 
-	// On day 41 the one recalled on day 40 is active again; the one never
-	// recalled has faded.
-	now := t0.Add(41 * day)
-	if l.Tier(now) != TierActive || n.Tier(now) != TierFaded {
-		t.Errorf("day 41: recalled is %s, never recalled is %s; want active, faded", l.Tier(now), n.Tier(now))
+	listed(t, s, id)
+	m := get(t, s, id)
+	if m.Tier(21) != TierActive || m.TouchedOrd != 21 || !near(m.FadeAt, 21+fadeAfter, 1e-5) {
+		t.Errorf("after being listed: tier %s, touched at %d, fades at %.3f; want active, 21, %.3f", m.Tier(21), m.TouchedOrd, m.FadeAt, 21+fadeAfter)
 	}
-	if !l.LastRecalledAt.Equal(t0.Add(40*day)) || l.RecallCount != 1 {
-		t.Errorf("last recalled %v, count %d", l.LastRecalledAt, l.RecallCount)
-	}
-	if got := l.FadeAt.Sub(l.LastRecalledAt).Hours() / 24; !near(got, wantLate*math.Log(1/0.3), 0.01) {
-		t.Errorf("fades %.2f days after the recall, want %.2f", got, wantLate*math.Log(1/0.3))
+	if !near(m.Strength, 10, 1e-9) || m.ReadOrd != 1 || m.RecallCount != 1 {
+		t.Errorf("after being listed: strength %v, last read at %d, count %d; want 10, 1, 1", m.Strength, m.ReadOrd, m.RecallCount)
 	}
 
-	// A second recall at the same moment finds nothing to restore.
-	recallAt(t, s, t0.Add(40*day), late)
-	if again := get(t, s, late); !near(again.Strength, wantLate, 1e-6) || again.RecallCount != 2 {
-		t.Errorf("immediate second recall: strength %.3f, count %d; want %.3f, 2", again.Strength, again.RecallCount, wantLate)
+	// However often a search turns it up, it grows no stronger.
+	for i := 0; i < 5; i++ {
+		fill(t, s, sess.ID, 3)
+		listed(t, s, id)
 	}
-	// A recall dated before the last one does not move the memory back.
-	recallAt(t, s, t0.Add(20*day), late)
-	if back := get(t, s, late); !back.LastRecalledAt.Equal(t0.Add(40*day)) || !near(back.Strength, wantLate, 1e-6) {
-		t.Errorf("out-of-order recall changed the memory: last %v, strength %.3f", back.LastRecalledAt, back.Strength)
+	if m := get(t, s, id); !near(m.Strength, 10, 1e-9) || m.RecallCount != 6 || m.Tier(clock(t, s)) != TierActive {
+		t.Errorf("after six listings: strength %v, count %d, tier %s; want 10, 6, active", m.Strength, m.RecallCount, m.Tier(clock(t, s)))
+	}
+}
+
+func TestReadingStrengthensByTheGapSinceTheLastReading(t *testing.T) {
+	s := newStore(t)
+	sess := session(t, s, t0, "", "cli")
+	soon := remember(t, s, t0, sess.ID, "很快被读到的事", "正文一")  // ord 1
+	late := remember(t, s, t0, sess.ID, "很久才被读到的事", "正文二") // ord 2
+	idle := remember(t, s, t0, sess.ID, "没人读的事", "正文三")    // ord 3
+
+	fill(t, s, sess.ID, 4) // clock 7
+	read(t, s, soon)       // 6 memories since it was written
+
+	fill(t, s, sess.ID, 15) // clock 22
+	// The usual order: a search lists the memory, then it is read. The
+	// listing in between must not eat the strengthening.
+	listed(t, s, late)
+	read(t, s, late) // 20 memories since it was written
+
+	// S' = S * (1 + 2*(1 - R)), with R = exp(-n/10).
+	wantSoon := 10 * (1 + 2*(1-math.Exp(-0.6)))
+	wantLate := 10 * (1 + 2*(1-math.Exp(-2.0)))
+	a, b, c := get(t, s, soon), get(t, s, late), get(t, s, idle)
+	if !near(a.Strength, wantSoon, 1e-6) || !near(b.Strength, wantLate, 1e-6) || !near(c.Strength, 10, 1e-9) {
+		t.Errorf("strengths = %.4f, %.4f, %.4f; want %.4f, %.4f, 10", a.Strength, b.Strength, c.Strength, wantSoon, wantLate)
+	}
+	if b.ReadOrd != 22 || b.TouchedOrd != 22 || b.RecallCount != 2 || !near(b.FadeAt, 22+wantLate*math.Log(1/0.3), 1e-5) {
+		t.Errorf("after the reading: read at %d, touched at %d, count %d, fades at %.3f", b.ReadOrd, b.TouchedOrd, b.RecallCount, b.FadeAt)
 	}
 
-	// An archived memory comes back too.
-	recallAt(t, s, t0.Add(400*day), never)
-	if back := get(t, s, never); back.Tier(t0.Add(401*day)) != TierActive || !near(back.Strength, 30*(1+2*(1-math.Exp(-400.0/30))), 1e-6) {
-		t.Errorf("recalled from the archive: tier %s, strength %.3f", back.Tier(t0.Add(401*day)), back.Strength)
+	// Reading it again straight away finds nothing to restore.
+	read(t, s, late)
+	if again := get(t, s, late); !near(again.Strength, wantLate, 1e-6) || again.RecallCount != 3 {
+		t.Errorf("immediate second reading: strength %.4f, count %d; want %.4f, 3", again.Strength, again.RecallCount, wantLate)
+	}
+
+	// A reading far in the future uses the strength the memory has by then.
+	fill(t, s, sess.ID, 40) // clock 62
+	read(t, s, late)
+	if far := get(t, s, late); !near(far.Strength, wantLate*(1+2*(1-math.Exp(-40/wantLate))), 1e-6) {
+		t.Errorf("third reading: strength %.4f", far.Strength)
+	}
+}
+
+func TestArchivedMemoryComesBackWhenListed(t *testing.T) {
+	s := newStore(t)
+	sess := session(t, s, t0, "", "cli")
+	id := remember(t, s, t0, sess.ID, "很久以前的事", "正文")
+	fill(t, s, sess.ID, 60)
+	if got := get(t, s, id).Tier(clock(t, s)); got != TierArchived {
+		t.Fatalf("after 60 newer memories: %s, want archived", got)
+	}
+	listed(t, s, id, "m_gone") // an id that names nothing is ignored
+	if m := get(t, s, id); m.Tier(clock(t, s)) != TierActive || !near(m.Strength, 10, 1e-9) {
+		t.Errorf("after being listed: tier %s, strength %v; want active, 10", m.Tier(clock(t, s)), m.Strength)
 	}
 }
 
@@ -212,74 +255,73 @@ func TestCoreMemoriesNeverFade(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
 	sess := session(t, s, t0, "", "cli")
-	important := rememberWith(t, s, t0, RememberInput{SessionID: sess.ID, Importance: 0.9, Gist: "第一次被信任", Body: "用户把整个项目交给了我。"})
-	felt := rememberWith(t, s, t0, RememberInput{SessionID: sess.ID, Importance: 0.3, Intensity: 0.95, Feeling: "很难忘", Gist: "用户向我道别", Body: "他说以后可能不再用了。"})
-	ordinary := rememberWith(t, s, t0, RememberInput{SessionID: sess.ID, Importance: 0.89, Intensity: 0.89, Feeling: "还好", Gist: "差一点的事", Body: "两项都没到门槛。"})
+	important := rememberWith(t, s, RememberInput{SessionID: sess.ID, Importance: 0.9, Gist: "第一次被信任", Body: "用户把整个项目交给了我。"})
+	felt := rememberWith(t, s, RememberInput{SessionID: sess.ID, Importance: 0.3, Intensity: 0.95, Feeling: "很难忘", Gist: "用户向我道别", Body: "他说以后可能不再用了。"})
+	ordinary := rememberWith(t, s, RememberInput{SessionID: sess.ID, Importance: 0.89, Intensity: 0.89, Feeling: "还好", Gist: "差一点的事", Body: "两项都没到门槛。"})
 
-	farFuture := t0.Add(36500 * day)
+	fill(t, s, sess.ID, 400)
+	far := clock(t, s)
 	for _, id := range []string{important, felt} {
 		m := get(t, s, id)
-		if !m.Core || m.Tier(farFuture) != TierCore || m.Retention(farFuture) != 1 || !m.FadeAt.IsZero() || !m.ArchiveAt.IsZero() {
-			t.Errorf("%s: core=%v tier=%s retention=%v fadeAt=%v", m.Gist, m.Core, m.Tier(farFuture), m.Retention(farFuture), m.FadeAt)
+		if !m.Core || m.Tier(far) != TierCore || m.Retention(far) != 1 || m.FadeAt != 0 || m.ArchiveAt != 0 {
+			t.Errorf("%s: core=%v tier=%s retention=%v fadeAt=%v", m.Gist, m.Core, m.Tier(far), m.Retention(far), m.FadeAt)
 		}
 	}
-	if m := get(t, s, ordinary); m.Core || m.Tier(farFuture) != TierArchived {
-		t.Errorf("just under both thresholds: core=%v tier=%s", m.Core, m.Tier(farFuture))
+	if m := get(t, s, ordinary); m.Core || m.Tier(far) != TierArchived {
+		t.Errorf("just under both thresholds: core=%v tier=%s", m.Core, m.Tier(far))
 	}
-
-	if got := searchAt(t, s, "整个项目", farFuture, false); !reflect.DeepEqual(got, []string{important}) {
-		t.Errorf("a core memory must stay searchable by its details forever, got %v", got)
+	if got := search(t, s, "整个项目", false); !reflect.DeepEqual(got, []string{important}) {
+		t.Errorf("a core memory must stay searchable by its details for good, got %v", got)
 	}
-	if counts, _ := s.TierCounts(ctx, farFuture); counts != (TierCounts{Core: 2, Archived: 1}) {
+	if counts, _ := s.TierCounts(ctx, far); counts.Core != 2 || counts.Archived == 0 || counts.Total() != 403 {
 		t.Errorf("counts = %+v", counts)
 	}
 	core, err := s.Core(ctx, 10)
 	if err != nil || len(core) != 2 || core[0].ID != important {
 		t.Errorf("Core() = %d memories (err %v), want 2 with the most important first", len(core), err)
 	}
-	recent, _ := s.Recent(ctx, farFuture, 10)
-	if len(recent) != 2 {
-		t.Errorf("recent in the far future = %d memories, want the 2 core ones", len(recent))
-	}
 
-	// Recalling a core memory counts, and leaves it core.
-	recallAt(t, s, t0.Add(50*day), important)
-	if m := get(t, s, important); !m.Core || m.RecallCount != 1 || !m.FadeAt.IsZero() {
-		t.Errorf("after a recall: core=%v count=%d fadeAt=%v", m.Core, m.RecallCount, m.FadeAt)
+	// Reading a core memory counts, and leaves it core.
+	read(t, s, important)
+	if m := get(t, s, important); !m.Core || m.RecallCount != 1 || m.FadeAt != 0 {
+		t.Errorf("after a reading: core=%v count=%d fadeAt=%v", m.Core, m.RecallCount, m.FadeAt)
 	}
 }
 
 func TestChangingParamsReplaysTheLog(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "ziwo.db")
+	path := filepath.Join(t.TempDir(), "test.ziwo")
 	ctx := context.Background()
 	s := open(t, path)
 	sess := session(t, s, t0, "", "cli")
 	id := remember(t, s, t0, sess.ID, "同一段记忆", "参数变了，它跟着变。")
-	big := rememberWith(t, s, t0, RememberInput{SessionID: sess.ID, Importance: 0.8, Gist: "比较重要的事", Body: "正文"})
-	recallAt(t, s, t0.Add(10*day), id)
-	before := get(t, s, id)
+	big := rememberWith(t, s, RememberInput{SessionID: sess.ID, Importance: 0.8, Gist: "比较重要的事", Body: "正文"})
+	fill(t, s, sess.ID, 5)
+	read(t, s, id)
+	if before := get(t, s, id); !(before.Strength > 10) {
+		t.Fatalf("strength before = %v, want it raised by the reading", before.Strength)
+	}
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
 
-	p := DefaultParams()
-	p.BaseStrengthDays = 60
+	p := testParams()
+	p.BaseStrength = 20
 	p.RecallBoost = 0
 	p.CoreImportance = 0.8
-	s2, err := Open(ctx, path, p)
+	s2, err := Open(ctx, path, Options{Params: p})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s2.Close()
 	after := get(t, s2, id)
-	if !near(after.Strength, 60, 1e-9) || after.RecallCount != 1 || !after.LastRecalledAt.Equal(before.LastRecalledAt) {
-		t.Errorf("after reopening with new params: strength %v, count %d; want 60 (no boost), 1", after.Strength, after.RecallCount)
+	if !near(after.Strength, 20, 1e-9) || after.RecallCount != 1 || after.ReadOrd != 7 {
+		t.Errorf("after reopening with new params: strength %v, count %d, read at %d; want 20 (no boost), 1, 7", after.Strength, after.RecallCount, after.ReadOrd)
 	}
 	if !get(t, s2, big).Core {
 		t.Error("lowering the core threshold did not make the important memory core")
 	}
-	if _, events, _ := s2.Counts(ctx); events != 4 {
-		t.Errorf("events = %d, want 4: the log itself must not change", events)
+	if _, events, _ := s2.Counts(ctx); events != 9 {
+		t.Errorf("events = %d, want 9: the log itself must not change", events)
 	}
 }
 
@@ -289,7 +331,7 @@ func TestArchivedMemoriesLoseTheirVectors(t *testing.T) {
 	sess := session(t, s, t0, "", "cli")
 	a := get(t, s, remember(t, s, t0, sess.ID, "甲", "会被归档"))
 	b := get(t, s, remember(t, s, t0, sess.ID, "乙", "会被归档后又被想起"))
-	c := get(t, s, rememberWith(t, s, t0, RememberInput{SessionID: sess.ID, Importance: 0.95, Gist: "丙", Body: "核心记忆"}))
+	c := get(t, s, rememberWith(t, s, RememberInput{SessionID: sess.ID, Importance: 0.95, Gist: "丙", Body: "核心记忆"}))
 	for _, m := range []Memory{a, b, c} {
 		for _, model := range []string{"model-x", "model-y"} {
 			if err := s.SaveVector(ctx, m.N, model, []float32{1, 2}); err != nil {
@@ -298,13 +340,15 @@ func TestArchivedMemoriesLoseTheirVectors(t *testing.T) {
 		}
 	}
 
-	if dropped, err := s.DropArchivedVectors(ctx, t0.Add(60*day)); err != nil || len(dropped) != 0 {
-		t.Errorf("day 60, nothing archived yet: dropped %v (err %v)", dropped, err)
+	fill(t, s, sess.ID, 20)
+	if dropped, err := s.DropArchivedVectors(ctx, clock(t, s)); err != nil || len(dropped) != 0 {
+		t.Errorf("20 newer memories, nothing archived yet: dropped %v (err %v)", dropped, err)
 	}
-	later := t0.Add(100 * day)
+	fill(t, s, sess.ID, 20)
+	later := clock(t, s)
 	dropped, err := s.DropArchivedVectors(ctx, later)
 	if err != nil || len(dropped) != 2 || !((dropped[0] == a.N && dropped[1] == b.N) || (dropped[0] == b.N && dropped[1] == a.N)) {
-		t.Fatalf("day 100: dropped %v (err %v), want the two archived memories once each", dropped, err)
+		t.Fatalf("40 newer memories: dropped %v (err %v), want the two archived memories once each", dropped, err)
 	}
 	left := 0
 	if err := s.Vectors(ctx, "model-x", func(n int64, _ []float32) error {
@@ -317,13 +361,112 @@ func TestArchivedMemoriesLoseTheirVectors(t *testing.T) {
 		t.Errorf("vectors left for model-x: %d (err %v), want only the core memory's", left, err)
 	}
 
-	// Archived memories are not queued for embedding. One that is recalled is.
-	if pending, _ := s.Unembedded(ctx, "model-x", later, 10); len(pending) != 0 {
-		t.Errorf("archived memories queued for embedding: %d", len(pending))
+	// Archived memories are not queued for embedding. One that comes back is.
+	queued := func() map[string]bool {
+		t.Helper()
+		pending, err := s.Unembedded(ctx, "model-x", clock(t, s), 1000)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := make(map[string]bool)
+		for _, m := range pending {
+			out[m.ID] = true
+		}
+		return out
 	}
-	recallAt(t, s, later, b.ID)
-	pending, _ := s.Unembedded(ctx, "model-x", later.Add(time.Hour), 10)
-	if len(pending) != 1 || pending[0].ID != b.ID {
-		t.Errorf("after a recall, queued for embedding: %d memories, want just the recalled one", len(pending))
+	if q := queued(); q[a.ID] || q[b.ID] {
+		t.Errorf("archived memories are queued for embedding")
+	}
+	listed(t, s, b.ID)
+	if q := queued(); !q[b.ID] || q[a.ID] {
+		t.Errorf("after b came back: queued a=%v b=%v, want only b", q[a.ID], q[b.ID])
+	}
+}
+
+// The wall clock plays no part: the same events at any times give the same
+// forgetting state.
+func TestForgettingIgnoresTheWallClock(t *testing.T) {
+	state := func(step time.Duration) []float64 {
+		s := newStore(t)
+		ctx := context.Background()
+		at := t0
+		sess := session(t, s, at, "", "cli")
+		var ids []string
+		for i := 0; i < 20; i++ {
+			at = at.Add(step)
+			id, _, err := s.Remember(ctx, at, RememberInput{SessionID: sess.ID, Moment: "other", Source: "lived",
+				Importance: 0.5, Gist: "事 " + string(rune('a'+i)), Body: "正文"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ids = append(ids, id)
+		}
+		at = at.Add(step)
+		if err := s.LogRecalls(ctx, []RecallNote{{At: at, Read: true, IDs: ids[:3]}}); err != nil {
+			t.Fatal(err)
+		}
+		var out []float64
+		for _, id := range ids {
+			m := get(t, s, id)
+			out = append(out, m.Strength, m.FadeAt, m.ArchiveAt, float64(m.TouchedOrd))
+		}
+		return out
+	}
+	if seconds, years := state(time.Second), state(20*365*24*time.Hour); !reflect.DeepEqual(seconds, years) {
+		t.Errorf("forgetting state depends on how far apart the events were")
+	}
+}
+
+// A note says at which point its memories came to mind. It is logged a little
+// later, and what was written in between must not count as having lain
+// between.
+func TestComingToMindIsDatedByItsOwnClock(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	sess := session(t, s, t0, "", "cli")
+	id := remember(t, s, t0, sess.ID, "读到的事", "正文")
+	fill(t, s, sess.ID, 5)  // clock 6: here it is read
+	fill(t, s, sess.ID, 10) // clock 16: here the note is logged
+	note := func(n RecallNote) Memory {
+		t.Helper()
+		n.At, n.IDs = t0, []string{id}
+		if err := s.LogRecalls(ctx, []RecallNote{n}); err != nil {
+			t.Fatal(err)
+		}
+		return get(t, s, id)
+	}
+
+	want := 10 * (1 + 2*(1-math.Exp(-0.5))) // five memories lay between, not fifteen
+	m := note(RecallNote{Read: true, Clock: 6})
+	if !near(m.Strength, want, 1e-6) || m.TouchedOrd != 6 || m.ReadOrd != 6 || !near(m.FadeAt, 6+want*math.Log(1/0.3), 1e-5) {
+		t.Errorf("read at clock 6, logged at 16: strength %.4f, touched %d, read %d, fades at %.3f; want %.4f, 6, 6",
+			m.Strength, m.TouchedOrd, m.ReadOrd, m.FadeAt, want)
+	}
+
+	// Notes from before that, arriving late, move nothing backwards.
+	note(RecallNote{Read: true, Clock: 3})
+	m = note(RecallNote{Clock: 2})
+	if !near(m.Strength, want, 1e-6) || m.TouchedOrd != 6 || m.ReadOrd != 6 || m.RecallCount != 3 {
+		t.Errorf("after two older notes: strength %.4f, touched %d, read %d, count %d; want %.4f, 6, 6, 3",
+			m.Strength, m.TouchedOrd, m.ReadOrd, m.RecallCount, want)
+	}
+
+	// A note cannot be dated in the future, and one without a date means now.
+	m = note(RecallNote{Clock: 99})
+	if m.TouchedOrd != 16 || !near(m.Strength, want, 1e-6) {
+		t.Errorf("a note dated in the future: touched %d, strength %.4f; want 16, %.4f", m.TouchedOrd, m.Strength, want)
+	}
+	fill(t, s, sess.ID, 2)
+	if m = note(RecallNote{}); m.TouchedOrd != 18 {
+		t.Errorf("a note without a clock: touched %d, want 18", m.TouchedOrd)
+	}
+
+	// The dates are in the log: replaying it gives the same state.
+	before := dump(t, s)
+	if err := s.Rebuild(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if after := dump(t, s); after != before {
+		t.Errorf("replay differs\nbefore:\n%s\nafter:\n%s", before, after)
 	}
 }

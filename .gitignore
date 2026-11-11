@@ -1,4 +1,7 @@
 /ziwo
+*.ziwo
+*.ziwo-wal
+*.ziwo-shm
 *.db
 *.db-wal
 *.db-shm
