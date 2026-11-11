@@ -35,6 +35,11 @@ export interface RememberEvent {
   from: string[]; // ids of the memories it is built on
   ref: string; // self: the statement it revises; reading: the memory it reads
   milestone: boolean;
+  // Impression: the ids of the impressions it takes the place of, worked out
+  // when it was written. New on this platform; absent in logs the Go build
+  // wrote, and when there are none. Absent, the impressions it replaces are
+  // found by what they are about, as Go does.
+  replaces?: string[];
 }
 
 export interface RecallEvent {
@@ -48,6 +53,32 @@ export interface ExpandEvent {
   session: string;
   ids: string[];
   clock: number; // the experience clock when they were read; 0 when not given
+}
+
+// AmendEvent records a change to a memory's standing or weight, or a
+// preference set or retired. Field order and omissions are amendEvent's.
+export interface AmendEvent {
+  session: string;
+  action: string;
+  id: string; // a memory; a preference for prefer and unprefer
+  importance: number; // for reweigh; written even when 0, as Go does
+  text: string; // the preference, for prefer
+  reason: string; // why it was asked for
+}
+
+// EraseEvent records that what a memory says was deleted for good.
+export interface EraseEvent {
+  session: string;
+  id: string;
+  reason: string;
+}
+
+// ReflectEvent records a round of reflection written back.
+export interface ReflectEvent {
+  session: string;
+  batch: string;
+  passed: string[]; // fragments looked at and left as they are
+  wrote: string[]; // ids of the memories written back
 }
 
 export interface RestoreEvent {
@@ -78,6 +109,31 @@ export function encodeRemember(e: RememberEvent): string {
     from: e.from.length > 0 ? e.from : undefined,
     ref: omit(e.ref),
     milestone: e.milestone ? true : undefined,
+    replaces: e.replaces !== undefined && e.replaces.length > 0 ? e.replaces : undefined,
+  });
+}
+
+export function encodeAmend(e: AmendEvent): string {
+  return goJSON({
+    session: e.session,
+    action: e.action,
+    id: e.id,
+    importance: e.importance,
+    text: omit(e.text),
+    reason: omit(e.reason),
+  });
+}
+
+export function encodeErase(e: EraseEvent): string {
+  return goJSON({ session: e.session, id: e.id, reason: omit(e.reason) });
+}
+
+export function encodeReflect(e: ReflectEvent): string {
+  return goJSON({
+    session: e.session,
+    batch: e.batch,
+    passed: e.passed.length > 0 ? e.passed : undefined,
+    wrote: e.wrote.length > 0 ? e.wrote : undefined,
   });
 }
 
@@ -110,7 +166,31 @@ export function decodeRemember(payload: string): RememberEvent {
     from: strs(o, "from"),
     ref: str(o, "ref"),
     milestone: bool(o, "milestone"),
+    // Absent and null both mean the field was not written.
+    replaces: o.replaces === undefined || o.replaces === null ? undefined : strs(o, "replaces"),
   };
+}
+
+export function decodeAmend(payload: string): AmendEvent {
+  const o = parseObject(payload, kindAmend);
+  return {
+    session: str(o, "session"),
+    action: str(o, "action"),
+    id: str(o, "id"),
+    importance: num(o, "importance"),
+    text: str(o, "text"),
+    reason: str(o, "reason"),
+  };
+}
+
+export function decodeErase(payload: string): EraseEvent {
+  const o = parseObject(payload, kindErase);
+  return { session: str(o, "session"), id: str(o, "id"), reason: str(o, "reason") };
+}
+
+export function decodeReflect(payload: string): ReflectEvent {
+  const o = parseObject(payload, kindReflect);
+  return { session: str(o, "session"), batch: str(o, "batch"), passed: strs(o, "passed"), wrote: strs(o, "wrote") };
 }
 
 export function decodeRecall(payload: string): RecallEvent {

@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { InvalidInput, parseWhen, type RememberRequest, trimSpace } from "./memory/clean";
+import type { AmendRequest, EntryRequest, EraseRequest, ReflectView } from "./memory/amend";
 import { type ContextView, type Result, Service } from "./memory/service";
 import type { Report } from "./store/check";
 import type { Usage } from "./store/db";
@@ -65,6 +66,31 @@ export class Memory extends DurableObject<Env> {
 
   expand(args: { ids: string[]; sessionId?: string }): Result[] | Invalid {
     return outcome(() => this.service.expand(args.ids ?? [], args.sessionId ?? ""));
+  }
+
+  // amend changes how a memory is remembered, or sets or drops a preference,
+  // and returns a sentence saying what was done.
+  amend(args: AmendRequest): string | Invalid {
+    return outcome(() => this.service.amend(args));
+  }
+
+  // erase deletes what a memory says, for good.
+  erase(args: EraseRequest): string | Invalid {
+    return outcome(() => this.service.erase(args));
+  }
+
+  // beginReflect opens a round of reflection and hands it a batch of
+  // fragments; the batch is empty when nothing waits.
+  beginReflect(args: { sessionId?: string; limit?: number }): ReflectView | Invalid {
+    return outcome(() => this.service.beginReflect(args.sessionId ?? "", args.limit ?? 0));
+  }
+
+  // finishReflect writes a round back and returns the ids of the memories it
+  // made, in the order of the entries.
+  finishReflect(args: { sessionId?: string; batch?: string; entries?: EntryRequest[]; pass?: string[] }): string[] | Invalid {
+    return outcome(() =>
+      this.service.finishReflect(args.sessionId ?? "", args.batch ?? "", args.entries ?? [], args.pass ?? []),
+    );
   }
 
   check(): Report {

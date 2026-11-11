@@ -6,10 +6,30 @@
 // events and the forgetting parameters. Every method is synchronous, and every
 // method that writes is one ctx.storage.transactionSync.
 
-import { applyRemember, KindFragment, KindReading, KindSelf, StateAbsorbed, StateSuperseded, writeMemory } from "./content";
+import {
+  addPreference,
+  amendMemory,
+  applyAmend,
+  applyErase,
+  correctMemory,
+  eraseMemory,
+  retirePreference,
+} from "./amend";
+import {
+  type Append,
+  applyRemember,
+  KindFragment,
+  KindImpression,
+  KindReading,
+  KindSelf,
+  StateAbsorbed,
+  StateErased,
+  StateSuperseded,
+  writeMemory,
+} from "./content";
 import { checkStore, type Report } from "./check";
 import { isActiveBand, isArchived, isFadedBand, isListed, isLive, isPending, notArchived, notYetFaded } from "./conditions";
-import { blob, type Binding, Db, flag, isConstraint, num, realOrZero, type Row, text, type Usage } from "./db";
+import { blob, type Binding, Db, flag, inList, isConstraint, num, realOrZero, type Row, text, type Usage } from "./db";
 import {
   crossings,
   defaultParams,
@@ -21,8 +41,11 @@ import {
   validateParams,
 } from "./decay";
 import {
+  decodeAmend,
+  decodeErase,
   decodeExpand,
   decodeRecall,
+  decodeReflect,
   decodeRemember,
   decodeRestore,
   decodeSession,
@@ -38,7 +61,9 @@ import {
   kindRestore,
   kindSession,
 } from "./events";
+import { NoSessionError } from "./errors";
 import { contentHash, newID } from "./ids";
+import { abandonReflect, applyReflect, beginReflect, type Entry, finishReflect } from "./reflect";
 import { matchQuery } from "./segment";
 import {
   clearIndex,
@@ -73,13 +98,17 @@ import type {
 // writing a new one. It absorbs retried tool calls.
 export const dedupWindow = 10 * 60 * 1000;
 
-// NoSessionError is thrown when a write names a session that does not exist.
-export class NoSessionError extends Error {
-  override name = "NoSessionError";
-  constructor(readonly sessionId: string) {
-    super(`no such session: ${JSON.stringify(sessionId)}`);
-  }
-}
+export {
+  EntryError,
+  ErasedError,
+  NoBatchError,
+  NoMemoryError,
+  NoPreferenceError,
+  NoSessionError,
+  ReflectBusyError,
+  SupersededError,
+  TooManyPreferencesError,
+} from "./errors";
 
 // LogFormatError is thrown when the event log was written in a format this
 // build does not read. newer tells a log from a later build (which Go refuses
@@ -95,15 +124,6 @@ export class LogFormatError extends Error {
         ? `written by a newer version of ziwo: its log format is ${format}, this build reads up to ${logFormat}`
         : `log format ${format} is older than ${logFormat} and is not migrated on this platform`,
     );
-  }
-}
-
-// EventNotPortedError is thrown when the log holds an event whose projection
-// is not ported yet: amend, erase and reflect, until stage P2.
-export class EventNotPortedError extends Error {
-  override name = "EventNotPortedError";
-  constructor(readonly kind: string) {
-    super(`event kind ${JSON.stringify(kind)} is not ported yet (stage P2)`);
   }
 }
 
@@ -128,10 +148,6 @@ const memorySelect = `SELECT m.n, m.id, m.created_at, m.written_at, m.session_id
   m.about, m.context, m.ref, m.milestone, m.reviewed IS NULL AS unreviewed
 FROM memories m`;
 const memoryJoin = ` LEFT JOIN sessions s ON s.id = m.session_id `;
-
-// A list bound as one JSON parameter: the platform allows at most 100 bound
-// parameters in a query, so a list of ids is never spread over placeholders.
-const inList = `(SELECT value FROM json_each(?))`;
 
 function paramsJSON(p: Params): string {
   // Fixed key order, so that equal parameters give an equal derived mark.
@@ -164,6 +180,7 @@ function parseParams(v: string): Params {
 export class Store {
   private readonly db: Db;
   private p: Params = defaultParams();
+  private readonly append: Append = (at, kind, payload) => this.appendEvent(at, kind, payload);
 
   // The constructor creates the log tables if needed, checks the log format,
   // and brings the derived tables up to date with the log and the parameters.
@@ -264,6 +281,11 @@ export class Store {
       }
       after = num(batch[batch.length - 1]!.seq);
     }
+    // A memory whose content was gone when its event was applied, and that
+    // no erase event marked since, lost its content: mark it erased, as Go
+    // does when it applies the event. Only such a memory has an empty hash
+    // and stands otherwise; the hash index finds it.
+    this.db.run(`UPDATE memories SET state = '${StateErased}' WHERE hash = '' AND state <> '${StateErased}'`);
     this.db.run(`DELETE FROM vectors WHERE n NOT IN (SELECT n FROM memories)`);
     this.db.setMeta(metaDerived, this.derivedMark());
   }
@@ -308,9 +330,11 @@ export class Store {
         return this.cameToMind(e.session, e.ids, at, e.clock, true);
       }
       case kindAmend:
+        return applyAmend(this.db, this.p, at, decodeAmend(payload));
       case kindErase:
+        return applyErase(this.db, at, decodeErase(payload));
       case kindReflect:
-        throw new EventNotPortedError(kind);
+        return applyReflect(this.db, this.p, at, decodeReflect(payload));
       case kindRestore: {
         const e = decodeRestore(payload);
         this.db.run(`INSERT OR REPLACE INTO restores(at, exported_at, events) VALUES(?, ?, ?)`, at, e.exportedAt, e.events);
@@ -436,7 +460,7 @@ export class Store {
       const id = newID("m_");
       writeMemory(
         this.db,
-        (a, kind, payload) => this.appendEvent(a, kind, payload),
+        this.append,
         at,
         {
           id, session: input.sessionId, kind: "", moment: input.moment, source: input.source,
@@ -450,6 +474,72 @@ export class Store {
       );
       return { id, dup: false };
     });
+  }
+
+  // amend changes a memory's standing or weight: action is one of the Amend
+  // constants in amend.ts, and importance is used by reweigh alone. Being
+  // amended counts as coming to mind, so the memory's decay starts over.
+  amend(at: number, session: string, action: string, id: string, importance: number, reason: string): void {
+    this.tx(() => amendMemory(this.db, this.append, at, session, action, id, importance, reason));
+  }
+
+  // correct writes a memory that replaces the one with id old, and returns
+  // the new memory's id. The old one stays in the record, marked as
+  // replaced, and leaves ordinary recall. The new one is of the same kind.
+  correct(at: number, old: string, input: RememberInput): string {
+    return this.retry(() => {
+      const id = newID("m_");
+      correctMemory(this.db, this.append, at, old, id, input);
+      return id;
+    });
+  }
+
+  // erase deletes what a memory says, for good, and returns the memory's row
+  // number. The log keeps the fact that the memory existed and that it was
+  // erased.
+  erase(at: number, session: string, id: string, reason: string): number {
+    return this.tx(() => eraseMemory(this.db, this.append, at, session, id, reason));
+  }
+
+  // addPreference records a standing rule about what to remember and returns
+  // its id. At most max preferences can be in force.
+  addPreference(at: number, session: string, text: string, max: number): string {
+    return this.retry(() => {
+      const id = newID("p_");
+      addPreference(this.db, this.append, at, session, id, text, max);
+      return id;
+    });
+  }
+
+  // retirePreference takes a preference out of force. It stays in the log.
+  retirePreference(at: number, session: string, id: string, reason: string): void {
+    this.tx(() => retirePreference(this.db, this.append, at, session, id, reason));
+  }
+
+  // beginReflect opens a round of reflection for the session, held for hold
+  // milliseconds, and returns its batch id. While another session's round has
+  // not run out it throws ReflectBusyError.
+  beginReflect(at: number, session: string, hold: number): string {
+    const batch = newID("b_");
+    this.tx(() => beginReflect(this.db, at, session, hold, batch));
+    return batch;
+  }
+
+  // finishReflect writes a round of reflection back and returns the ids of
+  // the new memories, in the order of the entries. Nothing is written unless
+  // everything can be.
+  finishReflect(at: number, session: string, batch: string, entries: Entry[], passed: string[]): string[] {
+    return this.retry(() => {
+      const ids = entries.map(() => newID("m_"));
+      finishReflect(this.db, this.append, at, session, batch, entries, passed, ids);
+      return ids;
+    });
+  }
+
+  // abandonReflect closes a round without writing anything back, if it is
+  // still the one that is open.
+  abandonReflect(session: string, batch: string): void {
+    this.tx(() => abandonReflect(this.db, session, batch));
   }
 
   // logRecalls appends one event per note, in one transaction: memories were
@@ -577,6 +667,16 @@ export class Store {
   // selves returns the statements about oneself that stand, oldest first.
   selves(): Memory[] {
     return this.memories(`WHERE m.kind = ? AND ${isLive} ORDER BY m.n`, KindSelf);
+  }
+
+  // impressions returns the current impression of each of the named people
+  // or things that has one.
+  impressions(names: string[]): Memory[] {
+    if (names.length === 0) return [];
+    return this.memories(
+      `WHERE m.kind = ? AND ${isLive} AND m.about IN ${inList} ORDER BY m.about`,
+      KindImpression, JSON.stringify(names),
+    );
   }
 
   // readings returns the later understandings of the memory with the given

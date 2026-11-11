@@ -1,5 +1,6 @@
 // The behaviour of one memory: what a session is shown, what may be written,
-// how memories are found again. Port of service.go without embeddings and
+// how memories are found again. Port of service.go (amending and reflecting
+// are in amend.ts) without embeddings and
 // background work: a listing or a reading is logged in the call that made
 // it, and matches by meaning, when there are any, are handed in by the
 // caller.
@@ -9,6 +10,16 @@ import { StateErased } from "../store/content";
 import { retentionOf, type Tier, type TierCounts, tierOf } from "../store/decay";
 import { NoSessionError, type Store } from "../store/store";
 import { type CarrierNote, isLive, type Memory, type Preference, type RestoreNote, type Session } from "../store/types";
+import {
+  amend,
+  type AmendRequest,
+  beginReflect,
+  type EntryRequest,
+  erase,
+  type EraseRequest,
+  finishReflect,
+  type ReflectView,
+} from "./amend";
 import {
   clean,
   clip,
@@ -248,6 +259,30 @@ export class Service {
       this.st.logRecalls([{ at: this.now(), session: this.knownSession(session), read: true, ids: read, clock }]);
     }
     return out;
+  }
+
+  // amend carries out one amendment and returns a sentence saying what was
+  // done.
+  amend(req: AmendRequest): string {
+    return amend(this.st, this.now(), req);
+  }
+
+  // erase deletes what a memory says, for good, and returns a sentence
+  // saying so.
+  erase(req: EraseRequest): string {
+    return erase(this.st, this.now(), req);
+  }
+
+  // beginReflect opens a round of reflection for the session and hands it a
+  // batch of fragments.
+  beginReflect(session: string, limit: number): ReflectView {
+    return beginReflect(this.st, this.now(), session, limit);
+  }
+
+  // finishReflect writes a round of reflection back and returns the ids of
+  // the memories it made, in the order of the entries.
+  finishReflect(session: string, batch: string, entries: EntryRequest[], pass: string[]): string[] {
+    return finishReflect(this.st, this.now(), session, batch, entries, pass);
   }
 
   // knownSession returns id if it names a session and "" otherwise. A read

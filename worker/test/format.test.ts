@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { encodeContent } from "../src/store/content";
 import { encodeRecall, encodeRemember, type RememberEvent } from "../src/store/events";
 import { encodeID, newID } from "../src/store/ids";
-import { EventNotPortedError, LogFormatError, ReplayError, Store } from "../src/store/store";
+import { LogFormatError, ReplayError, Store } from "../src/store/store";
 import { dump, freshObject, inObject, populate, session, testParams, withStore } from "./helpers";
 
 const remember = (e: Partial<RememberEvent>): RememberEvent => ({
@@ -100,23 +100,6 @@ describe("log format", () => {
       const unversioned = open(null);
       expect(unversioned).toBeInstanceOf(LogFormatError);
       expect((unversioned as LogFormatError).format).toBe(0);
-    }));
-
-  it.each(["amend", "erase", "reflect"])("refuses to project %s events until stage P2, and changes nothing", (kind) =>
-    withStore((s, storage) => {
-      populate(s);
-      const before = dump(s, storage);
-      storage.sql.exec(`INSERT INTO events(at, kind, payload) VALUES(1, ?, '{}')`, kind);
-      let caught: unknown;
-      try {
-        s.rebuild();
-      } catch (err) {
-        caught = err;
-      }
-      expect(caught).toBeInstanceOf(ReplayError);
-      expect((caught as ReplayError).cause).toBeInstanceOf(EventNotPortedError);
-      expect(((caught as ReplayError).cause as EventNotPortedError).kind).toBe(kind);
-      expect(dump(s, storage)).toBe(before);
     }));
 
   it("refuses to project an unknown kind of event", () =>

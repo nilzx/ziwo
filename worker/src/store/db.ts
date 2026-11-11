@@ -3,6 +3,10 @@
 import { metaClock } from "./schema";
 
 export type Binding = string | number | null | ArrayBuffer;
+
+// A list bound as one JSON parameter: the platform allows at most 100 bound
+// parameters in a query, so a list of ids is never spread over placeholders.
+export const inList = `(SELECT value FROM json_each(?))`;
 export type Row = Record<string, SqlStorageValue>;
 
 // Usage is what the platform bills for: rows read and rows written, added up

@@ -1,7 +1,7 @@
 // What a memory says, and how a remember event is projected. Port of
 // content.go.
 
-import { bit, type Db, text } from "./db";
+import { bit, type Db, inList, text } from "./db";
 import { clampStrength, crossings, initialStrength, isCore, type Params } from "./decay";
 import { encodeRemember, kindRemember, type RememberEvent } from "./events";
 import { contentHash, sha256Hex } from "./ids";
@@ -81,18 +81,27 @@ export function loadContent(db: Db, id: string): FullContent | undefined {
   };
 }
 
+// Append writes one event and applies it to the derived tables.
+export type Append = (at: number, kind: string, payload: string) => number;
+
 // writeMemory stores what a new memory says and appends the event that records
-// it. The event carries the content's hash, not the content. append writes an
-// event and applies it.
-export function writeMemory(
-  db: Db,
-  append: (at: number, kind: string, payload: string) => number,
-  at: number,
-  e: RememberEvent,
-  c: Content,
-): void {
+// it. The event carries the content's hash, not the content.
+export function writeMemory(db: Db, append: Append, at: number, e: RememberEvent, c: Content): void {
   const { data, hash } = encodeContent(c);
-  const ev: RememberEvent = { ...e, hash, kind: e.kind === KindFragment ? "" : e.kind };
+  const ev: RememberEvent = { ...e, hash, kind: e.kind === KindFragment ? "" : e.kind, replaces: undefined };
+  if (ev.kind === KindImpression && ev.corrects === "") {
+    // Name what it takes the place of now, while what they are about can
+    // still be read: a replay must replace the same ones even if one of them,
+    // or this one, is erased later. These are the rows the match on about in
+    // applyRemember would reach.
+    const ids = db
+      .all(
+        `SELECT id FROM memories WHERE kind = ? AND about = ? AND state = '' AND id <> ? ORDER BY n`,
+        KindImpression, c.about ?? "", ev.id,
+      )
+      .map((r) => text(r.id));
+    if (ids.length > 0) ev.replaces = ids;
+  }
   db.run(`INSERT INTO contents(id, data) VALUES(?, ?)`, ev.id, data);
   append(at, kindRemember, encodeRemember(ev));
 }
@@ -121,8 +130,16 @@ export function kindFactor(kind: string): number {
 }
 
 // applyRemember projects a remember event. What the memory says is read from
-// the contents table; if it has been erased, the memory is still counted,
-// because it was lived through, but it says nothing.
+// the contents table. If it is gone, the memory is still counted, because it
+// was lived through, but it says nothing.
+//
+// Such a memory stands until its erase event marks it erased, unlike in Go,
+// where it is marked erased here. That way the events between the two (a
+// correction, a newer impression, an episode that absorbs it) do to it on a
+// replay what they did when they were lived. A memory whose content is gone
+// with no erase event in the log was lost; the rebuild marks it erased after
+// the last event (see rebuildInTx). Its hash is empty until then: that is how
+// the rebuild finds it.
 export function applyRemember(db: Db, p: Params, seq: number, at: number, e: RememberEvent): void {
   const loaded = loadContent(db, e.id);
   const kept = loaded !== undefined;
@@ -130,7 +147,6 @@ export function applyRemember(db: Db, p: Params, seq: number, at: number, e: Rem
     gist: "", body: "", outcome: "", feeling: "", lesson: "", people: [], pointer: "", about: "", context: "",
   };
   const kind = e.kind === "" ? KindFragment : e.kind;
-  const state = kept ? "" : StateErased;
   const hash = kept ? contentHash(c.gist, c.body) : "";
   const people = c.people;
 
@@ -156,7 +172,7 @@ export function applyRemember(db: Db, p: Params, seq: number, at: number, e: Rem
      VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 0, 0, ?)`,
     seq, e.id, happened, at, e.session, kind, e.moment, e.source, e.importance, e.intensity,
     c.gist, c.body, c.outcome, c.feeling, c.lesson, goJSON(people), c.pointer, c.about, c.context, e.ref, bit(e.milestone),
-    hash, at, ord, ord, ord, bit(core), strength, fadeAt, archiveAt, reviewed, state, e.corrects,
+    hash, at, ord, ord, ord, bit(core), strength, fadeAt, archiveAt, reviewed, "", e.corrects,
   );
   if (kept) {
     const rest = [c.body, c.outcome, c.feeling, c.lesson, c.pointer, c.about, c.context, ...people].join("\n");
@@ -178,7 +194,11 @@ export function applyRemember(db: Db, p: Params, seq: number, at: number, e: Rem
     replace(`id = ?`, e.corrects);
   } else if (kind === KindSelf && e.ref !== "") {
     replace(`id = ? AND kind = ?`, e.ref, KindSelf);
+  } else if (kind === KindImpression && e.replaces !== undefined) {
+    // The + keeps the planner on the ids rather than every impression.
+    replace(`+kind = ? AND id IN ${inList}`, KindImpression, JSON.stringify(e.replaces));
   } else if (kind === KindImpression && kept) {
+    // A log the Go build wrote: what it replaces is found by what it is about.
     replace(`kind = ? AND about = ?`, KindImpression, c.about);
   } else if (kind === KindEpisode) {
     // The fragments it was put together from are now part of it.

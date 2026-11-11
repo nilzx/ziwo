@@ -1,14 +1,9 @@
-// Port of internal/store/check_test.go. Erase, amend and reflect are not
-// ported yet, so what they would leave behind is made by hand: the kinds of
-// memory reflect writes go into the log as remember events and a rebuild
-// projects them (as in projection.test.ts); an erasure and a retraction are
-// written straight into the tables, as the Go test does with its damage.
+// Port of internal/store/check_test.go.
 
 import { describe, expect, it } from "vitest";
-import { type Content, encodeContent } from "../src/store/content";
 import { countFindings, type Finding, LevelNote, LevelProblem, LevelWarning, type Report, reportText } from "../src/store/check";
-import { encodeRemember, type RememberEvent } from "../src/store/events";
 import type { Store } from "../src/store/store";
+import { amend, ent, entry, reflectOn } from "./amend-helpers";
 import { hour, listed, read, remember, rememberWith, session, t0, withStore } from "./helpers";
 
 // found returns the finding with the given code and level, or fails.
@@ -25,64 +20,46 @@ function figure(r: Report, name: string): string {
   return f!.value;
 }
 
-let logged = 0;
-
-// logRemember writes a remember event and its content into the log, as an
-// import or a later stage would; the caller rebuilds.
-function logRemember(storage: DurableObjectStorage, sess: string, e: Partial<RememberEvent>, c: Content): string {
-  const id = e.id ?? `m_log${++logged}`;
-  const enc = encodeContent(c);
-  storage.sql.exec(`INSERT INTO contents(id, data) VALUES(?, ?)`, id, enc.data);
-  const ev: RememberEvent = {
-    id, session: sess, kind: "", moment: "other", source: "lived", importance: 0.5, intensity: 0,
-    hash: enc.hash, corrects: "", happened: 0, from: [], ref: "", milestone: false, ...e,
-  };
-  storage.sql.exec(`INSERT INTO events(at, kind, payload) VALUES(?, 'remember', ?)`, t0, encodeRemember(ev));
-  return id;
-}
-
-// erase does what Go's Erase leaves in the record: the content is gone and
-// the log says so.
-function erase(storage: DurableObjectStorage, sess: string, id: string): void {
-  storage.sql.exec(`DELETE FROM contents WHERE id = ?`, id);
-  storage.sql.exec(`INSERT INTO events(at, kind, payload) VALUES(?, 'erase', ?)`, t0, JSON.stringify({ session: sess, id }));
-  storage.sql.exec(`UPDATE memories SET state = 'erased' WHERE id = ?`, id);
-}
-
-// life writes a memory with a little of everything that can be written yet.
-function life(s: Store, storage: DurableObjectStorage): void {
+// life writes a memory with a little of everything, as Go's life in
+// export_test.go does.
+function life(s: Store): void {
   const a = session(s, t0, "model-a", "cli");
   const b = session(s, t0 + hour, "model-b", "desktop");
   const f1 = remember(s, t0, a, "用户让我做一个记忆系统", "我先问清了它要记什么 keptmark4v。");
   const f2 = remember(s, t0, a, "用户纠正了我的理解", "他说要记的是经历。");
   const f3 = remember(s, t0, b, "另一次我也先问清了需求", "用户说这样省了返工。");
+  const erased = remember(s, t0, b, "用户告诉我一件私事", "住址是 qx4private7k 路。");
   rememberWith(s, { sessionId: a, source: "reconstructed", gist: "半年前的一个项目", body: "从记录里整理的。", happened: t0 - 180 * 24 * hour });
-  const fixed = logRemember(storage, a, { corrects: f2 }, { gist: "用户纠正了我对记忆系统的理解", body: "他说要记的是经历。" });
-  logRemember(storage, a, { kind: "episode", from: [f1, fixed] }, { gist: "把方向定了下来" });
-  logRemember(storage, a, { kind: "impression", from: [fixed], importance: 0.95 }, { gist: "说话直接", about: "用户" });
-  logRemember(storage, a, { kind: "self", from: [f1, fixed, f3] }, { gist: "我动手前会先问清楚", context: "做设计的时候" });
-  s.rebuild();
+  const fixed = s.correct(t0, f2, {
+    sessionId: a, moment: "other", source: "lived", importance: 0.5, gist: "用户纠正了我对记忆系统的理解", body: "他说要记的是经历。",
+  });
+  s.erase(t0, b, erased, "the user asked");
+  s.addPreference(t0, a, "不用记天气之类的闲聊", 30);
+  reflectOn(s, a, [
+    ent("episode", "把方向定了下来", f1, fixed),
+    { ...ent("impression", "说话直接", fixed), about: "用户" },
+    entry({ kind: "self", gist: "我动手前会先问清楚", context: "做设计的时候", importance: 0.5, from: [f1, fixed, f3] }),
+  ], f3);
+  amend(s, a, "pin", f3);
   listed(s, f3);
   read(s, f3);
   s.setTokenHash("tokenhash");
 }
 
 describe("check", () => {
-  // Ported in part: without erase, reflect, preferences and pin, the figures
-  // are those of what life writes here.
   it("CheckOfAMemoryInGoodOrder", () =>
-    withStore((s, storage) => {
-      life(s, storage);
+    withStore((s) => {
+      life(s);
       const r = s.check();
       expect(countFindings(r, LevelProblem) + countFindings(r, LevelWarning), reportText(r)).toBe(0);
       const out = reportText(r);
       for (const want of [
-        "log: format 3, 12 events: 2 sessions, 8 memories written, 1 listings, 1 readings, 0 amendments, 0 rounds of reflection, 0 erased, 0 restores",
-        "memories: 4 standing (1 core, 3 active, 0 faded, 0 archived), 3 set aside or part of another; the clock reads 3",
+        "log: format 3, 17 events: 2 sessions, 9 memories written, 1 listings, 1 readings, 2 amendments, 1 rounds of reflection, 1 erased, 0 restores",
+        "memories: 4 standing (1 core, 3 active, 0 faded, 0 archived), 4 set aside or part of another; the clock reads 4",
         "by source: lived 4, reconstructed 1",
         "about yourself: 1 statements stand, 0 earlier versions kept",
-        "preferences: 0 in force, 0 retired",
-        "waiting for reflect: 2",
+        "preferences: 1 in force, 0 retired",
+        "waiting for reflect: 1",
         "problems: none",
         "warnings: none",
         "  [never-came-to-mind] 3 of 4 standing memories have never been listed or read since they were written",
@@ -91,7 +68,7 @@ describe("check", () => {
       }
       expect(figure(r, "by kind").split(", ").sort()).toEqual(["episode 1", "fragment 2", "impression 1"]);
       // It names memories by id and never says what one says.
-      for (const text of ["记忆系统", "keptmark4v", "问清", "用户", "说话直接", "做设计"]) {
+      for (const text of ["记忆系统", "keptmark4v", "问清", "天气", "用户", "说话直接", "住址", "做设计"]) {
         expect(out, "the report quotes a memory").not.toContain(text);
       }
     }));
@@ -100,7 +77,7 @@ describe("check", () => {
   // when the object starts. A memory without them is made by dropping one.
   it("CheckOfAMemoryNotBuilt", () =>
     withStore((s, storage) => {
-      life(s, storage);
+      life(s);
       storage.sql.exec(`DROP TABLE memories`);
       const r = s.check();
       found(r, LevelNote, "not-built");
@@ -115,7 +92,7 @@ describe("check", () => {
       const altered = remember(s, t0, sess, "正文被改的记忆", "正文二");
       const gone = remember(s, t0, sess, "被删除的记忆", "正文三");
       const stays = remember(s, t0, sess, "删了但正文还在的记忆", "正文四");
-      erase(storage, sess, gone);
+      s.erase(t0, sess, gone, "");
       // Do to the database what the store itself never does.
       for (const stmt of [
         `DELETE FROM contents WHERE id = '${lost}'`,
@@ -143,7 +120,7 @@ describe("check", () => {
     }));
 
   it("CheckFlagsUseThatWillNotServe", () =>
-    withStore((s, storage) => {
+    withStore((s) => {
       const busy = session(s, t0, "", "cli");
       const quiet = session(s, t0, "", "cli");
       let code = "", twinA = "", twinB = "";
@@ -162,15 +139,16 @@ describe("check", () => {
       const long = rememberWith(s, { sessionId: quiet, gist: "一段很长的记录", body: "字".repeat(3001) });
       const b = rememberWith(s, { sessionId: busy, gist: "在场的经历一", body: "正文" });
       const c = rememberWith(s, { sessionId: busy, gist: "在场的经历二", body: "正文" });
-      const self = logRemember(storage, quiet, { kind: "self", from: [a, b, c] }, { gist: "一句自述" });
-      logRemember(storage, quiet, { kind: "impression", from: [a] }, { gist: "印象一", about: "Alex" });
-      logRemember(storage, quiet, { kind: "impression", from: [b] }, { gist: "印象二", about: "alex " });
-      // Two impressions under the same name are one thing, not two names.
-      logRemember(storage, quiet, { kind: "impression", from: [c] }, { gist: "印象三", about: "Bo" });
-      logRemember(storage, quiet, { kind: "impression", from: [c] }, { gist: "印象四", about: "Bo" });
-      s.rebuild();
-      // What a retraction leaves in the tables.
-      storage.sql.exec(`UPDATE memories SET retracted = 1 WHERE id = ?`, b);
+      const [self] = reflectOn(s, quiet, [
+        entry({ kind: "self", gist: "一句自述", importance: 0.5, from: [a, b, c] }),
+        { ...ent("impression", "印象一", a), about: "Alex" },
+        { ...ent("impression", "印象二", b), about: "alex " },
+        // Not in Go: two impressions under the same name are one thing, not
+        // two names; the second replaces the first.
+        { ...ent("impression", "印象三", c), about: "Bo" },
+        { ...ent("impression", "印象四", c), about: "Bo" },
+      ]);
+      amend(s, quiet, "retract", b);
 
       const r = s.check();
       expect(countFindings(r, LevelProblem), reportText(r)).toBe(0);
@@ -196,7 +174,8 @@ describe("check", () => {
     withStore((s, storage) => {
       const sess = session(s, t0, "", "cli");
       const old = remember(s, t0, sess, "旧的", "正文");
-      const fixed = logRemember(storage, sess, { corrects: old }, { gist: "新的", body: "正文" });
+      const fixed = s.correct(t0, old, { sessionId: sess, moment: "other", source: "lived", importance: 0.5, gist: "新的", body: "正文" });
+      // Restoring from an export is a later stage: its event is written by hand.
       storage.sql.exec(`INSERT INTO events(at, kind, payload) VALUES(?, 'restore', ?)`, t0 + hour,
         `{"from":"i_aaaaaaaa","exported_at":${t0},"events":3}`);
       s.rebuild();
@@ -205,7 +184,7 @@ describe("check", () => {
       expect(found(r, LevelNote, "restored").text)
         .toBe("this memory was brought back from an export 1 time(s); what was lived between an export and its restore is not in it");
 
-      storage.sql.exec(`UPDATE memories SET retracted = 1 WHERE id = ?`, fixed);
+      amend(s, sess, "retract", fixed);
       storage.sql.exec(`INSERT INTO vectors(n, model, vec) VALUES(9999, 'm', x'00000000')`);
       r = s.check();
       expect(found(r, LevelWarning, "nothing-in-its-place").ids).toEqual([old]);
