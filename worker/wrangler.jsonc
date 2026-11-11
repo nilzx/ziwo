@@ -4,6 +4,8 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-10-01",
   "compatibility_flags": ["nodejs_compat"],
+  // The admin page's files are served as they are, never run by the Worker.
+  "rules": [{ "type": "Text", "globs": ["**/page/*.html", "**/page/*.mjs", "**/page/*.css"], "fallthrough": true }],
   "durable_objects": {
     "bindings": [
       { "name": "MEMORY", "class_name": "Memory" },

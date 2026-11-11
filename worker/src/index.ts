@@ -10,6 +10,7 @@ import { type Note, serveAdmin } from "./admin";
 import { Directory } from "./directory";
 import { base64url, bearer, encoder, notFound, plain, sha256Hex, unauthorized, validName } from "./http";
 import { Memory } from "./memory-object";
+import { isPagePath, servePage } from "./page";
 import { buildServer } from "./mcp/server";
 import { clipText, type LogFields, logLine } from "./log";
 
@@ -156,6 +157,8 @@ function healthz(request: Request): Response {
 async function route(request: Request, env: Env, path: string, note: Note): Promise<Response> {
   const parts = path.split("/");
   if (path === "/healthz") return healthz(request);
+  // The admin page: static files, never a Durable Object.
+  if (isPagePath(path)) return servePage(request, path);
   // /<name>/mcp
   if (parts.length === 3 && parts[0] === "" && parts[2] === "mcp" && validName(parts[1]!)) {
     return serveMemory(request, env, parts[1]!, note);
