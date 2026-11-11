@@ -1,3 +1,5 @@
+// The deployment. Search by meaning is on: AI is the Workers AI binding.
+// wrangler.dev.jsonc is this file without it, for tests and local runs.
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "ziwo",
@@ -6,6 +8,7 @@
   "compatibility_flags": ["nodejs_compat"],
   // The admin page's files are served as they are, never run by the Worker.
   "rules": [{ "type": "Text", "globs": ["**/page/*.html", "**/page/*.mjs", "**/page/*.css"], "fallthrough": true }],
+  "ai": { "binding": "AI" },
   "durable_objects": {
     "bindings": [
       { "name": "MEMORY", "class_name": "Memory" },

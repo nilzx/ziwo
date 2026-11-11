@@ -271,6 +271,8 @@ describe("one memory", () => {
     expect(await res.json()).toEqual({
       memory: m.name, endpoint: `/${m.name}/mcp`, memories: 3, events: stats.events, lastEventAt: stats.lastEventAt, hasToken: true,
       params: defaultParams(), timeZone: "UTC",
+      // Search by meaning is off without an AI binding.
+      vectors: { embedding: null, held: [], waiting: null },
     });
   });
 

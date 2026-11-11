@@ -273,24 +273,25 @@ describe("decay", () => {
       const a = get(s, remember(s, t0, sess, "甲", "会被归档"));
       const b = get(s, remember(s, t0, sess, "乙", "会被归档后又被想起"));
       const c = get(s, rememberWith(s, { sessionId: sess, importance: 0.95, gist: "丙", body: "核心记忆" }));
-      for (const m of [a, b, c]) for (const model of ["model-x", "model-y"]) s.saveVector(m.n, model, [1, 2]);
+      const x = { model: "model-x", dims: 2 };
+      const y = { model: "model-y", dims: 2 };
+      for (const label of [y, x]) expect(s.saveVectors(label, [a, b, c].map((m) => ({ n: m.n, vec: [0.6, 0.8] })))).toBe(3);
 
       fill(s, sess, 20);
-      // Nothing archived yet.
-      expect(s.dropArchivedVectors(s.clock())).toEqual([]);
+      // Nothing archived yet. Tending model-x drops model-y's vectors.
+      expect(s.tendVectors(x).dropped).toBe(0);
+      expect(s.vectorFigures(x).held).toEqual([{ model: "model-x", dims: 2, count: 3 }]);
       fill(s, sess, 20);
       // The two archived memories, once each.
-      expect(s.dropArchivedVectors(s.clock()).sort((x, y) => x - y)).toEqual([a.n, b.n]);
-      const left: number[] = [];
-      s.vectors("model-x", (n) => left.push(n));
-      expect(left).toEqual([c.n]);
+      expect(s.tendVectors(x).dropped).toBe(2);
+      expect(s.storedVectorNs()).toEqual([c.n]);
 
-      // Archived memories are not queued for embedding. One that comes back is.
-      const queued = () => new Set(s.unembedded("model-x", s.clock(), 1000).map((m) => m.id));
-      expect(queued().has(a.id) || queued().has(b.id)).toBe(false);
+      // Archived memories do not wait for a vector. One that comes back does.
+      const queued = () => new Set(s.tendVectors(x).waiting);
+      expect(queued().has(a.n) || queued().has(b.n)).toBe(false);
       listed(s, b.id);
       const q = queued();
-      expect([q.has(a.id), q.has(b.id)]).toEqual([false, true]);
+      expect([q.has(a.n), q.has(b.n)]).toEqual([false, true]);
     }));
 
   // The wall clock plays no part: the same events at any times give the same

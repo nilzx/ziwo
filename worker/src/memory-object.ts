@@ -1,7 +1,11 @@
 import { DurableObject } from "cloudflare:workers";
 import { InvalidInput, parseWhen, type RememberRequest, trimSpace } from "./memory/clean";
 import type { AmendRequest, EntryRequest, EraseRequest, ReflectView } from "./memory/amend";
-import { type ContextView, type Result, Service } from "./memory/service";
+import { type ContextView, type MeaningHit, recallDepth, type Result, Service } from "./memory/service";
+import { embedSettings, prepare, type QueryVector, WorkersAI } from "./embed";
+import { type EmbedRun, Embedding } from "./memory/embedding";
+import { logLine } from "./log";
+import type { HeldFigure, Label } from "./store/vectors";
 import { formatBatch, formatContext, formatExpand, formatRecall, formatWritten } from "./mcp/format";
 import { reportText, type Report } from "./store/check";
 import {
@@ -32,7 +36,8 @@ export type RememberArgs = Omit<RememberRequest, "happened"> & { happenedAt?: st
 export type ToolCall =
   | { tool: "get_context"; model?: string; timezone?: string; client?: string }
   | { tool: "remember"; args: RememberArgs }
-  | { tool: "recall"; query: string; limit?: number; deep?: boolean; sessionId?: string }
+  // meaning is the query's embedding, made by the Worker, if it made one.
+  | { tool: "recall"; query: string; limit?: number; deep?: boolean; sessionId?: string; meaning?: QueryVector }
   | { tool: "expand"; ids: string[]; sessionId?: string }
   | {
       tool: "reflect";
@@ -83,6 +88,14 @@ export class Memory extends DurableObject<Env> {
   now: () => number = () => Date.now();
   // The limit in bytes of an import or an export; tests lower it.
   byteLimit = maxBytesInOneGo;
+  // Search by meaning: undefined until first needed, null when it is off.
+  // Tests set an Embedding with a stand-in embedder.
+  embedding?: Embedding | null;
+  // The clock alarms are set by. Tests move it far ahead, so that an alarm
+  // runs only when they run it.
+  alarmNow: () => number = () => Date.now();
+  // Whether this instance set an alarm that has not run yet.
+  private wakeSet = false;
 
   private get parts(): { store: Store; service: Service } {
     if (this.built === undefined) {
@@ -98,6 +111,116 @@ export class Memory extends DurableObject<Env> {
 
   get service(): Service {
     return this.parts.service;
+  }
+
+  private get emb(): Embedding | null {
+    if (this.embedding === undefined) {
+      const s = embedSettings(this.env);
+      this.embedding = s === undefined ? null : new Embedding(s, new WorkersAI(this.env.AI!, s.model));
+    }
+    return this.embedding;
+  }
+
+  // wake sets the alarm that embeds what waits, unless this instance set
+  // one already: a delay after a failure is not cut short. The call that
+  // wakes it neither waits for it nor fails because of it.
+  private wake(): void {
+    if (this.emb === null || this.wakeSet) return;
+    this.schedule(0);
+  }
+
+  // askFull asks the next run of the alarm to be a full one, and sets the
+  // alarm: called when something other than a new write may have changed
+  // which memories need a vector.
+  private askFull(): void {
+    if (this.emb === null) return;
+    this.store.askFullVectorRun();
+    this.wake();
+  }
+
+  private schedule(delay: number): void {
+    this.wakeSet = true;
+    this.ctx.storage.setAlarm(this.alarmNow() + delay).catch((err: unknown) => {
+      this.wakeSet = false;
+      logLine({ msg: "alarm not set", error: err instanceof Error ? err.name : "unknown" });
+    });
+  }
+
+  // alarm embeds one batch of what waits and sets itself again while more
+  // waits, or after a growing delay when the model cannot be used.
+  override async alarm(): Promise<void> {
+    this.wakeSet = false;
+    const emb = this.emb;
+    // An object that holds no memory is left without tables.
+    if (emb === null || (this.built === undefined && !this.hasLog())) return;
+    let r: EmbedRun;
+    try {
+      r = await this.embedOnce();
+    } catch (err) {
+      const retryIn = emb.failure();
+      logLine({ msg: "embedding failed", error: err instanceof Error ? err.name : "unknown", retry_ms: retryIn });
+      this.schedule(retryIn);
+      return;
+    }
+    if (r.failed) this.schedule(r.retryIn);
+    else if (r.more) this.schedule(0);
+  }
+
+  // embedOnce embeds one batch, after a full run's sweep when one is due or
+  // full is set; the alarm runs it, and tests do.
+  async embedOnce(full = false): Promise<EmbedRun> {
+    const emb = this.emb;
+    if (emb === null) return { dropped: 0, embedded: 0, refused: 0, failed: false, retryIn: 0, more: false, full: false };
+    return emb.run(this.store, this.now(), full);
+  }
+
+  // meaningFor searches the vectors with the query's embedding, which the
+  // Worker made. Without one, or with one of another label, recall reads
+  // keywords alone. The object never calls the model for a query.
+  private meaningFor(query: string, v: QueryVector | undefined, limit: number): MeaningHit[] | undefined {
+    const emb = this.emb;
+    if (emb === null || v === undefined || trimSpace(query) === "") return undefined;
+    const s = emb.settings;
+    if (v.model !== s.model || v.dims !== s.dims || v.values.length !== s.dims) return undefined;
+    let q: Float32Array;
+    try {
+      q = prepare(v.values, s.dims);
+    } catch {
+      return undefined;
+    }
+    return this.store.searchVectors(emb.label, q, recallDepth(limit), s.minSimilarity);
+  }
+
+  private recallWith(args: { query: string; limit?: number; deep?: boolean; sessionId?: string; meaning?: QueryVector }): Result[] {
+    const query = args.query ?? "";
+    const limit = args.limit ?? 0;
+    const results = this.service.recall(query, limit, args.deep ?? false, args.sessionId ?? "", this.meaningFor(query, args.meaning, limit));
+    // Listed, an archived memory comes back, and needs its vector again.
+    if (results.some((r) => r.tier === "archived")) this.askFull();
+    return results;
+  }
+
+  private expandWith(ids: string[], sessionId: string): Result[] {
+    const results = this.service.expand(ids, sessionId);
+    if (results.some((r) => r.tier === "archived")) this.askFull();
+    return results;
+  }
+
+  // Amending a memory can set it aside, bring it back, replace it, or move
+  // it into or out of the archive; reflecting writes memories and absorbs
+  // others. The alarm's next run is then a full one. A preference is not a
+  // memory: setting or dropping one asks for nothing.
+  private amendWith(args: AmendRequest): string {
+    const msg = this.service.amend(args);
+    const action = trimSpace(args.action ?? "");
+    if (action !== "prefer" && action !== "unprefer") this.askFull();
+    return msg;
+  }
+
+  private finishReflectWith(sessionId: string, batch: string, entries: EntryRequest[], pass: string[]): string[] {
+    const ids = this.service.finishReflect(sessionId, batch, entries, pass);
+    this.askFull();
+    return ids;
   }
 
   // storedTokenHash reads the token's hash without building the store: a
@@ -184,22 +307,24 @@ export class Memory extends DurableObject<Env> {
       const { happenedAt, ...req } = args;
       let happened: number | undefined;
       if (happenedAt !== undefined && trimSpace(happenedAt) !== "") happened = parseWhen(happenedAt, this.zoneFor(req.sessionId));
-      return this.service.remember({ ...req, happened });
+      const r = this.service.remember({ ...req, happened });
+      if (!r.dup) this.wake();
+      return r;
     });
   }
 
-  recall(args: { query: string; limit?: number; deep?: boolean; sessionId?: string }): Result[] | Invalid {
-    return outcome(() => this.service.recall(args.query ?? "", args.limit ?? 0, args.deep ?? false, args.sessionId ?? ""));
+  recall(args: { query: string; limit?: number; deep?: boolean; sessionId?: string; meaning?: QueryVector }): Result[] | Invalid {
+    return outcome(() => this.recallWith(args));
   }
 
   expand(args: { ids: string[]; sessionId?: string }): Result[] | Invalid {
-    return outcome(() => this.service.expand(args.ids ?? [], args.sessionId ?? ""));
+    return outcome(() => this.expandWith(args.ids ?? [], args.sessionId ?? ""));
   }
 
   // amend changes how a memory is remembered, or sets or drops a preference,
   // and returns a sentence saying what was done.
   amend(args: AmendRequest): string | Invalid {
-    return outcome(() => this.service.amend(args));
+    return outcome(() => this.amendWith(args));
   }
 
   // erase deletes what a memory says, for good.
@@ -217,7 +342,7 @@ export class Memory extends DurableObject<Env> {
   // made, in the order of the entries.
   finishReflect(args: { sessionId?: string; batch?: string; entries?: EntryRequest[]; pass?: string[] }): string[] | Invalid {
     return outcome(() =>
-      this.service.finishReflect(args.sessionId ?? "", args.batch ?? "", args.entries ?? [], args.pass ?? []),
+      this.finishReflectWith(args.sessionId ?? "", args.batch ?? "", args.entries ?? [], args.pass ?? []),
     );
   }
 
@@ -240,11 +365,11 @@ export class Memory extends DurableObject<Env> {
           return { text: (r.dup ? "already remembered as " : "remembered as ") + r.id };
         }
         case "recall": {
-          const results = this.service.recall(call.query, call.limit ?? 0, call.deep ?? false, call.sessionId ?? "");
+          const results = this.recallWith(call);
           return { text: formatRecall(results, call.deep ?? false, this.zoneFor(call.sessionId)) };
         }
         case "expand": {
-          const results = this.service.expand(call.ids, call.sessionId ?? "");
+          const results = this.expandWith(call.ids, call.sessionId ?? "");
           return { text: formatExpand(results, this.zoneFor(call.sessionId)) };
         }
         case "reflect": {
@@ -259,11 +384,11 @@ export class Memory extends DurableObject<Env> {
             const view = this.service.beginReflect(call.sessionId, call.limit ?? 0);
             return { text: formatBatch(view, this.zoneFor(call.sessionId)) };
           }
-          const ids = this.service.finishReflect(call.sessionId, call.batch ?? "", entries, pass);
+          const ids = this.finishReflectWith(call.sessionId, call.batch ?? "", entries, pass);
           return { text: formatWritten(ids, entries.map((e) => e.kind ?? ""), pass.length) };
         }
         case "amend":
-          return { text: this.service.amend(call.args) };
+          return { text: this.amendWith(call.args) };
         case "erase":
           return { text: this.service.erase(call.args) };
         case "check":
@@ -325,11 +450,15 @@ export class Memory extends DurableObject<Env> {
     return this.exists() ? readLogStats(this.logDb()) : "unknown";
   }
 
-  // describe reports the figures of stats, the forgetting parameters and the
-  // default time zone.
-  describe(): MemorySettings & { stats: LogStats } | "unknown" {
+  // describe reports the figures of stats, the forgetting parameters, the
+  // default time zone and the vectors.
+  describe(): MemorySettings & { stats: LogStats; vectors: VectorReport } | "unknown" {
     if (!this.exists()) return "unknown";
-    return { stats: this.store.logStats(), params: this.store.params(), timeZone: this.store.defaultZone() };
+    const label = this.emb?.label;
+    return {
+      stats: this.store.logStats(), params: this.store.params(), timeZone: this.store.defaultZone(),
+      vectors: { embedding: label ?? null, ...this.store.vectorFigures(label) },
+    };
   }
 
   // changeSettings sets the forgetting parameters given (the others stay as
@@ -345,6 +474,7 @@ export class Memory extends DurableObject<Env> {
       const big = this.tooLarge("replay");
       if (big !== undefined) return big;
       this.store.setParams(next.params);
+      this.askFull(); // what is archived may have changed
     }
     if (next.timeZone !== undefined) this.store.setDefaultZone(next.timeZone);
     return { params: this.store.params(), timeZone: this.store.defaultZone() };
@@ -362,6 +492,7 @@ export class Memory extends DurableObject<Env> {
     const big = this.tooLarge("rebuild");
     if (big !== undefined) return big;
     this.store.rebuild();
+    this.askFull();
     return this.store.counts();
   }
 
@@ -458,6 +589,7 @@ export class Memory extends DurableObject<Env> {
       if (err instanceof ReplayError) return { invalid: `not a usable export: ${err.message}` };
       throw err;
     }
+    this.askFull(); // vectors are not imported: it embeds itself afresh
     return {
       imported: {
         events: parsed.events.length,
@@ -475,7 +607,7 @@ export class Memory extends DurableObject<Env> {
   private hasLog(): boolean {
     return (
       this.ctx.storage.sql
-        .exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name IN ('events', 'meta', 'contents', 'vectors') LIMIT 1`)
+        .exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name IN ('events', 'meta', 'contents', 'vector_rows') LIMIT 1`)
         .toArray().length > 0
     );
   }
@@ -521,6 +653,15 @@ export interface TooLarge {
 }
 
 export type MemorySettings = Settings;
+
+// VectorReport is what describe says of the vectors: the label in use (null
+// when search by meaning is off), how many are held under each label, and
+// how many memories wait for one of the label in use.
+export interface VectorReport {
+  embedding: Label | null;
+  held: HeldFigure[];
+  waiting: number | null;
+}
 
 export interface ExportFile {
   events: number;

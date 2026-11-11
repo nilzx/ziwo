@@ -1,0 +1,22 @@
+// Tests and local runs: wrangler.jsonc without the AI binding, so that no
+// test and no local run reaches an account, and search by meaning is off.
+// Keep the two the same otherwise (test/config.test.ts checks).
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "ziwo",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  // The admin page's files are served as they are, never run by the Worker.
+  "rules": [{ "type": "Text", "globs": ["**/page/*.html", "**/page/*.mjs", "**/page/*.css"], "fallthrough": true }],
+  "durable_objects": {
+    "bindings": [
+      { "name": "MEMORY", "class_name": "Memory" },
+      { "name": "DIRECTORY", "class_name": "Directory" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["Memory"] },
+    { "tag": "v2", "new_sqlite_classes": ["Directory"] }
+  ]
+}

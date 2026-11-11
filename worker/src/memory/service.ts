@@ -3,11 +3,12 @@
 // are in amend.ts) without embeddings and
 // background work: a listing or a reading is logged in the call that made
 // it, and matches by meaning, when there are any, are handed in by the
-// caller.
+// caller (the object searches its vectors; see embedding.ts).
 
 import { type Report } from "../store/check";
 import { StateErased } from "../store/content";
 import { retentionOf, type Tier, type TierCounts, tierOf } from "../store/decay";
+import { covered, searchTerms } from "../store/segment";
 import { NoSessionError, type Store } from "../store/store";
 import { type CarrierNote, isLive, type Memory, type Preference, type RestoreNote, type Session } from "../store/types";
 import {
@@ -81,6 +82,14 @@ export interface MeaningHit {
   score: number;
 }
 
+// recallDepth is how many matches recall weighs from each way of searching
+// for a given limit.
+export function recallDepth(limit: number): number {
+  if (limit <= 0) limit = DefaultRecall;
+  else if (limit > MaxRecall) limit = MaxRecall;
+  return Math.max(4 * limit, 20);
+}
+
 export class Service {
   constructor(
     private readonly st: Store,
@@ -151,14 +160,15 @@ export class Service {
     query = clip(query, 500);
     if (limit <= 0) limit = DefaultRecall;
     else if (limit > MaxRecall) limit = MaxRecall;
-    const depth = Math.max(4 * limit, 20);
+    const depth = recallDepth(limit);
     const clock = this.st.clock();
     const byKeyword = this.st.searchText(query, clock, deep, depth);
 
     // Each way of searching scores a memory between 0 and 1: keyword matches
-    // relative to the best keyword match, matches by meaning by their cosine
-    // similarity. Relevance is the average over the ways that found
-    // anything, so a memory found both ways outranks one found by a single way.
+    // relative to the best keyword match and by how much of the search they
+    // hold, matches by meaning by their cosine similarity. Relevance is the
+    // average over the ways that found anything, so a memory found both ways
+    // outranks one found by a single way.
     interface Cand {
       keyword: number;
       meaning: number;
@@ -195,6 +205,7 @@ export class Service {
     if (cands.size === 0) return [];
 
     const found = this.st.byN([...cands.keys()]);
+    const terms = searchTerms(query);
     const kept: { r: Result; relevance: number }[] = [];
     let top = 0;
     for (const [n, m] of found) {
@@ -204,6 +215,7 @@ export class Service {
       // replaced or put into an episode is still reached by a deep search.
       if (m.retracted || m.state === StateErased || (!isLive(m) && !deep)) continue;
       const c = cands.get(n)!;
+      if (c.byKeyword) c.keyword *= this.share(terms, m, tier === "faded" && !deep);
       const relevance = (c.keyword + c.meaning) / ways;
       top = Math.max(top, relevance);
       kept.push({
@@ -230,6 +242,22 @@ export class Service {
       { at: this.now(), session: this.knownSession(session), query, ids: results.map((r) => r.id), clock },
     ]);
     return results;
+  }
+
+  // share is the part of a search's terms that a memory found by keyword
+  // holds, in what was searched of it: the gist alone for a faded memory in
+  // an ordinary search. Terms are joined with OR, and the best keyword match
+  // of a search scores 1 however little of the search it holds; without this
+  // a memory that shares one passing word with the query outranks the memory
+  // the query means (measured on the platform, 2026-11-11). Go has no such
+  // factor. A match the index made and this reading misses (it folds accents,
+  // this does not) counts as one term.
+  private share(terms: string[], m: Memory, gistOnly: boolean): number {
+    if (terms.length === 0) return 1;
+    const text = gistOnly
+      ? m.gist
+      : [m.gist, m.body, m.outcome, m.feeling, m.lesson, m.pointer, m.about, m.context, ...m.people].join("\n");
+    return Math.max(covered(terms, text), 1) / terms.length;
   }
 
   // expand returns memories in full, whatever tier they are in. Reading a

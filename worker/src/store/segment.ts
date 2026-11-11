@@ -37,28 +37,64 @@ export function indexText(s: string): string {
   return out;
 }
 
+// Words and characters that say nothing about what a memory is about. Terms
+// are joined with OR and a keyword match is scored against the best keyword
+// match of the same search, so a memory that shares only "for" and "a" with
+// the query would count as a full match, outrank what the query means, and
+// have its decay restarted by being listed. Measured on the platform
+// (2026-11-11): English queries listed unrelated English memories ahead of
+// the Chinese one they were about. They are left out of a search unless the
+// search has nothing else. Go's matchQuery keeps them.
+const stopWords = new Set(
+  (
+    "a an the and or but if then so of to in on at by for from with without about into over under as " +
+    "is am are was were be been being it its this that these those i me my we us our you your he him his she her " +
+    "they them their do does did have has had not no can could will would should may might must " +
+    "what which who whom when where why how there here than too very just also some any all each"
+  ).split(" "),
+);
+// A two-character phrase holding one of these is a particle or a pronoun
+// stuck to its neighbour, such as 的问 in 上涨的问题.
+const stopChars = new Set("的了着吗呢吧啊是在和就都也把被我你他她它们这那");
+
 // matchQuery turns free text into an FTS5 MATCH expression. A run of CJK
 // characters becomes overlapping two-character phrases; other words are
 // matched whole. Terms are joined with OR and left to bm25 to rank. It returns
 // "" when q has nothing to match.
 export function matchQuery(q: string): string {
-  const terms: string[] = [];
+  return searchTerms(q)
+    .map((t) => `"${t}"`)
+    .join(" OR ");
+}
+
+// searchTerms returns what a search for q looks for: words in lower case,
+// and pairs of CJK characters written with a space between them.
+export function searchTerms(q: string): string[] {
+  const strong: string[] = [];
+  const weak: string[] = [];
   const seen = new Set<string>();
-  const add = (t: string): void => {
-    if (seen.has(t) || terms.length >= maxQueryTerms) return;
+  const add = (t: string, isWeak = false): void => {
+    if (seen.has(t)) return;
     seen.add(t);
-    terms.push(t);
+    (isWeak ? weak : strong).push(t);
   };
 
   let run: string[] = [];
   let word: string[] = [];
   const flushCJK = (): void => {
-    if (run.length === 1) add(`"${run[0]}"`);
-    else for (let i = 0; i + 1 < run.length; i++) add(`"${run[i]} ${run[i + 1]}"`);
+    if (run.length === 1) add(run[0]!, stopChars.has(run[0]!));
+    else {
+      for (let i = 0; i + 1 < run.length; i++) {
+        add(`${run[i]} ${run[i + 1]}`, stopChars.has(run[i]!) || stopChars.has(run[i + 1]!));
+      }
+    }
     run = [];
   };
   const flushWord = (): void => {
-    if (word.length > 0) add(`"${lower(word.join(""))}"`);
+    if (word.length > 0) {
+      const w = lower(word.join(""));
+      add(w, stopWords.has(w));
+    }
     word = [];
   };
 
@@ -76,5 +112,27 @@ export function matchQuery(q: string): string {
   }
   flushCJK();
   flushWord();
-  return terms.join(" OR ");
+  // A search made of nothing else still searches.
+  return (strong.length > 0 ? strong : weak).slice(0, maxQueryTerms);
+}
+
+// covered counts how many of the terms a text holds, as the keyword index
+// matches them: a word whole and in any case, two CJK characters when one
+// follows the other.
+export function covered(terms: string[], text: string): number {
+  const tokens: string[] = [];
+  let word = "";
+  for (const ch of text) {
+    if (isCJK(ch) || !isWordChar(ch)) {
+      if (word !== "") tokens.push(lower(word));
+      word = "";
+      if (isCJK(ch)) tokens.push(ch);
+    } else {
+      word += ch;
+    }
+  }
+  if (word !== "") tokens.push(lower(word));
+  const held = new Set(tokens);
+  for (let i = 0; i + 1 < tokens.length; i++) held.add(`${tokens[i]} ${tokens[i + 1]}`);
+  return terms.filter((t) => held.has(t)).length;
 }

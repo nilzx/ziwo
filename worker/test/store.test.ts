@@ -11,12 +11,14 @@ import {
   hour,
   inObject,
   minute,
+  near,
   populate,
   remember,
   search,
   session,
   t0,
   testParams,
+  unit,
   withStore,
 } from "./helpers";
 
@@ -181,23 +183,26 @@ describe("store", () => {
     expect(after).toBe(before);
   });
 
+  // Vectors are stored as 8-bit integers, packed: see vectors.test.ts for
+  // the packing itself.
   it("VectorsRoundTripPerModel", () =>
-    withStore((s) => {
+    withStore((s, storage) => {
       const sess = session(s, t0, "", "cli");
       const m1 = get(s, remember(s, t0, sess, "一", "一"));
-      const id2 = remember(s, t0, sess, "二", "二");
+      const m2 = get(s, remember(s, t0, sess, "二", "二"));
+      const x = { model: "model-x", dims: 4 };
+      const want = unit([0.5, -0.25, 1e-7, 0.8]);
+      s.saveVectors(x, [{ n: m1.n, vec: unit([1, 2, 3, 4]) }]);
+      s.saveVectors(x, [{ n: m1.n, vec: want }]); // replaces
+      s.saveVectors({ model: "model-y", dims: 1 }, [{ n: m1.n, vec: [1] }]);
 
-      const want = Float32Array.from([0.5, -0.25, 1e-7, 12345.678]);
-      s.saveVector(m1.n, "model-x", [1, 2, 3, 4]);
-      s.saveVector(m1.n, "model-x", want); // replaces
-      s.saveVector(m1.n, "model-y", [9]);
+      const rows = storage.sql.exec<{ count: number; vecs: ArrayBuffer }>(`SELECT count, vecs FROM vector_rows WHERE model = 'model-x'`).toArray();
+      expect(rows.map((r) => [r.count, [...new Int8Array(r.vecs)]])).toEqual([[1, want.map((v) => Math.round(v * 127))]]);
+      const hits = s.searchVectors(x, Float32Array.from(want), 10, 0.45);
+      expect(hits.map((h) => h.n)).toEqual([m1.n]);
+      near(hits[0]!.score, 1, 0.01);
 
-      const got = new Map<number, Float32Array>();
-      s.vectors("model-x", (n, v) => got.set(n, v));
-      expect([...got.keys()]).toEqual([m1.n]);
-      expect(got.get(m1.n)).toEqual(want);
-
-      expect(s.unembedded("model-x", s.clock(), 10).map((m) => m.id)).toEqual([id2]);
-      expect(s.unembedded("model-z", s.clock(), 10)).toHaveLength(2);
+      expect(s.tendVectors(x).waiting).toEqual([m2.n]);
+      expect(s.tendVectors({ model: "model-z", dims: 4 }).waiting).toEqual([m1.n, m2.n]);
     }));
 });

@@ -5,11 +5,14 @@
 import { runInDurableObject } from "cloudflare:test";
 import { expect } from "vitest";
 import { clip } from "../src/memory/clean";
+import type { QueryVector } from "../src/embed";
+import { Embedding } from "../src/memory/embedding";
 import type { ContextView, MeaningHit, Result } from "../src/memory/service";
 import type { Invalid, Memory as MemoryObject, RememberArgs } from "../src/memory-object";
 import { type Tier, type TierCounts, tierOf } from "../src/store/decay";
 import type { Store } from "../src/store/store";
 import type { Memory } from "../src/store/types";
+import { farFuture, queryVectorOf, TopicEmbedder, topicSettings } from "./embed-helpers";
 import { freshObject, minute, type Stub, t0, testParams } from "./helpers";
 
 export function isInvalid(x: unknown): x is Invalid {
@@ -28,12 +31,46 @@ export class Fixture {
   clock = t0;
   session = ""; // the conversation the fixture writes in; started on first use
   private fillers = 0;
+  // The stand-in model of a memory that searches by meaning, as Go's
+  // start(t, path, &topicEmbedder{}).
+  emb?: TopicEmbedder;
 
   constructor(
     readonly obj: MemoryObject,
     readonly storage: DurableObjectStorage,
   ) {
     obj.now = () => this.clock;
+  }
+
+  // embedWith gives the object an embedder; its alarm clock is moved far
+  // ahead, so that only sync embeds.
+  embedWith(emb: TopicEmbedder): void {
+    this.emb = emb;
+    this.obj.embedding = new Embedding(topicSettings, emb);
+    this.obj.alarmNow = () => farFuture;
+  }
+
+  // sync does what the alarm does until nothing waits, then sweeps, as Go's
+  // Sync: the sweep is a full run, forced, and what it finds is embedded.
+  async sync(): Promise<void> {
+    for (const full of [false, true]) {
+      for (let first = true; ; first = false) {
+        const r = await this.obj.embedOnce(full && first);
+        if (r.failed) expect.fail("sync: the embedder failed");
+        if (!r.more) break;
+      }
+    }
+  }
+
+  // indexed is Go's Indexed: how many memories can be found by meaning.
+  indexed(): number {
+    return this.st.vectorCount(topicSettings);
+  }
+
+  // meaning is what the Worker would hand over for a query: nothing when
+  // the model is down.
+  private meaning(query: string): QueryVector | undefined {
+    return this.emb === undefined || this.emb.down ? undefined : queryVectorOf(query);
   }
 
   get st(): Store {
@@ -74,13 +111,20 @@ export class Fixture {
     }
   }
 
+  // recall goes through the object, which searches its own vectors when it
+  // has an embedder; matches by meaning handed in by hand go straight to
+  // the service.
   recall(query: string, byMeaning?: MeaningHit[]): Result[] {
-    if (byMeaning === undefined) return ok(this.obj.recall({ query, sessionId: this.sess() }), `recall ${query}`);
+    if (byMeaning === undefined) {
+      return ok(this.obj.recall({ query, sessionId: this.sess(), meaning: this.meaning(query) }), `recall ${query}`);
+    }
     return this.obj.service.recall(query, 0, false, this.sess(), byMeaning);
   }
 
   deepRecall(query: string, byMeaning?: MeaningHit[]): Result[] {
-    if (byMeaning === undefined) return ok(this.obj.recall({ query, deep: true, sessionId: this.sess() }), `deep recall ${query}`);
+    if (byMeaning === undefined) {
+      return ok(this.obj.recall({ query, deep: true, sessionId: this.sess(), meaning: this.meaning(query) }), `deep recall ${query}`);
+    }
     return this.obj.service.recall(query, 0, true, this.sess(), byMeaning);
   }
 
@@ -116,6 +160,29 @@ export function start<R>(fn: (f: Fixture) => R, stub: Stub = freshObject()): Pro
   return runInDurableObject(stub, (obj: MemoryObject, state) => {
     obj.store.setParams(testParams());
     return fn(new Fixture(obj, state.storage));
+  });
+}
+
+// startEmbedded runs fn on a fresh memory that searches by meaning with the
+// stand-in model, as Go's start(t, tempDB(t), &topicEmbedder{}) does.
+export function startEmbedded<R>(fn: (f: Fixture) => R | Promise<R>, emb = new TopicEmbedder(), stub: Stub = freshObject()): Promise<R> {
+  return runInDurableObject(stub, (obj: MemoryObject, state) => {
+    obj.store.setParams(testParams());
+    const f = new Fixture(obj, state.storage);
+    f.embedWith(emb);
+    return fn(f);
+  });
+}
+
+// reopen runs fn on the memory of stub as it is stored, with the stand-in
+// model, as Go's start(t, path, emb) on an existing file does. The fixture's
+// wall clock is set to now.
+export function reopen<R>(stub: Stub, emb: TopicEmbedder, now: number, fn: (f: Fixture) => R | Promise<R>): Promise<R> {
+  return runInDurableObject(stub, (obj: MemoryObject, state) => {
+    const f = new Fixture(obj, state.storage);
+    f.clock = now;
+    f.embedWith(emb);
+    return fn(f);
   });
 }
 

@@ -38,6 +38,31 @@ function events(f: Fixture, kind: string): { at: number; payload: Record<string,
 }
 
 describe("recall", () => {
+  // Not Go's: found on the platform, where a memory sharing one passing word
+  // with the query was listed ahead of the memory the query meant.
+  it("scores a keyword match by how much of the search it holds", () =>
+    start((f) => {
+      const meant = f.remember("部署失败后回滚", "上线到一半报错。");
+      const passing = f.remember("We went through the recipe", "Nothing about it went badly.");
+      const whole = f.remember("The release went wrong", "So it was reverted.");
+      f.fill(3);
+      const [mm, mp, mw] = f.st.get([meant, passing, whole]);
+      // With the memory that is meant found by meaning, it comes before the
+      // ones that share one word of five with the query; without the factor
+      // the best of those would score 0.5 against its 0.3 and come first.
+      const byMeaning = f.obj.service.recall("they went looking for something else entirely", 5, false, "", [{ n: mm!.n, score: 0.6 }]);
+      expect(ids(byMeaning)[0]).toBe(meant);
+      expect(byMeaning[0]!.byKeyword).toBe(false);
+
+      // By keyword alone: both are found, and the one holding all four terms
+      // that are searched for (release, went, wrong, reverted) is listed; the
+      // other holds one of the four.
+      const query = "the release went wrong and we reverted it";
+      const kw = f.st.searchText(query, f.lived(), false, 20);
+      expect(kw.map((h) => h.n)).toEqual([mw!.n, mp!.n]);
+      expect(ids(f.recall(query))).toEqual([whole]);
+    }));
+
   it("keeps Go's formula: relevance, floor, score and order", () =>
     start((f) => {
       const x = f.remember("共同的词 甲", "正文");
@@ -252,13 +277,12 @@ describe("store reads", () => {
 describe("object", () => {
   it("adds up the rows of every cursor it consumes", () =>
     start((f) => {
-      f.st.saveVector(1, "m", [1]);
-      f.st.saveVector(2, "m", [2]);
+      // Two rows of one vector each.
+      f.storage.sql.exec(`INSERT INTO vector_rows(model, dims, count, ns, vecs) VALUES('m', 1, 1, x'01000000', x'7f'), ('m', 1, 1, x'02000000', x'7f')`);
       f.obj.usage(true);
       f.st.clock(); // one row of meta, read with first()
       expect(f.obj.usage(true)).toEqual({ rowsRead: 1, rowsWritten: 0 });
-      let seen = 0;
-      f.st.vectors("m", () => seen++); // read one row at a time
+      const seen = f.st.vectorCount({ model: "m", dims: 1 }); // read one row at a time
       expect([seen, f.obj.usage(true).rowsRead]).toEqual([2, 2]);
       f.storage.sql.exec(`INSERT INTO policies(id, created_at, session_id, text) VALUES ('p_a', 1, 's', 't'), ('p_b', 2, 's', 't')`);
       f.st.preferences(); // all(); the platform counts the sort too

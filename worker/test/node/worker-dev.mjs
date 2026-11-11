@@ -34,7 +34,8 @@ export async function startWorker(dir) {
   const fd = openSync(log, "w");
   const proc = spawn(
     "npx",
-    ["wrangler", "dev", "--local", "--ip", "127.0.0.1", "--port", String(port), "--inspector-port", String(inspector),
+    // The configuration without the AI binding: no test reaches an account.
+    ["wrangler", "dev", "--config", "wrangler.dev.jsonc", "--local", "--ip", "127.0.0.1", "--port", String(port), "--inspector-port", String(inspector),
       "--persist-to", path.join(dir, "state"), "--var", `ADMIN_SECRET:${secret}`],
     {
       cwd: workerDir,

@@ -1,8 +1,8 @@
-// Port of internal/memory/amend_test.go, through the object's methods. There
-// is no vector index: matches by meaning come from the stand-in in
-// service-helpers.ts, computed over the memories as they were before the
-// change, which is what Go's index holds until its next sweep. What Go
-// checks of the index itself (Indexed) is left out.
+// Port of internal/memory/amend_test.go, through the object's methods. The
+// tests whose subject is search by meaning run with the stand-in model of
+// embed-helpers.ts; f.sync() runs what the alarm runs. The others hand in
+// matches by meaning from the stand-in in service-helpers.ts, computed over
+// the memories as they were before the change.
 
 import { describe, expect, it } from "vitest";
 import { AmendActions, goG, MaxEntries, MaxPreferences, MaxReasonRunes } from "../src/memory/amend";
@@ -11,7 +11,7 @@ import type { AmendRequest, EntryRequest } from "../src/memory/amend";
 import { KindEpisode, KindImpression, KindLesson, KindReading, StateAbsorbed, StateErased } from "../src/store/content";
 import { tierTotal } from "../src/store/decay";
 import { hour, minute } from "./helpers";
-import { byMeaning, distinct, type Fixture, ids, isInvalid, ok, start } from "./service-helpers";
+import { byMeaning, distinct, type Fixture, ids, isInvalid, ok, start, startEmbedded } from "./service-helpers";
 
 function amend(f: Fixture, req: AmendRequest): string {
   return ok(f.obj.amend({ sessionId: f.sess(), ...req }), `amend ${req.action} ${req.id}`);
@@ -32,22 +32,27 @@ function invalidOf(x: unknown): string {
 
 describe("amend through the service", () => {
   it("RetractAndEraseLeaveRecallAtOnce", () =>
-    start((f) => {
+    startEmbedded(async (f) => {
       const cat = f.remember("用户给我看了他的猫", "一只橘猫，名字叫年糕。");
       const kitten = f.remember("The kitten knocked over my notes", "Nothing else happened.");
-      const indexed = f.st.get([cat, kitten]);
+      await f.sync();
 
-      // Set aside: gone from recall by keyword and by meaning at once.
+      // Set aside: gone from recall by keyword and by meaning before any sweep.
       expect(amend(f, { action: "retract", id: cat, reason: "用户说这个不用记" })).toContain("restore");
-      expect(ids(f.recall("feline", byMeaning("feline", indexed)))).toEqual([kitten]);
+      expect(ids(f.recall("feline"))).toEqual([kitten]);
       expect(ids(f.deepRecall("年糕"))).toEqual([]);
       // It can still be read by id, marked for what it is, and that is not a recall.
       const r = f.expand(cat);
       expect([r.retracted, r.body !== ""]).toEqual([true, true]);
+      await f.sync();
       expect(f.get(cat).recallCount, "reading a retracted memory counted as coming to mind").toBe(0);
 
       amend(f, { action: "restore", id: cat });
-      expect(f.recall("feline", byMeaning("feline", indexed))).toHaveLength(2);
+      await f.sync();
+      expect(f.recall("feline")).toHaveLength(2);
+
+      // Erased: gone for good, from the vectors too, in the same call.
+      const before = f.indexed();
 
       // Erased: gone for good. Asked of amend, it points at its own call.
       expect(refusedAmend(f, { sessionId: f.sess(), action: "erase", id: cat })).toBe(
@@ -57,7 +62,8 @@ describe("amend through the service", () => {
       expect(ok(f.obj.erase({ sessionId: f.sess(), id: cat, reason: "用户让我删掉" }))).toBe(
         `erased ${cat}: what it said is gone for good. The record keeps only that it existed and that it was erased`,
       );
-      expect(ids(f.recall("feline", byMeaning("feline", indexed)))).toEqual([kitten]);
+      expect(f.indexed()).toBe(before - 1);
+      expect(ids(f.recall("feline"))).toEqual([kitten]);
       const e = f.expand(cat);
       expect([e.state, e.gist, e.body]).toEqual([StateErased, "", ""]);
       expect(refusedAmend(f, { sessionId: f.sess(), action: "pin", id: cat })).toBe(
@@ -359,23 +365,26 @@ describe("reflect through the service", () => {
       expect([v2.fragments.length, v2.remaining, v2.impressions.map((m) => m.id), v2.selves]).toEqual([2, 0, [imp], []]);
     }));
 
-  // The vectors of fragments that went into an episode are dropped by Go's
+  // The vectors of fragments that went into an episode are dropped by the
   // next sweep. Until then they must not bring the fragments back.
   it("AbsorbedFragmentsLeaveRecallByMeaningAtOnce", () =>
-    start((f) => {
+    startEmbedded(async (f) => {
       const a = f.remember("用户给我看了他的猫", "一只橘猫。");
       const b = f.remember("The kitten knocked over my notes", "Nothing else happened.");
-      const indexed = f.st.get([a, b]);
+      await f.sync();
       const view = ok(f.obj.beginReflect({ sessionId: f.sess() }));
       const made = ok(f.obj.finishReflect({
         sessionId: f.sess(), batch: view.batch,
         entries: [{ kind: KindEpisode, gist: "和用户的猫相处的一个下午", body: "先看了照片，后来它打翻了我的笔记。", from: [a, b] }],
       }));
-      for (const r of f.recall("feline", byMeaning("feline", indexed))) {
+      expect(f.indexed(), "the fragments' vectors are there until the sweep").toBe(2);
+      for (const r of f.recall("feline")) {
         expect([a, b], "an absorbed fragment came back through its vector").not.toContain(r.id);
       }
-      const rs = f.recall("feline", byMeaning("feline", [...indexed, ...f.st.get(made)]));
+      await f.sync();
+      const rs = f.recall("feline");
       expect(rs.map((r) => [r.id, r.byMeaning])).toEqual([[made[0], true]]);
+      expect(f.indexed(), "only the episode").toBe(1);
     }));
 
   // Not in amend_test.go: a retracted memory is shown by no search, deep or

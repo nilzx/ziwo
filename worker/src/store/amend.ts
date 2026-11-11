@@ -187,7 +187,8 @@ function applyStanding(db: Db, p: Params, e: AmendEvent): void {
 }
 
 // applyErase empties what a memory says in the derived tables and drops its
-// keyword entry and its vector. An id that names no memory is ignored.
+// keyword entry. An id that names no memory is ignored. Its vector is not
+// derived: Store.erase deletes it.
 //
 // Unlike Go it also empties about and context: they are part of what the
 // memory said, and applyRemember never fills them in on a replay once the
@@ -202,6 +203,5 @@ export function applyErase(db: Db, at: number, e: EraseEvent): void {
     n,
   );
   db.run(`DELETE FROM memories_fts WHERE rowid = ?`, n);
-  db.run(`DELETE FROM vectors WHERE n = ?`, n);
   db.sessionActive(e.session, at);
 }

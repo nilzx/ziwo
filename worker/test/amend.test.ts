@@ -124,7 +124,8 @@ describe("amend", () => {
         outcome: "outcomemark5k", lesson: "lessonmark8w", people: ["peoplemark2j"], pointer: "pointermark6h",
       });
       const n = get(s, gone).n;
-      s.saveVector(n, "model-x", [1, 2]);
+      s.saveVectors({ model: "model-x", dims: 2 }, [{ n, vec: [0.6, 0.8] }]);
+      expect(s.storedVectorNs()).toEqual([n]);
       fill(s, sess, 3);
       // The keyword index holds the words before the erasure: the scan below
       // would see them.
@@ -148,9 +149,7 @@ describe("amend", () => {
       expect(recentIDs(s)).not.toContain(gone);
       expect(recentIDs(s)).toContain(keep);
       expect(tierTotal(s.tierCounts(s.clock()))).toBe(4);
-      let left = 0;
-      s.vectors("model-x", () => left++);
-      expect(left).toBe(0);
+      expect(s.storedVectorNs()).toEqual([]);
       // The log says that it existed and that it was erased, and why.
       expect(storage.sql.exec(`SELECT json_extract(payload, '$.reason') AS r FROM events WHERE kind = 'erase'`).one().r)
         .toBe("the user asked me to delete it");

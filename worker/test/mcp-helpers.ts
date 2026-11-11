@@ -86,6 +86,8 @@ export interface ToolReply {
 export class Client {
   sessionId: string | null = null;
   private id = 0;
+  // The Worker's environment the requests are served with.
+  env: Env = testEnv();
 
   constructor(
     readonly gen: Generation,
@@ -129,7 +131,7 @@ export class Client {
       method: "POST",
       headers: this.headers(method, name),
       body: rawBody ?? JSON.stringify(body),
-    });
+    }, this.env);
     return readReply(res);
   }
 

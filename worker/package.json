@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev --local",
+    "dev": "wrangler dev --local --config wrangler.dev.jsonc",
     "test": "vitest run && npm run test:node",
     "test:worker": "vitest run",
     "test:node": "node --test 'test/node/*.node.mjs'",

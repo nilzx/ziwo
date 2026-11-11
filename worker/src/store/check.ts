@@ -9,6 +9,7 @@ import { kindAmend, kindErase, kindExpand, kindRecall, kindReflect, kindRemember
 import { sha256Hex } from "./ids";
 import { metaLogFormat } from "./schema";
 import { isActiveBand, isArchived, isFadedBand, isListed, isLive, isPending } from "./conditions";
+import { VectorRows } from "./vectors";
 
 // Levels of a finding.
 export const LevelProblem = "problem"; // the record is damaged or the tables disagree with it
@@ -73,7 +74,7 @@ export function reportText(r: Report): string {
 class Checker {
   readonly r: Report = { figures: [], findings: [] };
 
-  constructor(private readonly db: Db) {}
+  constructor(readonly db: Db) {}
 
   figure(name: string, value: string): void {
     this.r.figures.push({ name, value });
@@ -212,7 +213,10 @@ function checkTables(c: Checker, db: Db): void {
   c.flag(LevelWarning, "self-unsupported", "statements about yourself rest on experiences that were retracted or erased since",
     `SELECT DISTINCT m.id FROM memories m JOIN links l ON l.src = m.id JOIN memories d ON d.id = l.dst
       WHERE m.kind = ?1 AND ${isLive} AND (d.retracted = 1 OR d.state = ?2)`, KindSelf, StateErased);
-  const orphanVectors = c.one(`SELECT count(*) FROM vectors v WHERE v.n NOT IN (SELECT n FROM memories)`);
+  const orphanVectors = c.one(
+    `SELECT count(*) FROM json_each(?) WHERE value NOT IN (SELECT n FROM memories)`,
+    JSON.stringify(new VectorRows(c.db).storedNs()),
+  );
   if (orphanVectors > 0) c.find(LevelNote, "vector-orphaned", [], `${orphanVectors} embeddings belong to no memory`);
 
   const standing = `FROM memories m WHERE ${isLive} AND ${isListed}`;

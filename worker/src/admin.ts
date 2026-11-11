@@ -134,7 +134,7 @@ async function serveMemoryAdmin(request: Request, env: Env, name: string, action
       // made before the directory existed, is listed from now on. A name
       // already listed keeps its time.
       await register(env, name);
-      return json(200, { memory: name, endpoint, ...figures(d.stats), params: d.params, timeZone: d.timeZone });
+      return json(200, { memory: name, endpoint, ...figures(d.stats), params: d.params, timeZone: d.timeZone, vectors: d.vectors });
     }
     case "settings": {
       const change = await readSettings(request);

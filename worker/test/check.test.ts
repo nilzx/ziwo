@@ -185,10 +185,16 @@ describe("check", () => {
         .toBe("this memory was brought back from an export 1 time(s); what was lived between an export and its restore is not in it");
 
       amend(s, sess, "retract", fixed);
-      storage.sql.exec(`INSERT INTO vectors(n, model, vec) VALUES(9999, 'm', x'00000000')`);
+      // One vector, of memory 9999 (0x270f, little-endian), which does not exist.
+      storage.sql.exec(`INSERT INTO vector_rows(model, dims, count, ns, vecs) VALUES('m', 1, 1, x'0f270000', x'7f')`);
       r = s.check();
       expect(found(r, LevelWarning, "nothing-in-its-place").ids).toEqual([old]);
       expect(found(r, LevelNote, "vector-orphaned").text).toBe("1 embeddings belong to no memory");
+      // A rebuild drops it.
+      s.rebuild();
+      expect(s.check().findings.map((x) => x.code)).not.toContain("vector-orphaned");
+      expect(storage.sql.exec(`SELECT count(*) AS c FROM vector_rows`).one().c).toBe(0);
+      storage.sql.exec(`INSERT INTO vector_rows(model, dims, count, ns, vecs) VALUES('m', 1, 1, x'0f270000', x'7f')`);
 
       // The clock in meta is what every read uses; the largest ord must agree.
       storage.sql.exec(`UPDATE meta SET value = '5' WHERE key = 'clock'`);

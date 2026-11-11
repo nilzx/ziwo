@@ -1,6 +1,9 @@
 // Amending and reflecting, as the service offers them. Port of
 // internal/memory/amend.go without the vector index and the embedder: where
-// Go drops a memory from its index or wakes the embedder, nothing is done.
+// Go wakes the embedder, the object sets its alarm after the call, and where
+// Go drops a memory from its index, the memory stays there until that alarm
+// sweeps it; recall leaves it out meanwhile. Erasing drops the vector at once
+// (Store.erase).
 //
 // erase is a call of its own here, not an action of amend.
 //

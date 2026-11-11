@@ -3,8 +3,9 @@
 // made it.
 
 import { describe, expect, it } from "vitest";
+import { tierTotal } from "../src/store/decay";
 import { near } from "./helpers";
-import { byMeaning, ids, start, tiers } from "./service-helpers";
+import { ids, start, startEmbedded, tiers } from "./service-helpers";
 
 describe("forgetting", () => {
   it("TimeAloneForgetsNothing", async () => {
@@ -80,27 +81,34 @@ describe("forgetting", () => {
       expect(m.strength, "nearly tripled").toBeGreaterThan(25);
     }));
 
-  // Ported in part: the vector index is a later stage. What stays is that an
-  // archived memory handed in as a match by meaning (its vector not yet
-  // dropped) is not listed by an ordinary recall, that a core memory is
-  // still found by meaning, and that a deep recall brings the archived one
-  // back. Left out: the counts of indexed vectors and embedding it again.
   it("ArchivedMemoryNeedsDeepRecallAndIsEmbeddedAgain", () =>
-    start((f) => {
+    startEmbedded(async (f) => {
       const cat = f.remember("用户给我看了他的猫", "一只橘猫，名字叫年糕。");
       const core = f.rememberWith({ gist: "用户第一次把部署交给我", body: "上线很顺利。", importance: 0.95 });
+      await f.sync();
+      expect(f.indexed()).toBe(2);
+      // After a sync, exactly the memories that are not archived have a vector.
+      const indexedRight = (when: string) => {
+        const c = f.counts();
+        expect(f.indexed(), when).toBe(tierTotal(c) - c.archived);
+      };
+
       f.fill(35); // past 30 newer memories: archived
       expect(f.tier(cat)).toBe("archived");
-      // Its vector would still be in the index before a sweep.
-      const unswept = f.st.get([cat, core]);
-      expect(tiers(f.recall("feline", byMeaning("feline", unswept))), "an archived memory came back through its vector").toEqual({});
+      // Before the sweep its vector is still stored; it must not come back
+      // through it.
+      expect(tiers(f.recall("feline")), "an archived memory came back through its vector").toEqual({});
+      await f.sync(); // sweeps
+      indexedRight("after the sweep");
       expect(tiers(f.recall("猫")), "an ordinary recall reached an archived memory").toEqual({});
-      const swept = f.st.get([core]);
-      expect(tiers(f.recall("deploy", byMeaning("deploy", swept)))).toEqual({ [core]: "core" });
+      expect(tiers(f.recall("deploy")), "the core memory must still be found by meaning").toEqual({ [core]: "core" });
 
       expect(tiers(f.deepRecall("年糕"))).toEqual({ [cat]: "archived" });
-      const back = f.st.get([cat, core]);
-      expect(tiers(f.recall("feline", byMeaning("feline", back)))).toEqual({ [cat]: "active" });
+      const before = f.indexed();
+      await f.sync(); // it came to mind: it is embedded again
+      expect(f.indexed()).toBe(before + 1);
+      indexedRight("after it came back");
+      expect(tiers(f.recall("feline"))).toEqual({ [cat]: "active" });
     }));
 
   it("RelevanceLeadsOverImportanceAndFreshness", () =>

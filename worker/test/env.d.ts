@@ -4,3 +4,9 @@ declare namespace Cloudflare {
     DIRECTORY: DurableObjectNamespace<import("../src/directory").Directory>;
   }
 }
+
+// A file imported as text, as Vite serves it (config.test.ts).
+declare module "*?raw" {
+  const text: string;
+  export default text;
+}

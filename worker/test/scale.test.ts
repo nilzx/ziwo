@@ -4,10 +4,13 @@
 // refusals the model could have caused (a target already erased or replaced,
 // an entry resting on what no longer stands) are allowed and counted.
 
-import { runInDurableObject } from "cloudflare:test";
+import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import type { EntryRequest, ReflectView } from "../src/memory/amend";
+import { Embedding, fullEvery } from "../src/memory/embedding";
 import type { Memory as MemoryObject } from "../src/memory-object";
+import { packSize } from "../src/store/vectors";
+import { farFuture, queryVectorOf, TopicEmbedder, topicSettings } from "./embed-helpers";
 import { dump, freshObject, minute, t0, testParams } from "./helpers";
 import { isInvalid, ok } from "./service-helpers";
 
@@ -215,5 +218,137 @@ describe("scale", () => {
     // new session does.
     expect(figures.beginReflect.rowsRead).toBeLessThan(2001 + 200);
     expect(figures.finishReflect.rowsRead).toBeLessThan(200);
+  }, 120_000);
+
+  // At 2,000 memories with vectors of 512 dimensions: what a write, the
+  // alarm for a batch, and a recall cost in rows. The first recall after the
+  // object wakes loads the vectors, one row per 256; the next reads none for
+  // them.
+  it("search by meaning at 2,000 memories loads one row per 256 vectors, once", async (ctx) => {
+    const stub = freshObject();
+    const emb = new TopicEmbedder();
+    const settings = { ...topicSettings, dims: 512 };
+    const label = { model: settings.model, dims: settings.dims };
+    const embedded = (obj: MemoryObject) => {
+      obj.embedding = new Embedding(settings, emb);
+      obj.alarmNow = () => farFuture;
+    };
+    const first = await runInDurableObject(stub, async (obj: MemoryObject) => {
+      embedded(obj);
+      let now = t0;
+      obj.now = () => now;
+      const sess = ok(obj.getContext({ model: "model-a", client: "cli" })).session.id;
+      const write = (i: number) => {
+        now += minute;
+        // Core memories: none is archived, so every one keeps a vector.
+        ok(obj.remember({ sessionId: sess, gist: `cat ${i}`, body: `padding ${i}`, importance: 0.95 }));
+      };
+      for (let i = 0; i < 2000; i++) write(i);
+      while ((await obj.embedOnce()).more);
+      obj.usage(true);
+      write(2000);
+      const oneWrite = obj.usage(true);
+      for (let i = 2001; i < 2032; i++) write(i);
+      obj.usage(true);
+      const run = await obj.embedOnce();
+      const batch = obj.usage(true);
+      expect([run.embedded, run.more]).toEqual([32, false]);
+      return { sess, now, oneWrite, batch, vectors: obj.store.vectorCount(label) };
+    });
+    expect(first.vectors).toBe(2032);
+    await evictDurableObject(stub);
+    const second = await runInDurableObject(stub, (obj: MemoryObject) => {
+      embedded(obj);
+      obj.now = () => first.now;
+      obj.store.clock(); // opens the store, which reads a few rows of its own
+      const meaning = queryVectorOf("feline", settings);
+      const recall = () => ok(obj.recall({ query: "feline", sessionId: first.sess, meaning })).length;
+      obj.usage(true);
+      const found = [recall()];
+      const cold = obj.usage(true);
+      found.push(recall());
+      const warm = obj.usage(true);
+      return { found, cold, warm };
+    });
+    const rows = Math.ceil(first.vectors / packSize);
+    ctx.annotate(`vectors ${first.vectors}, rows ${rows}: ${JSON.stringify({ write: first.oneWrite, batch: first.batch, ...second })}`);
+    expect(second.found).toEqual([5, 5]);
+    expect(rows).toBe(8);
+    // The same recall twice: the first read the vectors' rows, the second none.
+    expect(second.cold.rowsRead - second.warm.rowsRead).toBe(rows);
+    expect(second.cold.rowsWritten).toBe(second.warm.rowsWritten);
+    // A write reads and writes as before: no model, no vector.
+    expect(first.oneWrite.rowsRead).toBeLessThan(40);
+    expect(first.oneWrite.rowsWritten).toBeLessThan(20);
+  }, 120_000);
+
+  // The alarm after an ordinary write reads the memories written since its
+  // last run, not the whole memory; a full run, asked for or hourly, still
+  // finds what came back and drops what left.
+  it("the alarm after one write at 2,000 memories reads few rows; full runs find what came back", async (ctx) => {
+    const stub = freshObject();
+    const emb = new TopicEmbedder();
+    const settings = { ...topicSettings, dims: 512 };
+    const figures = await runInDurableObject(stub, async (obj: MemoryObject) => {
+      obj.embedding = new Embedding(settings, emb);
+      obj.alarmNow = () => farFuture;
+      obj.store.setParams(testParams()); // archived after 30 newer memories
+      let now = t0;
+      obj.now = () => now;
+      const sess = ok(obj.getContext({ model: "model-a", client: "cli" })).session.id;
+      const write = (gist: string, importance: number) => {
+        now += minute;
+        return ok(obj.remember({ sessionId: sess, gist, body: "padding", importance })).id;
+      };
+      for (let i = 0; i < 1997; i++) write(`cat ${i}`, 0.95);
+      const restored = write("kitten one", 0.5);
+      const back = write("kitten two", 0.5);
+      const gone = write("kitten three", 0.5);
+      while ((await obj.embedOnce()).more);
+      const has = (id: string) => obj.store.storedVectorNs().includes(obj.store.get([id])[0]!.n);
+      expect([has(restored), has(back), has(gone)]).toEqual([true, true, true]);
+
+      // One more write, and the alarm after it.
+      const more = write("one more", 0.95);
+      obj.usage(true);
+      await obj.alarm();
+      const ordinary = obj.usage(true);
+      expect(has(more)).toBe(true);
+
+      // A memory set aside loses its vector at the next run, which is full;
+      // restored, it is found by the next full run and embedded again.
+      ok(obj.amend({ sessionId: sess, action: "retract", id: restored }));
+      expect((await obj.embedOnce()).full).toBe(true);
+      expect(has(restored)).toBe(false);
+      ok(obj.amend({ sessionId: sess, action: "restore", id: restored }));
+      obj.usage(true);
+      const found = await obj.embedOnce();
+      const full = obj.usage(true);
+      expect([found.full, found.embedded, has(restored)]).toEqual([true, 1, true]);
+
+      // Archived by newer writes: ordinary runs leave their vectors alone.
+      for (let i = 0; i < 35; i++) write(`dog ${i}`, 0.95);
+      while ((await obj.embedOnce()).more);
+      const tier = (id: string) => obj.store.get([id])[0]!;
+      expect([back, gone, restored].map((id) => tier(id).archiveAt <= obj.store.clock())).toEqual([true, true, true]);
+      expect([has(back), has(gone), has(restored)]).toEqual([true, true, true]);
+      // An hour on, the next run is full and drops them.
+      now += fullEvery;
+      const hourly = await obj.embedOnce();
+      expect([hourly.full, hourly.dropped]).toEqual([true, 3]);
+      expect([has(back), has(gone), has(restored)]).toEqual([false, false, false]);
+      // Read in full, one comes back from the archive; the next run is full
+      // and embeds it again, and only it.
+      ok(obj.expand({ ids: [back], sessionId: sess }));
+      const again = await obj.embedOnce();
+      expect([again.full, again.embedded, has(back), has(gone)]).toEqual([true, 1, true, false]);
+      // Nothing asked, within the hour: ordinary again.
+      write("last", 0.95);
+      expect((await obj.embedOnce()).full).toBe(false);
+      return { ordinary, full, vectors: obj.store.vectorCount(settings) };
+    });
+    ctx.annotate(`alarm at ${figures.vectors} vectors: ${JSON.stringify(figures)}`);
+    expect(figures.ordinary.rowsRead).toBeLessThan(100);
+    expect(figures.ordinary.rowsWritten).toBeLessThan(10);
   }, 120_000);
 });

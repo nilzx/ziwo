@@ -8,6 +8,7 @@ import { CLIENT_INFO_META_KEY, DEFAULT_MAX_REQUEST_BODY_SIZE, PROTOCOL_VERSION_M
 import { createMcpHandler } from "agents/mcp/server";
 import { type Note, serveAdmin } from "./admin";
 import { Directory } from "./directory";
+import { type EmbedEnv, queryEmbedding } from "./embed";
 import { base64url, bearer, encoder, notFound, plain, sha256Hex, unauthorized, validName } from "./http";
 import { Memory } from "./memory-object";
 import { isPagePath, servePage } from "./page";
@@ -17,12 +18,15 @@ import { clipText, type LogFields, logLine } from "./log";
 export { Directory, Memory };
 export { newToken, validName } from "./http";
 
-export interface Env {
+export interface Env extends EmbedEnv {
   MEMORY: DurableObjectNamespace<Memory>;
   // The list of memories the admin API keeps; never reached by MCP.
   DIRECTORY: DurableObjectNamespace<Directory>;
   // The secret of the admin API; without it the admin API is not there.
   ADMIN_SECRET?: string;
+  // Search by meaning, off without AI: see embed.ts. AI is the Workers AI
+  // binding; EMBED_MODEL (set empty to switch it off), EMBED_DIMS,
+  // EMBED_MIN_SIMILARITY and EMBED_QUERY_TIMEOUT_MS are vars.
 }
 
 function fromBase64url(s: string): Uint8Array | undefined {
@@ -140,7 +144,8 @@ async function serveMemory(request: Request, env: Env, name: string, note: Note)
     (clientFromSessionId(request.headers.get("mcp-session-id")) ||
       clipText(request.headers.get("user-agent") ?? "", 120));
 
-  const handler = createMcpHandler(() => buildServer({ memory: name, client, stub }), { route: `/${name}/mcp` });
+  const embedQuery = queryEmbedding(env);
+  const handler = createMcpHandler(() => buildServer({ memory: name, client, stub, embedQuery }), { route: `/${name}/mcp` });
   const res = await handler.fetch(served, parsed === undefined ? undefined : { parsedBody: parsed });
   if (p.initializeClient === undefined || !res.ok) return res;
   const headers = new Headers(res.headers);

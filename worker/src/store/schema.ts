@@ -1,8 +1,8 @@
 // The database has two kinds of tables, as in the Go build (schema.go).
 //
 // The log tables are the record: events is the only source of truth and is
-// append-only. vectors is kept alongside it because embeddings are expensive
-// to recompute. meta holds what describes the memory itself: the log format,
+// append-only. vector_rows is kept alongside it because embeddings are
+// expensive to recompute. meta holds what describes the memory itself: the log format,
 // the access token's hash, the forgetting parameters, and what the derived
 // tables were built from, including the experience clock.
 //
@@ -41,12 +41,18 @@ CREATE TABLE IF NOT EXISTS events (
   payload TEXT    NOT NULL  -- JSON
 ) STRICT;
 
-CREATE TABLE IF NOT EXISTS vectors (
-  n     INTEGER NOT NULL, -- memories.n
-  model TEXT    NOT NULL, -- embedding model that produced vec
-  vec   BLOB    NOT NULL, -- little-endian float32
-  PRIMARY KEY (n, model)
-) STRICT, WITHOUT ROWID;
+-- Embeddings, packed: see vectors.ts. Up to 256 vectors a row, each as
+-- dims signed bytes (the unit vector times 127, rounded), in vecs; the
+-- memories' row numbers beside them in ns, as little-endian int32, in the
+-- same order.
+CREATE TABLE IF NOT EXISTS vector_rows (
+  pack  INTEGER PRIMARY KEY,
+  model TEXT    NOT NULL, -- the embedding model that made the vectors
+  dims  INTEGER NOT NULL, -- their size
+  count INTEGER NOT NULL, -- how many the row holds
+  ns    BLOB    NOT NULL, -- count * 4 bytes
+  vecs  BLOB    NOT NULL  -- count * dims bytes
+) STRICT;
 
 CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
@@ -218,3 +224,9 @@ export const metaZone = "timezone";
 // The open round of reflection, as in Go (reflect.go). It is working state,
 // not memory: it is not in the log, and a rebuild leaves it as it is.
 export const metaReflect = "reflect";
+// What the alarm that embeds keeps about its runs (see embedding.ts). Working
+// state too, not memory: a rebuild leaves it as it is.
+export const metaVectorsSeen = "vectors_seen"; // the highest row number an ordinary run has dealt with
+export const metaVectorsFull = "vectors_full"; // "1" while a full run is asked for
+export const metaVectorsFullAt = "vectors_full_at"; // wall clock of the last full run, unix ms
+export const metaVectorsLabel = "vectors_label"; // the label of the last full run: model and size

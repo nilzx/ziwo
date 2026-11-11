@@ -1,44 +1,47 @@
-// Port of internal/memory/service_test.go. What Go checks after f.sync() is
-// checked at once here: a listing or a reading is logged in the call that
-// made it. Matches by meaning come from the stand-in in service-helpers.ts,
-// passed to recall by hand.
+// Port of internal/memory/service_test.go. A listing or a reading is logged
+// in the call that made it, so what Go checks after f.sync() for those is
+// checked at once here. Search by meaning runs in the object with the
+// stand-in model of embed-helpers.ts: f.sync() runs what the alarm runs.
 
+import { evictDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { MaxBodyRunes, MaxExpand, MaxFieldRunes, MaxGistRunes, MaxPeople } from "../src/memory/clean";
 import type { RememberArgs } from "../src/memory-object";
-import { minute, hour, t0 } from "./helpers";
-import { byMeaning, distinct, ids, isInvalid, start } from "./service-helpers";
+import { TopicEmbedder } from "./embed-helpers";
+import { freshObject, minute, hour, t0 } from "./helpers";
+import { distinct, ids, isInvalid, reopen, start, startEmbedded } from "./service-helpers";
 
 describe("service", () => {
   it("RecallByKeywordAndByMeaning", () =>
-    start((f) => {
+    startEmbedded(async (f) => {
       const cat = f.remember("用户给我看了他的猫", "一只橘猫，叫年糕。");
       const deploy = f.remember("第一次部署出了问题", "反向代理拒绝了所有请求。");
-      const weather = f.remember("用户问了天气", "聊了几句就结束了。");
-      const indexed = f.st.get([cat, deploy, weather]);
+      f.remember("用户问了天气", "聊了几句就结束了。");
+      await f.sync();
+      expect(f.indexed()).toBe(3);
 
       // No word in common with the memory: only the meaning can find it.
-      let rs = f.recall("feline", byMeaning("feline", indexed));
+      let rs = f.recall("feline");
       expect(rs.map((r) => [r.id, r.byKeyword, r.byMeaning])).toEqual([[cat, false, true]]);
 
       // A word in the body that the stand-in model knows nothing about: only
       // the keyword index can find it.
-      rs = f.recall("反向代理", byMeaning("反向代理", indexed));
+      rs = f.recall("反向代理");
       expect(rs.map((r) => [r.id, r.byKeyword, r.byMeaning])).toEqual([[deploy, true, false]]);
 
       // Found both ways: counted once.
-      rs = f.recall("部署", byMeaning("部署", indexed));
+      rs = f.recall("部署");
       expect(rs.map((r) => [r.id, r.byKeyword, r.byMeaning])).toEqual([[deploy, true, true]]);
 
-      expect(ids(f.recall("量子力学", byMeaning("量子力学", indexed)))).toEqual([]);
+      expect(ids(f.recall("量子力学"))).toEqual([]);
     }));
 
   it("RecallRanksAgreementAboveASingleSignal", () =>
-    start((f) => {
+    startEmbedded(async (f) => {
       const meaningOnly = f.remember("The kitten knocked over my notes", "Nothing else happened.");
       const both = f.remember("用户的猫生病了", "他很担心，我陪他查了资料。");
-      const rs = f.recall("猫", byMeaning("猫", f.st.get([meaningOnly, both])));
-      expect(ids(rs)).toEqual([both, meaningOnly]);
+      await f.sync();
+      expect(ids(f.recall("猫"))).toEqual([both, meaningOnly]);
     }));
 
   it("ImportanceBreaksTies", () =>
@@ -49,20 +52,71 @@ describe("service", () => {
       expect(ids(f.recall("一样的正文"))).toEqual([major, minor]);
     }));
 
-  // Ported in part: what is left without an embedder is that a recall given
-  // no matches by meaning answers from keywords, and that a memory is found
-  // by keyword as soon as it is written.
-  it("RecallFallsBackToKeywordsWhenEmbeddingFails", () =>
-    start((f) => {
+  // With the model down, the Worker hands the object no query vector (see
+  // meaning.test.ts for the Worker's side) and the object cannot embed.
+  it("RecallFallsBackToKeywordsWhenEmbeddingFails", () => {
+    const emb = new TopicEmbedder();
+    return startEmbedded(async (f) => {
       const deploy = f.remember("第一次部署出了问题", "反向代理拒绝了所有请求。");
-      let rs = f.recall("部署");
+      await f.sync();
+
+      emb.down = true;
+      const rs = f.recall("部署");
       expect(rs.map((r) => [r.id, r.byKeyword, r.byMeaning])).toEqual([[deploy, true, false]]);
       // An empty answer by meaning counts as no way that found anything.
       const again = f.recall("部署", []);
       expect(again.map((r) => [r.id, r.byKeyword, r.byMeaning, r.score])).toEqual([[deploy, true, false, rs[0]!.score]]);
+
+      // A memory written while the embedder is down is searchable by keyword
+      // at once, and by meaning once the embedder is back.
       const cat = f.remember("用户给我看了他的猫", "一只橘猫。");
       expect(ids(f.recall("橘猫"))).toEqual([cat]);
-    }));
+      expect((await f.obj.embedOnce()).failed).toBe(true);
+      emb.down = false;
+      await f.sync();
+      expect(ids(f.recall("feline"))).toEqual([cat]);
+    }, emb);
+  });
+
+  it("OneRefusedMemoryDoesNotBlockTheRest", () => {
+    const emb = new TopicEmbedder();
+    return startEmbedded(async (f) => {
+      emb.refuse = "毒丸";
+      const poison = f.remember("毒丸", "嵌入服务不接受这一条。");
+      const cat = f.remember("用户给我看了他的猫", "一只橘猫。");
+      await f.sync();
+
+      expect(f.indexed()).toBe(1);
+      expect(ids(f.recall("feline"))).toEqual([cat]);
+      expect(ids(f.recall("毒丸")), "the refused memory must stay findable by keyword").toEqual([poison]);
+    }, emb);
+  });
+
+  // A restart is the object's instance being dropped: the vectors are loaded
+  // again from storage by the first search, and the backlog by the alarm.
+  it("VectorsSurviveRestartAndBacklogIsPickedUp", async () => {
+    const stub = freshObject();
+    const emb = new TopicEmbedder();
+    const { cat, deploy, clock } = await startEmbedded(async (f) => {
+      const cat = f.remember("用户给我看了他的猫", "一只橘猫。");
+      await f.sync();
+      emb.down = true;
+      const deploy = f.remember("第一次部署出了问题", "反向代理拒绝了所有请求。"); // never embedded in this run
+      return { cat, deploy, clock: f.clock };
+    }, emb, stub);
+    await evictDurableObject(stub);
+
+    emb.down = false;
+    const before = emb.documentCalls;
+    await reopen(stub, emb, clock, async (f) => {
+      expect(f.indexed(), "the stored vector was not loaded").toBeGreaterThanOrEqual(1);
+      await f.sync();
+      expect(f.indexed()).toBe(2);
+      expect(ids(f.recall("kitten"))).toEqual([cat]);
+      expect(ids(f.recall("release"))).toEqual([deploy]);
+    });
+    expect(emb.documentCalls, "the backlog was not embedded after restart").toBeGreaterThan(before);
+  });
 
   it("WritesNeedASession", () =>
     start((f) => {
@@ -228,8 +282,3 @@ describe("service", () => {
     }));
 });
 
-// Left out of service_test.go, with the reason:
-// - OneRefusedMemoryDoesNotBlockTheRest: its subject is the embedding queue
-//   setting aside a text the embedding server refuses. No embedder yet.
-// - VectorsSurviveRestartAndBacklogIsPickedUp: its subject is loading stored
-//   vectors on start and embedding the backlog. No embedder yet.

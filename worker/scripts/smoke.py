@@ -136,7 +136,7 @@ class Worker:
                "WRANGLER_REGISTRY_PATH": os.path.join(self.scratch, "registry"),
                "NO_UPDATE_NOTIFIER": "1", "CI": "1"}
         self.proc = subprocess.Popen(
-            ["npx", "wrangler", "dev", "--local", "--ip", "127.0.0.1", "--port", str(self.port),
+            ["npx", "wrangler", "dev", "--config", "wrangler.dev.jsonc", "--local", "--ip", "127.0.0.1", "--port", str(self.port),
              "--inspector-port", str(self.iport), "--persist-to", self.persist,
              "--var", f"ADMIN_SECRET:{self.secret}"],
             cwd=WORKER, stdin=subprocess.DEVNULL, stdout=log, stderr=log, env=env, start_new_session=True)

@@ -29,7 +29,7 @@ import {
 } from "./content";
 import { checkStore, type Report } from "./check";
 import { isActiveBand, isArchived, isFadedBand, isListed, isLive, isPending, notArchived, notYetFaded } from "./conditions";
-import { blob, type Binding, Db, flag, inList, isConstraint, num, realOrZero, type Row, text, type Usage } from "./db";
+import { type Binding, Db, flag, inList, isConstraint, num, realOrZero, type Row, text, type Usage } from "./db";
 import {
   crossings,
   defaultParams,
@@ -83,8 +83,13 @@ import {
   metaLogFormat,
   metaParams,
   metaTokenHash,
+  metaVectorsFull,
+  metaVectorsFullAt,
+  metaVectorsLabel,
+  metaVectorsSeen,
   metaZone,
 } from "./schema";
+import { type HeldFigure, type Label, VectorRows, type VectorHit } from "./vectors";
 import { UTC } from "../zone";
 import type {
   CarrierNote,
@@ -184,6 +189,7 @@ export function parseParams(v: string): Params {
 // of one Durable Object.
 export class Store {
   private readonly db: Db;
+  private readonly vec: VectorRows;
   private p: Params = defaultParams();
   private readonly append: Append = (at, kind, payload) => this.appendEvent(at, kind, payload);
 
@@ -193,14 +199,23 @@ export class Store {
   // the one that replays the log into it: see indexSchema.
   constructor(private readonly storage: DurableObjectStorage) {
     this.db = new Db(storage.sql);
+    this.vec = new VectorRows(this.db);
     this.tx(() => this.init());
     this.tx(() => {
       if (this.db.getMeta(metaDerived) !== this.derivedMark()) this.rebuildInTx();
     });
   }
 
+  // tx runs fn in one transaction. If it fails after changing the loaded
+  // vectors, they are dropped, to be loaded again as stored.
   private tx<T>(fn: () => T): T {
-    return this.storage.transactionSync(fn);
+    this.vec.touched = false;
+    try {
+      return this.storage.transactionSync(fn);
+    } catch (err) {
+      if (this.vec.touched) this.vec.forget();
+      throw err;
+    }
   }
 
   private init(): void {
@@ -291,7 +306,7 @@ export class Store {
     // does when it applies the event. Only such a memory has an empty hash
     // and stands otherwise; the hash index finds it.
     this.db.run(`UPDATE memories SET state = '${StateErased}' WHERE hash = '' AND state <> '${StateErased}'`);
-    this.db.run(`DELETE FROM vectors WHERE n NOT IN (SELECT n FROM memories)`);
+    this.vec.removeOrphans();
     this.db.setMeta(metaDerived, this.derivedMark());
   }
 
@@ -505,7 +520,12 @@ export class Store {
   // number. The log keeps the fact that the memory existed and that it was
   // erased.
   erase(at: number, session: string, id: string, reason: string): number {
-    return this.tx(() => eraseMemory(this.db, this.append, at, session, id, reason));
+    return this.tx(() => {
+      const n = eraseMemory(this.db, this.append, at, session, id, reason);
+      // Its vector goes in the same transaction, under every label.
+      this.vec.remove([n]);
+      return n;
+    });
   }
 
   // addPreference records a standing rule about what to remember and returns
@@ -805,58 +825,177 @@ export class Store {
     this.tx(() => this.db.setMeta(metaZone, zone));
   }
 
-  // saveVector stores the embedding of memory n produced by model, as
-  // little-endian float32.
-  saveVector(n: number, model: string, vec: ArrayLike<number>): void {
-    const buf = new ArrayBuffer(4 * vec.length);
-    const view = new DataView(buf);
-    for (let i = 0; i < vec.length; i++) view.setFloat32(4 * i, vec[i]!, true);
-    this.tx(() =>
-      this.db.run(
-        `INSERT INTO vectors(n, model, vec) VALUES(?, ?, ?)
-         ON CONFLICT(n, model) DO UPDATE SET vec = excluded.vec`,
-        n, model, buf,
-      ),
-    );
+  // ---- Vectors. See vectors.ts. A memory needs a vector when it stands,
+  // is listed and is not archived; only such memories keep one.
+
+  // needingVectors returns the row numbers of the memories that need a
+  // vector when the clock reads clock, in order. It reads the partial index
+  // of standing memories alone, and sorts here: the platform would count the
+  // rows of a sort in SQL again.
+  private needingVectors(clock: number): number[] {
+    return this.db
+      .all(
+        `SELECT m.n FROM memories m INDEXED BY memories_standing_tiers
+          WHERE ${isLive} AND ${isListed} AND ${notArchived}`,
+        clock,
+      )
+      .map((r) => num(r.n))
+      .sort((a, b) => a - b);
   }
 
-  // vectors calls fn with every stored embedding produced by model, in order
-  // of n. It reads one row at a time.
-  vectors(model: string, fn: (n: number, vec: Float32Array) => void): void {
-    this.db.each(`SELECT n, vec FROM vectors WHERE model = ? ORDER BY n`, [model], (r) => {
-      const buf = blob(r.vec);
-      const view = new DataView(buf);
-      const vec = new Float32Array(buf.byteLength >> 2);
-      for (let i = 0; i < vec.length; i++) vec[i] = view.getFloat32(4 * i, true);
-      fn(num(r.n), vec);
+  // tendVectors does what comes before embedding, in one transaction: it
+  // drops the vectors of other labels, and those of memories that no longer
+  // need one (Go's sweep), and returns how many vectors it dropped and the
+  // row numbers of the memories that wait for a vector of label, oldest
+  // first. It loads the vectors of label.
+  tendVectors(label: Label): { dropped: number; waiting: number[] } {
+    return this.tx(() => this.tendInTx(label));
+  }
+
+  private tendInTx(label: Label): { dropped: number; waiting: number[] } {
+    this.vec.dropOthers(label);
+    this.vec.load(label);
+    const need = new Set(this.needingVectors(this.db.clock()));
+    const stored = this.vec.storedFor(label);
+    const dropped = this.vec.remove([...stored].filter((n) => !need.has(n)));
+    return { dropped, waiting: [...need].filter((n) => !stored.has(n)) };
+  }
+
+  // vectorRuns reads what the alarm keeps about its runs.
+  vectorRuns(): { seen?: number; fullAsked: boolean; fullAt?: number; label?: string } {
+    const int = (key: string): number | undefined => {
+      const v = this.db.getMeta(key);
+      return v !== undefined && /^\d+$/.test(v) ? Number(v) : undefined;
+    };
+    return {
+      seen: int(metaVectorsSeen),
+      fullAsked: this.db.getMeta(metaVectorsFull) !== undefined,
+      fullAt: int(metaVectorsFullAt),
+      label: this.db.getMeta(metaVectorsLabel),
+    };
+  }
+
+  // askFullVectorRun records that the next run of the alarm must look at
+  // every memory, not only those written since its last run.
+  askFullVectorRun(): void {
+    this.tx(() => this.db.setMeta(metaVectorsFull, "1"));
+  }
+
+  // fullVectorRun is the full run's first step, in one transaction: it
+  // tends the vectors (see tendVectors), records the run at the wall clock
+  // now, and moves the mark of the ordinary runs back to just before the
+  // oldest memory that waits, so that they take it up. It returns how many
+  // vectors it dropped and how many memories wait.
+  fullVectorRun(label: Label, now: number): { dropped: number; waiting: number } {
+    return this.tx(() => {
+      const { dropped, waiting } = this.tendInTx(label);
+      const seen = waiting.length > 0 ? waiting[0]! - 1 : this.maxN();
+      this.db.setMeta(metaVectorsSeen, String(seen));
+      this.db.setMeta(metaVectorsFullAt, String(now));
+      this.db.setMeta(metaVectorsLabel, labelKey(label));
+      this.db.run(`DELETE FROM meta WHERE key = ?`, metaVectorsFull);
+      return { dropped, waiting: waiting.length };
     });
   }
 
-  // unembedded returns up to limit memories that are not archived when the
-  // clock reads clock and have no embedding from model yet, oldest first.
-  unembedded(model: string, clock: number, limit: number): Memory[] {
-    return this.memories(
-      `WHERE ${isLive} AND ${isListed} AND ${notArchived}
-         AND NOT EXISTS (SELECT 1 FROM vectors v WHERE v.n = m.n AND v.model = ?)
-       ORDER BY m.n LIMIT ?`,
-      clock, model, limit,
-    );
+  private maxN(): number {
+    return num(this.db.first(`SELECT COALESCE(MAX(n), 0) AS n FROM memories`)?.n);
   }
 
-  // dropArchivedVectors deletes the embeddings of every memory archived when
-  // the clock reads clock, or no longer live or listed, and returns the row
-  // numbers of those memories, each once. If one comes to mind again it is
-  // embedded again.
-  dropArchivedVectors(clock: number): number[] {
-    const rows = this.tx(() =>
-      this.db.all(
-        `DELETE FROM vectors WHERE n IN (SELECT m.n FROM memories m WHERE ${isArchived} OR NOT ${isLive} OR NOT ${isListed})
-         RETURNING n`,
-        clock,
-      ),
-    );
-    return [...new Set(rows.map((r) => num(r.n)))];
+  // nextForVectors returns up to take memories written after the mark of
+  // the ordinary runs that need a vector of label and have none, oldest
+  // first, leaving out those in skip. It reads the memories after the mark
+  // by row number, a chunk at a time, and stops once it has one more than
+  // it takes. seen is the mark to keep once the batch is done: the last
+  // memory taken when more wait, else the newest memory there is.
+  nextForVectors(label: Label, take: number, skip: ReadonlySet<number>): { batch: number[]; more: boolean; from: number; seen: number } {
+    const from = this.vectorRuns().seen ?? 0;
+    const stored = this.vec.storedFor(label);
+    const clock = this.db.clock();
+    const batch: number[] = [];
+    let after = from;
+    let more = false;
+    for (;;) {
+      const rows = this.db
+        .all(
+          `SELECT m.n FROM memories m WHERE m.n > ? AND ${isLive} AND ${isListed} AND ${notArchived} ORDER BY m.n LIMIT ?`,
+          after, clock, vectorScanChunk,
+        )
+        .map((r) => num(r.n));
+      for (const n of rows) {
+        if (stored.has(n) || skip.has(n)) continue;
+        if (batch.length === take) {
+          more = true;
+          break;
+        }
+        batch.push(n);
+      }
+      if (more || rows.length < vectorScanChunk) break;
+      after = rows[rows.length - 1]!;
+    }
+    return { batch, more, from, seen: more ? batch[batch.length - 1]! : this.maxN() };
   }
+
+  // setVectorsSeen keeps the mark of the ordinary runs.
+  setVectorsSeen(n: number): void {
+    this.tx(() => this.db.setMeta(metaVectorsSeen, String(n)));
+  }
+
+  // saveVectors stores the unit vectors of label given for memories that
+  // still need one, and returns how many it stored. A memory that was
+  // erased, set aside or archived while its vector was being made gets none.
+  saveVectors(label: Label, entries: { n: number; vec: ArrayLike<number> }[]): number {
+    if (entries.length === 0) return 0;
+    return this.tx(() => {
+      const clock = this.db.clock();
+      const need = new Set(
+        this.db
+          .all(
+            `SELECT m.n FROM memories m WHERE m.n IN ${inList} AND ${isLive} AND ${isListed} AND ${notArchived}`,
+            JSON.stringify(entries.map((e) => e.n)), clock,
+          )
+          .map((r) => num(r.n)),
+      );
+      const keep = entries.filter((e) => need.has(e.n));
+      this.vec.add(label, keep);
+      return keep.length;
+    });
+  }
+
+  // searchVectors returns up to k memories whose vectors of label are
+  // closest to the unit vector q, best first, at or above min. The first
+  // search after the object wakes loads the vectors.
+  searchVectors(label: Label, q: Float32Array, k: number, min: number): VectorHit[] {
+    return this.vec.search(label, q, k, min);
+  }
+
+  // vectorCount reports how many vectors of label are stored.
+  vectorCount(label: Label): number {
+    return this.vec.size(label);
+  }
+
+  // vectorFigures reports how many vectors are stored under each label and,
+  // given a label, how many memories wait for a vector of it.
+  vectorFigures(label?: Label): { held: HeldFigure[]; waiting: number | null } {
+    const held = this.vec.held();
+    if (label === undefined) return { held, waiting: null };
+    const stored = this.vec.storedFor(label);
+    return { held, waiting: this.needingVectors(this.db.clock()).filter((n) => !stored.has(n)).length };
+  }
+
+  // storedVectorNs returns the row number of every stored vector, of any
+  // label.
+  storedVectorNs(): number[] {
+    return this.vec.storedNs();
+  }
+}
+
+// vectorScanChunk is how many memories an ordinary run reads at a time.
+const vectorScanChunk = 256;
+
+// labelKey writes a label as it is kept in meta.
+export function labelKey(l: Label): string {
+  return `${l.dims} ${l.model}`;
 }
 
 // readLogStats reads what the event log and the memory's settings say about

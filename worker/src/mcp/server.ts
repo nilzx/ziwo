@@ -3,6 +3,7 @@
 // Durable Object in one RPC.
 
 import { type CallToolResult, McpServer } from "@modelcontextprotocol/server";
+import type { QueryVector } from "../embed";
 import type { Memory } from "../memory-object";
 import { check, instructions, listed, tools } from "./tools";
 import { logLine } from "../log";
@@ -19,6 +20,9 @@ export interface Call {
   memory: string; // the memory's name
   client: string; // the client's name, for get_context
   stub: DurableObjectStub<Memory>;
+  // Embeds a recall's query within its time limit; absent when search by
+  // meaning is off. The object never embeds a query itself.
+  embedQuery?: (query: string) => Promise<QueryVector | undefined>;
 }
 
 function toolError(text: string): CallToolResult {
@@ -48,7 +52,12 @@ export function buildServer(call: Call): McpServer {
             outcome = "invalid";
             return toolError(checked.invalid);
           }
-          const answer = await call.stub.answer(checked.ok);
+          let toolCall = checked.ok;
+          if (toolCall.tool === "recall" && call.embedQuery !== undefined) {
+            const meaning = await call.embedQuery(toolCall.query);
+            if (meaning !== undefined) toolCall = { ...toolCall, meaning };
+          }
+          const answer = await call.stub.answer(toolCall);
           if ("invalid" in answer) {
             outcome = "invalid";
             return toolError(answer.invalid);

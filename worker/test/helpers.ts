@@ -118,7 +118,7 @@ export function dump(s: Store, storage: DurableObjectStorage): string {
     `SELECT * FROM links ORDER BY src, dst`,
     `SELECT * FROM policies ORDER BY id`,
     `SELECT * FROM restores ORDER BY at`,
-    `SELECT n, model, vec FROM vectors ORDER BY n, model`,
+    `SELECT pack, model, dims, count, ns, vecs FROM vector_rows ORDER BY pack`,
     `SELECT key, value FROM meta WHERE key IN ('derived', 'clock') ORDER BY key`,
   ]) {
     for (const row of storage.sql.exec(q)) {
@@ -147,5 +147,11 @@ export function populate(s: Store): void {
     { at: t0 + 3 * hour, session: b, query: "纠正", ids: [m1, m2] },
     { at: t0 + 4 * hour, session: b, read: true, ids: [m1] },
   ]);
-  s.saveVector(get(s, m1).n, "embed-x", [0.25, -1.5, 3]);
+  s.saveVectors({ model: "embed-x", dims: 3 }, [{ n: get(s, m1).n, vec: unit([0.25, -1.5, 3]) }]);
+}
+
+// unit scales v to unit length.
+export function unit(v: number[]): number[] {
+  const len = Math.hypot(...v);
+  return v.map((x) => x / len);
 }

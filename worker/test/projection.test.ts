@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { type Content, encodeContent } from "../src/store/content";
 import { encodeRemember, encodeSession, type RememberEvent } from "../src/store/events";
 import type { Store } from "../src/store/store";
-import { dump, fill, get, hour, near, populate, read, remember, session, t0, withStore } from "./helpers";
+import { dump, fill, get, hour, near, populate, read, remember, session, t0, unit, withStore } from "./helpers";
 
 type Write = { e: Partial<RememberEvent> & { id: string }; c: Content | null; at?: number };
 
@@ -119,7 +119,7 @@ describe("projection", () => {
       ]);
       fill(s, sess, 15);
       read(s, ...ids.slice(10, 15));
-      s.saveVector(get(s, ids[0]!).n, "embed-x", [1, 2, 3]);
+      s.saveVectors({ model: "embed-x", dims: 3 }, [{ n: get(s, ids[0]!).n, vec: unit([1, 2, 3]) }]);
       const clock = s.clock();
       expect(clock).toBe(3 + 4 + 30 + 20 + 15); // populate wrote three memories and four fillers
       expect(storage.sql.exec(`SELECT MAX(ord) AS c FROM memories`).one().c).toBe(clock);
