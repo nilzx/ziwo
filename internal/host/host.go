@@ -7,6 +7,7 @@
 package host
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -24,9 +25,11 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/nilzx/ziwo/internal/embed"
 	"github.com/nilzx/ziwo/internal/memory"
+	"github.com/nilzx/ziwo/internal/sealed"
 	"github.com/nilzx/ziwo/internal/server"
 	"github.com/nilzx/ziwo/internal/store"
 )
@@ -314,4 +317,54 @@ func (h *Host) Close() error {
 		delete(h.open, name)
 	}
 	return errors.Join(errs...)
+}
+
+// Export writes the memory called name to file, sealed under the passphrase.
+// It can run while the memory is being served. It reports how many events
+// the export holds.
+func Export(ctx context.Context, dir, name, file, passphrase string) (events int64, err error) {
+	st, err := openLog(ctx, dir, name)
+	if err != nil {
+		return 0, err
+	}
+	defer st.Close()
+	var plain bytes.Buffer
+	if events, err = st.Export(ctx, &plain, time.Now()); err != nil {
+		return 0, err
+	}
+	out, err := sealed.Seal(plain.Bytes(), passphrase)
+	if err != nil {
+		return 0, err
+	}
+	return events, os.WriteFile(file, out, 0o600)
+}
+
+// Import brings the export in file back as a new memory called name.
+func Import(ctx context.Context, dir, name, file, passphrase string) (store.ImportStats, error) {
+	if err := ValidName(name); err != nil {
+		return store.ImportStats{}, err
+	}
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return store.ImportStats{}, err
+	}
+	plain, err := sealed.Open(data, passphrase)
+	if err != nil {
+		return store.ImportStats{}, err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return store.ImportStats{}, err
+	}
+	return store.Import(ctx, Path(dir, name), bytes.NewReader(plain), time.Now())
+}
+
+// Check examines the memory called name and reports what it finds, without
+// quoting what any memory says.
+func Check(ctx context.Context, dir, name string) (store.Report, error) {
+	st, err := openLog(ctx, dir, name)
+	if err != nil {
+		return store.Report{}, err
+	}
+	defer st.Close()
+	return st.Check(ctx)
 }

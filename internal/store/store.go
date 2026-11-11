@@ -34,6 +34,7 @@ const (
 	kindAmend    = "amend"    // a memory's standing or weight was changed, or a preference set
 	kindErase    = "erase"    // what a memory says was deleted for good
 	kindReflect  = "reflect"  // a round of reflection was written back
+	kindRestore  = "restore"  // the memory was brought back from an export
 )
 
 // DedupWindow is how far back Remember looks for an identical memory before
@@ -279,6 +280,13 @@ func (s *Store) init(ctx context.Context, logOnly bool) error {
 	if _, err := s.upgradeLog(ctx); err != nil {
 		return err
 	}
+	if _, ok, err := getMeta(ctx, s.w, metaInstance); err != nil {
+		return err
+	} else if !ok {
+		if err := setMeta(ctx, s.w, metaInstance, newID("i_")); err != nil {
+			return err
+		}
+	}
 	if logOnly {
 		return nil
 	}
@@ -437,6 +445,15 @@ func (s *Store) apply(ctx context.Context, tx *sql.Tx, seq, at int64, kind strin
 			return err
 		}
 		return s.applyReflect(ctx, tx, at, e)
+
+	case kindRestore:
+		var e restoreEvent
+		if err := json.Unmarshal(payload, &e); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO restores(at, exported_at, events) VALUES(?, ?, ?)`,
+			at, e.ExportedAt, e.Events)
+		return err
 
 	default:
 		return fmt.Errorf("unknown event kind %q", kind)

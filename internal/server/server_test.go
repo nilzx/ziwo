@@ -338,6 +338,7 @@ func TestToolsAreDescribed(t *testing.T) {
 		"expand":      "ids",
 		"amend":       "session_id action",
 		"reflect":     "session_id",
+		"check":       "",
 	}
 	if len(required) != len(want) {
 		t.Errorf("tools = %v, want exactly %d", required, len(want))
@@ -637,5 +638,45 @@ func TestReconstructingThroughConversation(t *testing.T) {
 	out = c.ok("expand", map[string]any{"ids": []string{id}})
 	if miss := lacking(out, "2026-03-14 00:00Z", "reconstructed", "as model-b", "written "+time.Now().UTC().Format(time.DateOnly), "pointer: ~/.claude/projects/game/abc.jsonl"); len(miss) > 0 {
 		t.Errorf("expand lacks %q:\n%s", miss, out)
+	}
+}
+
+// The owner of a memory can look it over, and is told when it was brought
+// back from a backup.
+func TestCheckingAndBeingBroughtBack(t *testing.T) {
+	dir := t.TempDir()
+	srv := serve(t, filepath.Join(dir, "a.ziwo"))
+	c := connect(t, srv, "cli-agent")
+	session := c.begin("model-a")
+	id := c.remember(session, "用户给我看了他的猫", "一只橘猫，名字叫年糕。")
+	c.ok("remember", map[string]any{"session_id": session, "gist": "改法如下", "body": "见下：\n```go\nfunc main() {}\n```"})
+
+	out := c.ok("check", nil)
+	if miss := lacking(out, "2 memories written", "problems: none", "[looks-like-project-notes] 1 memories hold code"); len(miss) > 0 ||
+		strings.Contains(out, "年糕") || strings.Contains(out, "func main") || strings.Contains(out, id) {
+		t.Errorf("check lacks %q, or says what a memory says, or names the wrong one:\n%s", miss, out)
+	}
+	if got := srv.st; got != nil {
+		if m, _ := got.Get(context.Background(), []string{id}); len(m) != 1 || m[0].RecallCount != 0 {
+			t.Errorf("checking counted as coming to mind")
+		}
+	}
+
+	var file strings.Builder
+	if _, err := srv.st.Export(context.Background(), &file, time.Now().Add(-48*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	restored := filepath.Join(dir, "b.ziwo")
+	if _, err := store.Import(context.Background(), restored, strings.NewReader(file.String()), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	back := connect(t, serve(t, restored), "cli-agent")
+	out = back.ok("get_context", nil)
+	today, then := time.Now().UTC().Format(time.DateOnly), time.Now().Add(-48*time.Hour).UTC().Format(time.DateOnly)
+	if miss := lacking(out, "This memory was brought back on "+today+" from a backup made on "+then, "not in it", id, "memories: 2 "); len(miss) > 0 {
+		t.Errorf("get_context of a restored memory lacks %q:\n%s", miss, out)
+	}
+	if out := c.ok("get_context", nil); strings.Contains(out, "brought back") {
+		t.Errorf("the original says it was restored:\n%s", out)
 	}
 }

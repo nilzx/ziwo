@@ -2,12 +2,20 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"database/sql"
 	"flag"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
+
+	_ "github.com/mattn/go-sqlite3"
+
+	"github.com/nilzx/ziwo/internal/host"
+	"github.com/nilzx/ziwo/internal/store"
 )
 
 var tokenRE = regexp.MustCompile(`ziwo_[A-Za-z0-9_-]{43}`)
@@ -141,5 +149,116 @@ func TestLoopback(t *testing.T) {
 		if got := loopback(addr); got != want {
 			t.Errorf("loopback(%q) = %v, want %v", addr, got, want)
 		}
+	}
+}
+
+// fillMemory writes two memories into the named memory, as a server would.
+func fillMemory(t *testing.T, dir, name string) {
+	t.Helper()
+	ctx := context.Background()
+	st, err := store.Open(ctx, host.Path(dir, name), store.Options{Params: store.DefaultParams()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	sess, _, err := st.StartSession(ctx, time.Now(), "model-a", "cli")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, gist := range []string{"用户给我看了他的猫 plainmark7q", "用户第一次把项目交给我"} {
+		if _, _, err := st.Remember(ctx, time.Now(), store.RememberInput{SessionID: sess.ID, Moment: "other", Source: "lived",
+			Importance: 0.5, Gist: gist, Body: "正文"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestBackingUpAndBringingBack(t *testing.T) {
+	dir, elsewhere := t.TempDir(), filepath.Join(t.TempDir(), "restored")
+	token := tokenRE.FindString(must(t, "new", "claude", "-dir", dir))
+	fillMemory(t, dir, "claude")
+	file := filepath.Join(t.TempDir(), "claude.ziwo-export")
+
+	// An export is never written in the clear, so it needs a passphrase.
+	t.Setenv("ZIWO_EXPORT_KEY", "")
+	if _, err := ziwo(t, "export", "claude", "-dir", dir, "-o", file); err == nil || !strings.Contains(err.Error(), "ZIWO_EXPORT_KEY") {
+		t.Fatalf("export without a passphrase: %v", err)
+	}
+	t.Setenv("ZIWO_EXPORT_KEY", "short")
+	if _, err := ziwo(t, "export", "claude", "-dir", dir, "-o", file); err == nil || !strings.Contains(err.Error(), "at least") {
+		t.Fatalf("export with a five-letter passphrase: %v", err)
+	}
+	t.Setenv("ZIWO_EXPORT_KEY", "a passphrase long enough")
+	if out := must(t, "export", "claude", "-o", file, "-dir", dir); !strings.Contains(out, "exported 3 events") {
+		t.Errorf("export: %s", out)
+	}
+	sealed, err := os.ReadFile(file)
+	if err != nil || bytes.Contains(sealed, []byte("plainmark7q")) || bytes.Contains(sealed, []byte(token)) {
+		t.Fatalf("the export file: %v; it must not hold the text or the token in the clear", err)
+	}
+	if info, _ := os.Stat(file); info.Mode().Perm()&0o077 != 0 {
+		t.Errorf("the export file is readable by others: %v", info.Mode().Perm())
+	}
+	if _, err := ziwo(t, "export", "claude", "-dir", dir, "-o", file); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Errorf("export over an existing file: %v", err)
+	}
+
+	t.Setenv("ZIWO_EXPORT_KEY", "not the passphrase at all")
+	if _, err := ziwo(t, "import", "copy", file, "-dir", elsewhere); err == nil || !strings.Contains(err.Error(), "wrong passphrase") {
+		t.Errorf("import with the wrong passphrase: %v", err)
+	}
+	t.Setenv("ZIWO_EXPORT_KEY", "a passphrase long enough")
+	out := must(t, "import", "-dir", elsewhere, "copy", file)
+	for _, want := range []string{"brought back 2 memories from 3 events", "/copy/mcp", "answers to the token it had"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("import lacks %q:\n%s", want, out)
+		}
+	}
+	// The restore itself is one more event.
+	if out := must(t, "list", "-dir", elsewhere); !regexp.MustCompile(`copy\s+2\s+4\s`).MatchString(out) {
+		t.Errorf("list of the restored memory:\n%s", out)
+	}
+	for name, args := range map[string][]string{
+		"over an existing memory": {"import", "copy", file, "-dir", elsewhere},
+		"under a bad name":        {"import", "Bad Name", file, "-dir", elsewhere},
+		"without a file":          {"import", "other", "-dir", elsewhere},
+		"from a file that is not": {"import", "other", filepath.Join(dir, "claude.ziwo"), "-dir", elsewhere},
+	} {
+		if out, err := ziwo(t, args...); err == nil {
+			t.Errorf("import %s was accepted: %s", name, out)
+		}
+	}
+	if entries, _ := os.ReadDir(elsewhere); len(entries) != 1 {
+		t.Errorf("refused imports left files behind: %v", entries)
+	}
+}
+
+func TestCheckFromTheCommandLine(t *testing.T) {
+	dir := t.TempDir()
+	must(t, "new", "claude", "-dir", dir)
+	if out := must(t, "check", "claude", "-dir", dir); !strings.Contains(out, "not been built yet") {
+		t.Errorf("check of a memory that was never served:\n%s", out)
+	}
+	fillMemory(t, dir, "claude")
+	out := must(t, "check", "claude", "-dir", dir)
+	if !strings.Contains(out, "2 memories written") || !strings.Contains(out, "problems: none") || strings.Contains(out, "猫") || strings.Contains(out, "plainmark7q") {
+		t.Errorf("check of a memory in good order must give figures and no text:\n%s", out)
+	}
+
+	// Damage it the way no command does, and the check fails.
+	raw, err := sql.Open("sqlite3", "file:"+host.Path(dir, "claude"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`DELETE FROM contents WHERE id = (SELECT min(id) FROM contents)`); err != nil {
+		t.Fatal(err)
+	}
+	raw.Close()
+	out, err = ziwo(t, "check", "claude", "-dir", dir)
+	if err == nil || !strings.Contains(err.Error(), "1 problem(s)") || !strings.Contains(out, "[content-lost]") {
+		t.Errorf("check of a damaged memory: err = %v\n%s", err, out)
+	}
+	if _, err := ziwo(t, "check", "nobody", "-dir", dir); err == nil {
+		t.Error("check of a memory that does not exist succeeded")
 	}
 }

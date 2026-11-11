@@ -33,6 +33,9 @@ Usage:
   ziwo token <name>        replace a memory's access token and print the new one
   ziwo list                list the memories in the data directory
   ziwo rebuild <name>      rebuild a memory's derived tables from its event log
+  ziwo check <name>        look a memory over for problems, without showing what it says
+  ziwo export <name>       write a memory to a sealed file, as a backup
+  ziwo import <name> <file>   bring an export back as a new memory
 
 Each memory is one file, <name>.ziwo, served at /<name>/mcp.
 Run "ziwo <command> -h" for the flags of a command.
@@ -69,6 +72,12 @@ func run(args []string, out io.Writer) error {
 		return list(ctx, args, out)
 	case "rebuild":
 		return rebuild(ctx, args, out)
+	case "check":
+		return check(ctx, args, out)
+	case "export":
+		return export(ctx, args, out)
+	case "import":
+		return importMemory(ctx, args, out)
 	case "help":
 		fmt.Fprint(out, usage)
 		return nil
@@ -104,22 +113,33 @@ func paramFlags(fs *flag.FlagSet) *store.Params {
 	return &p
 }
 
+// positionals parses flags that may come before, between or after the
+// positional arguments, and returns those.
+func positionals(fs *flag.FlagSet, args []string) ([]string, error) {
+	var pos []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			return nil, err
+		}
+		if fs.NArg() == 0 {
+			return pos, nil
+		}
+		pos, args = append(pos, fs.Arg(0)), fs.Args()[1:]
+	}
+}
+
 // parseName parses flags that may come before or after one positional name.
 func parseName(fs *flag.FlagSet, args []string) (string, error) {
-	if err := fs.Parse(args); err != nil {
+	pos, err := positionals(fs, args)
+	switch {
+	case err != nil:
 		return "", err
-	}
-	if fs.NArg() == 0 {
+	case len(pos) == 0:
 		return "", fmt.Errorf("%s: give the memory's name", fs.Name())
+	case len(pos) > 1:
+		return "", fmt.Errorf("%s: unexpected argument %q", fs.Name(), pos[1])
 	}
-	name := fs.Arg(0)
-	if err := fs.Parse(fs.Args()[1:]); err != nil {
-		return "", err
-	}
-	if fs.NArg() > 0 {
-		return "", fmt.Errorf("%s: unexpected argument %q", fs.Name(), fs.Arg(0))
-	}
-	return name, nil
+	return pos[0], nil
 }
 
 func newMemory(ctx context.Context, args []string, out io.Writer) error {
@@ -203,6 +223,86 @@ func rebuild(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	fmt.Fprintf(out, "rebuilt %d memories from %d events\n", memories, events)
+	return nil
+}
+
+func check(ctx context.Context, args []string, out io.Writer) error {
+	fs, dir := newFlags("check")
+	name, err := parseName(fs, args)
+	if err != nil {
+		return err
+	}
+	report, err := host.Check(ctx, *dir, name)
+	if err != nil {
+		return err
+	}
+	fmt.Fprint(out, report)
+	if n := report.Count(store.LevelProblem); n > 0 {
+		return fmt.Errorf("%d problem(s) found in %q", n, name)
+	}
+	return nil
+}
+
+// exportKey reads the passphrase that seals exports. It comes from the
+// environment so that it is not left in the shell history.
+func exportKey() (string, error) {
+	key := os.Getenv("ZIWO_EXPORT_KEY")
+	if key == "" {
+		return "", errors.New("set ZIWO_EXPORT_KEY to the passphrase for the export; an export is never written in the clear")
+	}
+	return key, nil
+}
+
+func export(ctx context.Context, args []string, out io.Writer) error {
+	fs, dir := newFlags("export")
+	file := fs.String("o", "", "file to write; default <name>-<date>.ziwo-export in the current directory")
+	name, err := parseName(fs, args)
+	if err != nil {
+		return err
+	}
+	key, err := exportKey()
+	if err != nil {
+		return err
+	}
+	if *file == "" {
+		*file = name + "-" + time.Now().Format("20060102-150405") + ".ziwo-export"
+	}
+	if _, err := os.Stat(*file); err == nil {
+		return fmt.Errorf("%s already exists", *file)
+	}
+	events, err := host.Export(ctx, *dir, name, *file, key)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "exported %d events of %q to %s\nIt opens only with the passphrase in ZIWO_EXPORT_KEY. Keep both.\n", events, name, *file)
+	return nil
+}
+
+func importMemory(ctx context.Context, args []string, out io.Writer) error {
+	fs, dir := newFlags("import")
+	pos, err := positionals(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 2 {
+		return errors.New("ziwo import: give the new memory's name and the export file")
+	}
+	name, file := pos[0], pos[1]
+	key, err := exportKey()
+	if err != nil {
+		return err
+	}
+	st, err := host.Import(ctx, *dir, name, file, key)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "brought back %d memories from %d events, as exported on %s\ncreated   %s\nendpoint  /%s/mcp\n",
+		st.Memories, st.Events, st.ExportedAt.Format("2006-01-02 15:04Z"), host.Path(*dir, name), name)
+	if st.HasToken {
+		fmt.Fprintln(out, "It answers to the token it had when it was exported.")
+	} else {
+		fmt.Fprintf(out, "It has no token yet: run ziwo token %s\n", name)
+	}
 	return nil
 }
 

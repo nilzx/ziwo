@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -138,8 +139,8 @@ func TestFormat1LogIsUpgraded(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.Close()
-	if v, _ := metaValue(t, path, metaLogFormat); v != "2" {
-		t.Errorf("log format = %q, want 2", v)
+	if v, _ := metaValue(t, path, metaLogFormat); v != strconv.Itoa(logFormat) {
+		t.Errorf("log format = %q, want %d", v, logFormat)
 	}
 	if data, _ := os.ReadFile(path); bytes.Contains(data, []byte("zq7secret9x")) || bytes.Contains(data, []byte("我理解偏了")) {
 		t.Error("the upgraded file still holds the erased text")

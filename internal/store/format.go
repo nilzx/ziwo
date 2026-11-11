@@ -78,7 +78,12 @@ var migrations = []func(context.Context, *sql.Tx) error{
 			after = batch[len(batch)-1].seq
 		}
 	},
+	// 2 -> 3: the "restore" event exists.
+	noChange,
 }
+
+// noChange is a step between formats that only adds kinds of event.
+func noChange(context.Context, *sql.Tx) error { return nil }
 
 // rememberEventV1 is a remember event as formats 0 and 1 wrote it, with what
 // the memory says inside the event.
@@ -153,6 +158,7 @@ const (
 	metaLogFormat = "log_format"
 	metaDerived   = "derived"
 	metaTokenHash = "token_sha256"
+	metaInstance  = "instance" // names this file, to tell a memory from a copy of it
 )
 
 type querier interface {

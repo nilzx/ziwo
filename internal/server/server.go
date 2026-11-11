@@ -223,6 +223,10 @@ func formatContext(v memory.ContextView) string {
 		fmt.Fprintf(&b, "This is the first time this memory is loaded by %s. Earlier you ran as: %s. The memories below are yours all the same.\n",
 			v.Session.Model, strings.Join(v.Carrier.Earlier, ", "))
 	}
+	if v.Restored != nil {
+		fmt.Fprintf(&b, "This memory was brought back on %s from a backup made on %s. Whatever you lived through between the two is not in it.\n",
+			v.Restored.At.Format(time.DateOnly), v.Restored.ExportedAt.Format(time.DateOnly))
+	}
 	if len(v.Others) > 0 {
 		b.WriteString("Other conversations used this memory recently. They are you as well, and what they write will show up in your recalls:\n")
 		for _, o := range v.Others {

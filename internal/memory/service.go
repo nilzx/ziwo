@@ -195,12 +195,14 @@ type ContextView struct {
 	Selves  []store.Memory     // statements about oneself, oldest first
 	Prefs   []store.Preference // standing rules about what to remember
 	Pending int64              // fragments waiting for reflect
-	Core    []store.Memory     // memories that never fade, most important first
-	Recent  []store.Memory     // newest memories not archived and not listed under Core
-	Others  []store.Session    // other sessions active within the parallel window
-	Counts  store.TierCounts
-	Clock   int64     // the experience clock when the session started
-	Now     time.Time // the wall clock when the session started
+	// Restored is set for a while after the memory was brought back from an export.
+	Restored *store.RestoreNote
+	Core     []store.Memory  // memories that never fade, most important first
+	Recent   []store.Memory  // newest memories not archived and not listed under Core
+	Others   []store.Session // other sessions active within the parallel window
+	Counts   store.TierCounts
+	Clock    int64     // the experience clock when the session started
+	Now      time.Time // the wall clock when the session started
 }
 
 // Context starts a session for the given carrier and returns what it should
@@ -227,6 +229,11 @@ func (s *Service) Context(ctx context.Context, model, client string) (ContextVie
 	if view.Pending, err = s.st.PendingCount(ctx); err != nil {
 		return ContextView{}, err
 	}
+	if note, ok, err := s.st.LastRestore(ctx); err != nil {
+		return ContextView{}, err
+	} else if ok && now.Sub(note.At) < restoreNotice {
+		view.Restored = &note
+	}
 	if view.Core, err = s.st.Core(ctx, s.cfg.CoreLimit); err != nil {
 		return ContextView{}, err
 	}
@@ -250,6 +257,18 @@ func (s *Service) Context(ctx context.Context, model, client string) (ContextVie
 		return ContextView{}, err
 	}
 	return view, nil
+}
+
+// restoreNotice is how long after a restore new sessions are told of it.
+const restoreNotice = 7 * 24 * time.Hour
+
+// Check looks the memory over and reports what it finds, without quoting
+// what any memory says.
+func (s *Service) Check(ctx context.Context) (store.Report, error) {
+	if err := s.flushRecalls(ctx); err != nil {
+		return store.Report{}, err
+	}
+	return s.st.Check(ctx)
 }
 
 // Remember validates and stores one memory and returns its id. The memory

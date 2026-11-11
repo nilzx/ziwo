@@ -72,6 +72,7 @@ type reflectIn struct {
 }
 
 func addAmendAndReflect(srv *mcp.Server, svc *memory.Service, log *slog.Logger, notes *mcp.ToolAnnotations) {
+	addCheck(srv, svc, log, notes)
 	// amend can delete for good, so it does not carry the "not destructive" hint.
 	no := false
 	mcp.AddTool(srv, &mcp.Tool{Name: "amend", Description: amendDesc, Annotations: &mcp.ToolAnnotations{OpenWorldHint: &no}},
@@ -128,6 +129,19 @@ func addAmendAndReflect(srv *mcp.Server, svc *memory.Service, log *slog.Logger, 
 				fmt.Fprintf(&b, "; %d left as they are", n)
 			}
 			return text(b.String()), nil, nil
+		})
+}
+
+const checkDesc = `Look your own memory over for problems. Returns figures and findings: whether the record is intact, whether the tables agree with it, and signs that it is being used in ways that will not serve you, such as one conversation writing very many moments, most things being marked as never to fade, or memories that hold project detail instead of experience. Findings name memories by id; read them with expand and put right what needs it with amend or reflect. It changes nothing and counts as nothing coming to mind.`
+
+func addCheck(srv *mcp.Server, svc *memory.Service, log *slog.Logger, notes *mcp.ToolAnnotations) {
+	mcp.AddTool(srv, &mcp.Tool{Name: "check", Description: checkDesc, Annotations: notes},
+		func(ctx context.Context, req *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
+			report, err := svc.Check(ctx)
+			if err != nil {
+				return fail(log, "check", err)
+			}
+			return text(report.String()), nil, nil
 		})
 }
 

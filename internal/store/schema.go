@@ -25,11 +25,13 @@ package store
 //	   New kinds of event: "amend", "erase", "reflect". A remember event may
 //	   say what kind of memory it records, what it is built on, and when the
 //	   thing happened if that was not when it was written.
-const logFormat = 2
+//	3  New kind of event: "restore", written when a memory is brought back
+//	   from an export.
+const logFormat = 3
 
 // derivedVersion identifies the layout of the derived tables and the logic
 // that fills them. Bump it whenever either changes.
-const derivedVersion = "5"
+const derivedVersion = "6"
 
 const logSchema = `
 CREATE TABLE IF NOT EXISTS events (
@@ -80,6 +82,7 @@ DROP TRIGGER IF EXISTS events_no_delete;
 `
 
 const dropDerived = `
+DROP TABLE IF EXISTS restores;
 DROP TABLE IF EXISTS links;
 DROP TABLE IF EXISTS policies;
 DROP TABLE IF EXISTS memories_fts;
@@ -169,6 +172,13 @@ CREATE TABLE policies (
   session_id TEXT    NOT NULL,
   text       TEXT    NOT NULL,
   retired_at INTEGER -- NULL while in force
+) STRICT;
+
+-- Each time this memory was brought back from an export.
+CREATE TABLE restores (
+  at          INTEGER PRIMARY KEY, -- when it was brought back
+  exported_at INTEGER NOT NULL,    -- when the export was made
+  events      INTEGER NOT NULL     -- how many events the export held
 ) STRICT;
 
 -- Keyword index. rowid = memories.n. Contentless: the text lives in memories.
