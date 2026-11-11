@@ -14,6 +14,10 @@
         "hooks": [{ "type": "command", "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/ziwo-session-start.sh", "args": ["resume"] }]
       },
       {
+        "matcher": "fork",
+        "hooks": [{ "type": "command", "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/ziwo-session-start.sh", "args": ["fork"] }]
+      },
+      {
         "matcher": "compact",
         "hooks": [{ "type": "command", "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/ziwo-session-start.sh", "args": ["compact"] }]
       }

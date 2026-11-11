@@ -6,7 +6,7 @@ One self-hosted MCP server holds one memory per AI. Desktop apps, CLI agents, an
 
 ## Status
 
-The prototype is built: reading and writing across clients, forgetting, reflection and correction, and backup. It has been tested on its own and has not yet been used with a real client. See [Known limitations](#known-limitations) and [Roadmap](#roadmap).
+The prototype is built: reading and writing across clients, forgetting, reflection and correction, and backup. It has been tested on its own, and it has been tried with Claude Code in headless mode. It has not yet been tried with the desktop, web or mobile apps. See [Known limitations](#known-limitations) and [Roadmap](#roadmap).
 
 ## Build
 
@@ -251,7 +251,7 @@ Files from earlier builds still open. A `.ziwo` file from the previous build is 
 
 ```
 cmd/ziwo          commands, flags, startup, shutdown
-examples/         client configuration, untried so far
+examples/         client configuration, tried with Claude Code only
 internal/host     the memories in a data directory: files, names, tokens, routing
 internal/server   the MCP tools of one memory
 internal/memory   write rules, hybrid search, amending, reflecting, background work
@@ -266,14 +266,14 @@ scripts/          end-to-end check of the real binary, mutation checks
 ## Known limitations
 
 - It has not been run against a real embedding model. The tests use a stand-in, and the default `-min-similarity` is a guess.
-- It has not been connected to a real client application. The tests use the official MCP SDK client and raw HTTP requests. Whether a model calls `reflect` and `amend` at the right moments, and what it writes back, has not been observed.
-- A session id lives in the conversation. If a client drops the result of `get_context` from the conversation, the model has to call `get_context` again, and that starts a new session. How real clients behave here has not been checked.
+- It has been connected to one real client, Claude Code 2.1.322, in headless conversations only (November 2026, small samples that show direction, not rates). The model called `get_context` in 59 of 60 single-turn conversations (the one miss had no hook and no `alwaysLoad`), and it was reliably the first action only with `alwaysLoad` set. Those conversations were small talk and read-only questions, so none of them wrote a memory. The desktop, web and mobile apps have not been tried. Whether a model calls `reflect` and `amend` at the right moments, and what it writes back, has not been observed.
+- A session id lives in the conversation. If a client drops the result of `get_context` from the conversation, the model has to call `get_context` again, and that starts a new session. In Claude Code, 27 of 28 multi-turn conversations stayed one session, including resuming, forking and writing twice. After a compaction, 1 of 10 conversations without the hook called `get_context` again and was recorded as two sessions; with the hook, 10 of 10 kept the session. A forked conversation sees the id of the one it came from and, in the two runs measured, wrote into that same session. Other clients have not been checked.
 - Every number in the forgetting and reflecting rules is a starting value: the base strength, the factors for importance, feeling, source and kind, the thresholds, the three-experiences rule for statements about oneself. None has been tuned against real use. The forgetting parameters are set per server, not per memory.
 - Every memory a recall lists has its count restarted, whether or not it turned out to be the one needed. Results well below the best match are left out to limit this.
 - Nothing limits how many moments one conversation writes. A conversation that writes very many pushes older memories out faster.
 - Background reflection has only been run against a stand-in for a chat model. What a real model makes of a batch has not been seen.
 - `get_context` shows lists, not a written summary.
-- The client configuration in `examples/` has not been tried against a running client.
+- The client configuration in `examples/` has been tried against Claude Code only, not against any other client.
 - An export is built in memory before it is written, so it needs room for the whole memory. The thresholds of `check` are starting values.
 - A memory that another memory is built on fades on its own schedule; being cited does not protect it.
 - Impressions are found by the name they are about, as the model wrote it. Two spellings of one name are two people.
