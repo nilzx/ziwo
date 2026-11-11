@@ -7,7 +7,9 @@
 // method that writes is one ctx.storage.transactionSync.
 
 import { applyRemember, KindFragment, KindReading, KindSelf, StateAbsorbed, StateSuperseded, writeMemory } from "./content";
-import { blob, type Binding, Db, flag, isConstraint, num, realOrZero, type Row, text } from "./db";
+import { checkStore, type Report } from "./check";
+import { isActiveBand, isArchived, isFadedBand, isListed, isLive, isPending, notArchived, notYetFaded } from "./conditions";
+import { blob, type Binding, Db, flag, isConstraint, num, realOrZero, type Row, text, type Usage } from "./db";
 import {
   crossings,
   defaultParams,
@@ -55,7 +57,17 @@ import {
   metaParams,
   metaTokenHash,
 } from "./schema";
-import type { CarrierNote, LogStats, Memory, RecallNote, RememberInput, Session, TextHit } from "./types";
+import type {
+  CarrierNote,
+  LogStats,
+  Memory,
+  Preference,
+  RecallNote,
+  RememberInput,
+  RestoreNote,
+  Session,
+  TextHit,
+} from "./types";
 
 // dedupWindow is how far back remember looks for an identical memory before
 // writing a new one. It absorbs retried tool calls.
@@ -114,23 +126,8 @@ const memorySelect = `SELECT m.n, m.id, m.created_at, m.written_at, m.session_id
   m.feeling, m.lesson, m.people, m.pointer, m.last_recalled_at, m.recall_count, m.ord, m.touched_ord, m.read_ord,
   m.core, m.strength, m.fade_at, m.archive_at, m.kind, m.state, m.state_by, m.retracted, m.pinned, m.corrects,
   m.about, m.context, m.ref, m.milestone, m.reviewed IS NULL AS unreviewed
-FROM memories m LEFT JOIN sessions s ON s.id = m.session_id `;
-
-// isLive holds for a memory that stands: not replaced, not absorbed, not
-// erased, not set aside.
-const isLive = `(m.state = '' AND m.retracted = 0)`;
-
-// isListed holds for the kinds of memory that searches and lists show.
-// Statements about oneself are loaded whole at the start of a session, and a
-// reading is shown with the memory it reads.
-const isListed = `(m.kind NOT IN ('${KindSelf}', '${KindReading}'))`;
-
-// Conditions on memories m, each taking the clock as its parameter.
-const isArchived = `(m.core = 0 AND m.archive_at <= ?)`;
-const notArchived = `(m.core = 1 OR m.archive_at > ?)`;
-const notYetFaded = `(m.core = 1 OR m.fade_at > ?)`;
-const isFadedBand = `(m.core = 0 AND m.fade_at <= ? AND m.archive_at > ?)`;
-const isActiveBand = `(m.core = 0 AND m.fade_at > ?)`;
+FROM memories m`;
+const memoryJoin = ` LEFT JOIN sessions s ON s.id = m.session_id `;
 
 // A list bound as one JSON parameter: the platform allows at most 100 bound
 // parameters in a query, so a list of ids is never spread over placeholders.
@@ -474,7 +471,15 @@ export class Store {
   }
 
   private memories(tail: string, ...args: Binding[]): Memory[] {
-    return this.db.all(memorySelect + tail, ...args).map(toMemory);
+    return this.db.all(memorySelect + memoryJoin + tail, ...args).map(toMemory);
+  }
+
+  // memoriesBy reads through the named index. The planner has no statistics
+  // here and picks among the partial indexes badly, so the reads a new
+  // session makes say which one they are for. A query that stops falling
+  // within its index fails outright instead of going back to a scan.
+  private memoriesBy(index: string, tail: string, ...args: Binding[]): Memory[] {
+    return this.db.all(`${memorySelect} INDEXED BY ${index}${memoryJoin}${tail}`, ...args).map(toMemory);
   }
 
   // get returns the memories with the given ids, in the order asked for.
@@ -502,7 +507,8 @@ export class Store {
   // recent returns the newest memories that are not archived when the clock
   // reads clock, newest first.
   recent(clock: number, limit: number): Memory[] {
-    return this.memories(
+    return this.memoriesBy(
+      "memories_standing_recent",
       `WHERE ${isLive} AND ${isListed} AND ${notArchived} ORDER BY m.created_at DESC, m.n DESC LIMIT ?`,
       clock, limit,
     );
@@ -510,7 +516,8 @@ export class Store {
 
   // core returns the memories that never fade, most important first.
   core(limit: number): Memory[] {
-    return this.memories(
+    return this.memoriesBy(
+      "memories_standing_core",
       `WHERE ${isLive} AND ${isListed} AND m.core = 1
        ORDER BY m.pinned DESC, m.importance DESC, m.intensity DESC, m.n DESC LIMIT ?`,
       limit,
@@ -526,10 +533,13 @@ export class Store {
   searchText(query: string, clock: number, deep: boolean, limit: number): TextHit[] {
     const match = matchQuery(query);
     if (match === "") return [];
+    // CROSS JOIN fixes the order: the keyword index is read first and each
+    // match looked up by row number. Left to choose, the planner may walk an
+    // index of memories and probe the keyword index once per memory.
     const rows = deep
       ? this.db.all(
           `SELECT memories_fts.rowid AS n, bm25(memories_fts) AS score
-             FROM memories_fts JOIN memories m ON m.n = memories_fts.rowid
+             FROM memories_fts CROSS JOIN memories m ON m.n = memories_fts.rowid
             WHERE memories_fts MATCH ? AND ${isListed} AND m.retracted = 0
               AND m.state IN ('', '${StateSuperseded}', '${StateAbsorbed}')
             ORDER BY score LIMIT ?`,
@@ -538,17 +548,78 @@ export class Store {
       : this.db.all(
           `SELECT n, score FROM (
              SELECT memories_fts.rowid AS n, bm25(memories_fts) AS score
-               FROM memories_fts JOIN memories m ON m.n = memories_fts.rowid
+               FROM memories_fts CROSS JOIN memories m ON m.n = memories_fts.rowid
               WHERE memories_fts MATCH ? AND ${isLive} AND ${isListed} AND ${notYetFaded}
              UNION ALL
              SELECT memories_fts.rowid, bm25(memories_fts)
-               FROM memories_fts JOIN memories m ON m.n = memories_fts.rowid
+               FROM memories_fts CROSS JOIN memories m ON m.n = memories_fts.rowid
               WHERE memories_fts MATCH ? AND ${isLive} AND ${isListed} AND ${isFadedBand}
            ) ORDER BY score LIMIT ?`,
           match, clock, "gist : (" + match + ")", clock, clock, limit,
         );
     // bm25 is negative, more so for a better match.
     return rows.map((r) => ({ n: num(r.n), score: -num(r.score) }));
+  }
+
+  // pending returns up to limit fragments that reflect has not dealt with,
+  // those nearest to fading first.
+  pending(limit: number): Memory[] {
+    return this.memoriesBy("memories_pending", `WHERE ${isPending} ORDER BY m.core, m.fade_at, m.n LIMIT ?`, limit);
+  }
+
+  // pendingCount reports how many fragments wait for reflect.
+  pendingCount(): number {
+    return num(
+      this.db.first(`SELECT count(*) AS c FROM memories m INDEXED BY memories_pending WHERE ${isPending}`)?.c,
+    );
+  }
+
+  // selves returns the statements about oneself that stand, oldest first.
+  selves(): Memory[] {
+    return this.memories(`WHERE m.kind = ? AND ${isLive} ORDER BY m.n`, KindSelf);
+  }
+
+  // readings returns the later understandings of the memory with the given
+  // id, oldest first.
+  readings(id: string): Memory[] {
+    return this.memories(`WHERE m.kind = ? AND ${isLive} AND m.ref = ? ORDER BY m.n`, KindReading, id);
+  }
+
+  // sources returns the ids of the memories that the one with the given id
+  // is built on.
+  sources(id: string): string[] {
+    return this.db
+      .all(`SELECT l.dst FROM links l JOIN memories m ON m.id = l.dst WHERE l.src = ? ORDER BY m.n`, id)
+      .map((r) => text(r.dst));
+  }
+
+  // preferences returns the preferences in force, oldest first.
+  preferences(): Preference[] {
+    return this.db
+      .all(`SELECT id, created_at, text FROM policies WHERE retired_at IS NULL ORDER BY created_at, id`)
+      .map((r) => ({ id: text(r.id), createdAt: num(r.created_at), text: text(r.text) }));
+  }
+
+  // lastRestore reports the most recent time this memory was brought back
+  // from an export, or undefined if it never was.
+  lastRestore(): RestoreNote | undefined {
+    const r = this.db.first(`SELECT at, exported_at FROM restores ORDER BY at DESC LIMIT 1`);
+    return r === undefined ? undefined : { at: num(r.at), exportedAt: num(r.exported_at) };
+  }
+
+  // check looks the memory over and reports what it finds, without quoting
+  // what any memory says. It reads and changes nothing.
+  check(): Report {
+    return checkStore(this.db);
+  }
+
+  // usage returns the rows read and written since the last reset.
+  usage(): Usage {
+    return this.db.usage();
+  }
+
+  resetUsage(): void {
+    this.db.resetUsage();
   }
 
   // counts reports how many memories and events the store holds.
@@ -565,7 +636,7 @@ export class Store {
               count(*) FILTER (WHERE ${isActiveBand}) AS active,
               count(*) FILTER (WHERE ${isFadedBand}) AS faded,
               count(*) FILTER (WHERE ${isArchived}) AS archived
-         FROM memories m WHERE ${isLive} AND ${isListed}`,
+         FROM memories m INDEXED BY memories_standing_tiers WHERE ${isLive} AND ${isListed}`,
       clock, clock, clock, clock,
     );
     return { core: num(r?.core), active: num(r?.active), faded: num(r?.faded), archived: num(r?.archived) };
@@ -616,13 +687,13 @@ export class Store {
   // vectors calls fn with every stored embedding produced by model, in order
   // of n. It reads one row at a time.
   vectors(model: string, fn: (n: number, vec: Float32Array) => void): void {
-    for (const r of this.db.sql.exec(`SELECT n, vec FROM vectors WHERE model = ? ORDER BY n`, model)) {
+    this.db.each(`SELECT n, vec FROM vectors WHERE model = ? ORDER BY n`, [model], (r) => {
       const buf = blob(r.vec);
       const view = new DataView(buf);
       const vec = new Float32Array(buf.byteLength >> 2);
       for (let i = 0; i < vec.length; i++) vec[i] = view.getFloat32(4 * i, true);
       fn(num(r.n), vec);
-    }
+    });
   }
 
   // unembedded returns up to limit memories that are not archived when the

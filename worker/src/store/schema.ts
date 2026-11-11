@@ -16,8 +16,9 @@
 export const logFormat = 3;
 
 // derivedVersion identifies the layout of the derived tables and the logic
-// that fills them. Bump it whenever either changes.
-export const derivedVersion = "6";
+// that fills them. Bump it whenever either changes. The Go build stands at 6;
+// 7 added the indexes a new session's load reads.
+export const derivedVersion = "7";
 
 // appendOnlyTriggers make the database itself refuse to change or remove an
 // event.
@@ -138,6 +139,18 @@ CREATE INDEX memories_by_hash ON memories(hash, written_at);
 CREATE INDEX memories_by_archive ON memories(archive_at) WHERE core = 0;
 CREATE INDEX memories_by_kind ON memories(kind, about);
 CREATE INDEX memories_by_ref ON memories(ref) WHERE ref <> '';
+-- What every new session reads: the tier counts, the newest memories, the
+-- core ones, and how many fragments wait. Each index holds only the memories
+-- its query is about, in the order the query wants them, so loading does not
+-- walk the whole table. Their conditions are those in conditions.ts.
+CREATE INDEX memories_standing_tiers ON memories(core, fade_at, archive_at)
+  WHERE state = '' AND retracted = 0 AND kind NOT IN ('self', 'reading');
+CREATE INDEX memories_standing_recent ON memories(created_at DESC, n DESC)
+  WHERE state = '' AND retracted = 0 AND kind NOT IN ('self', 'reading');
+CREATE INDEX memories_standing_core ON memories(pinned DESC, importance DESC, intensity DESC, n DESC)
+  WHERE core = 1 AND state = '' AND retracted = 0 AND kind NOT IN ('self', 'reading');
+CREATE INDEX memories_pending ON memories(core, fade_at, n)
+  WHERE kind = 'fragment' AND state = '' AND retracted = 0 AND reviewed IS NULL;
 
 -- What a memory is built on: src cites dst.
 CREATE TABLE links (

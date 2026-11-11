@@ -5,23 +5,72 @@ import { metaClock } from "./schema";
 export type Binding = string | number | null | ArrayBuffer;
 export type Row = Record<string, SqlStorageValue>;
 
+// Usage is what the platform bills for: rows read and rows written, added up
+// over every cursor the store consumed.
+export interface Usage {
+  rowsRead: number;
+  rowsWritten: number;
+}
+
 export class Db {
+  private used: Usage = { rowsRead: 0, rowsWritten: 0 };
+
   constructor(readonly sql: SqlStorage) {}
+
+  // usage returns the totals since the last reset.
+  usage(): Usage {
+    return { ...this.used };
+  }
+
+  resetUsage(): void {
+    this.used = { rowsRead: 0, rowsWritten: 0 };
+  }
+
+  // tally adds what a cursor has read and written so far. The platform has
+  // no object-wide counter, so every cursor must pass through here.
+  private tally(c: SqlStorageCursor<Row>): void {
+    this.used.rowsRead += c.rowsRead;
+    this.used.rowsWritten += c.rowsWritten;
+  }
 
   // run executes a statement and consumes its cursor, so a statement with a
   // RETURNING clause or several statements in one string run to the end.
   run(query: string, ...args: Binding[]): void {
-    this.sql.exec(query, ...args).toArray();
+    this.all(query, ...args);
   }
 
   all(query: string, ...args: Binding[]): Row[] {
-    return this.sql.exec(query, ...args).toArray();
+    const c = this.sql.exec<Row>(query, ...args);
+    try {
+      return c.toArray();
+    } finally {
+      this.tally(c);
+    }
   }
 
-  // first returns the first row, or undefined when there is none.
+  // first returns the first row, or undefined when there is none. It is for
+  // statements that give at most one row.
   first(query: string, ...args: Binding[]): Row | undefined {
-    const r = this.sql.exec(query, ...args).next();
-    return r.done ? undefined : r.value;
+    const c = this.sql.exec<Row>(query, ...args);
+    try {
+      const r = c.next();
+      if (r.done) return undefined;
+      // Run the statement to its end, so that none is left open part-way.
+      while (!c.next().done);
+      return r.value;
+    } finally {
+      this.tally(c);
+    }
+  }
+
+  // each calls fn with one row at a time, for reads too large to hold.
+  each(query: string, args: Binding[], fn: (r: Row) => void): void {
+    const c = this.sql.exec<Row>(query, ...args);
+    try {
+      for (const r of c) fn(r);
+    } finally {
+      this.tally(c);
+    }
   }
 
   getMeta(key: string): string | undefined {

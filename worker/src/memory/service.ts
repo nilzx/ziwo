@@ -1,0 +1,261 @@
+// The behaviour of one memory: what a session is shown, what may be written,
+// how memories are found again. Port of service.go without embeddings and
+// background work: a listing or a reading is logged in the call that made
+// it, and matches by meaning, when there are any, are handed in by the
+// caller.
+
+import { type Report } from "../store/check";
+import { StateErased } from "../store/content";
+import { retentionOf, type Tier, type TierCounts, tierOf } from "../store/decay";
+import { NoSessionError, type Store } from "../store/store";
+import { type CarrierNote, isLive, type Memory, type Preference, type RestoreNote, type Session } from "../store/types";
+import {
+  clean,
+  clip,
+  DefaultRecall,
+  goQuote,
+  InvalidInput,
+  MaxExpand,
+  MaxRecall,
+  type RememberRequest,
+  trimSpace,
+} from "./clean";
+
+const minute = 60 * 1000;
+
+// The Go defaults of Config. Not settable yet.
+const recentLimit = 8; // recent memories a new session is shown
+const coreLimit = 12; // core memories a new session is shown
+const parallelWindow = 15 * minute; // how recently another session must have been active to be mentioned
+// restoreNotice is how long after a restore new sessions are told of it.
+const restoreNotice = 7 * 24 * 60 * minute;
+
+// relevanceFloor drops results whose relevance is below this share of the
+// best result's. Being listed restarts a memory's decay, so a memory that
+// only brushes the query must not be listed.
+const relevanceFloor = 0.3;
+
+// ContextView is what a session is shown when it starts.
+export interface ContextView {
+  session: Session;
+  carrier: CarrierNote;
+  selves: Memory[]; // statements about oneself, oldest first
+  prefs: Preference[]; // standing rules about what to remember
+  pending: number; // fragments waiting for reflect
+  // Set for a while after the memory was brought back from an export.
+  restored: RestoreNote | null;
+  core: Memory[]; // memories that never fade, most important first
+  recent: Memory[]; // newest memories not archived and not listed under core
+  others: Session[]; // other sessions active within the parallel window
+  counts: TierCounts;
+  clock: number; // the experience clock when the session started
+  now: number; // the wall clock when the session started
+}
+
+// Result is one memory found by recall or returned by expand.
+export interface Result extends Memory {
+  tier: Tier; // at the time of the call, before it counted as coming to mind
+  score: number;
+  byKeyword: boolean;
+  byMeaning: boolean;
+  // Filled in by expand alone.
+  sources: string[]; // ids of the memories it is built on
+  readings: Memory[]; // later understandings of it
+}
+
+// MeaningHit is a memory found by meaning: its row number and the cosine
+// similarity of its embedding to the query's, already above the threshold.
+export interface MeaningHit {
+  n: number;
+  score: number;
+}
+
+export class Service {
+  constructor(
+    private readonly st: Store,
+    private readonly now: () => number,
+  ) {}
+
+  // context starts a session for the given carrier and returns what it
+  // should know before the conversation begins. Being shown here does not
+  // count as coming to mind.
+  context(model: string, client: string): ContextView {
+    model = clip(model, 120);
+    client = clip(client, 120);
+    const now = this.now();
+    const { session, note } = this.st.startSession(now, model, client);
+    const clock = this.st.clock();
+    const selves = this.st.selves();
+    const prefs = this.st.preferences();
+    const pending = this.st.pendingCount();
+    const last = this.st.lastRestore();
+    const restored = last !== undefined && now - last.at < restoreNotice ? last : null;
+    const core = this.st.core(coreLimit);
+    const shown = new Set(core.map((m) => m.id));
+    const recent: Memory[] = [];
+    for (const m of this.st.recent(clock, recentLimit + core.length)) {
+      if (!shown.has(m.id) && recent.length < recentLimit) recent.push(m);
+    }
+    const counts = this.st.tierCounts(clock);
+    const others = this.st.activeSessions(now - parallelWindow, session.id, 3);
+    return { session, carrier: note, selves, prefs, pending, restored, core, recent, others, counts, clock, now };
+  }
+
+  // check looks the memory over and reports what it finds, without quoting
+  // what any memory says.
+  check(): Report {
+    return this.st.check();
+  }
+
+  // remember validates and stores one memory and returns its id. dup is
+  // true when the same memory had just been written and nothing new was
+  // stored.
+  remember(req: RememberRequest): { id: string; dup: boolean } {
+    const now = this.now();
+    const input = clean(req, now);
+    try {
+      return this.st.remember(now, input);
+    } catch (err) {
+      if (err instanceof NoSessionError) {
+        throw new InvalidInput(`unknown session_id ${goQuote(input.sessionId)}: call get_context and pass the session id it returns`);
+      }
+      throw err;
+    }
+  }
+
+  // recall searches by keyword, takes the matches by meaning it is given,
+  // and returns the best of them.
+  //
+  // An ordinary search finds active and core memories by anything they say
+  // and faded ones by their gist or their meaning. A deep search also reads
+  // the details of faded memories and reaches archived ones.
+  //
+  // Being listed restarts a memory's decay; it is logged before this
+  // returns. The results describe the memories as they were before. session
+  // is the caller's session id and may be empty.
+  recall(query: string, limit: number, deep: boolean, session: string, byMeaning?: MeaningHit[]): Result[] {
+    query = trimSpace(query);
+    if (query === "") throw new InvalidInput("query is required");
+    query = clip(query, 500);
+    if (limit <= 0) limit = DefaultRecall;
+    else if (limit > MaxRecall) limit = MaxRecall;
+    const depth = Math.max(4 * limit, 20);
+    const clock = this.st.clock();
+    const byKeyword = this.st.searchText(query, clock, deep, depth);
+
+    // Each way of searching scores a memory between 0 and 1: keyword matches
+    // relative to the best keyword match, matches by meaning by their cosine
+    // similarity. Relevance is the average over the ways that found
+    // anything, so a memory found both ways outranks one found by a single way.
+    interface Cand {
+      keyword: number;
+      meaning: number;
+      byKeyword: boolean;
+      byMeaning: boolean;
+    }
+    const cands = new Map<number, Cand>();
+    const get = (n: number): Cand => {
+      let c = cands.get(n);
+      if (c === undefined) {
+        c = { keyword: 0, meaning: 0, byKeyword: false, byMeaning: false };
+        cands.set(n, c);
+      }
+      return c;
+    };
+    let ways = 0;
+    if (byKeyword.length > 0) {
+      ways++;
+      const best = byKeyword[0]!.score;
+      for (const h of byKeyword) {
+        const c = get(h.n);
+        c.byKeyword = true;
+        c.keyword = best > 0 ? h.score / best : 1;
+      }
+    }
+    if (byMeaning !== undefined) {
+      if (byMeaning.length > 0) ways++;
+      for (const h of byMeaning) {
+        const c = get(h.n);
+        c.byMeaning = true;
+        c.meaning = h.score;
+      }
+    }
+    if (cands.size === 0) return [];
+
+    const found = this.st.byN([...cands.keys()]);
+    const kept: { r: Result; relevance: number }[] = [];
+    let top = 0;
+    for (const [n, m] of found) {
+      const tier = tierOf(m, clock);
+      if (tier === "archived" && !deep) continue; // its vector may not have been dropped yet
+      // The same goes for a memory that no longer stands. One that was
+      // replaced or put into an episode is still reached by a deep search.
+      if (m.retracted || m.state === StateErased || (!isLive(m) && !deep)) continue;
+      const c = cands.get(n)!;
+      const relevance = (c.keyword + c.meaning) / ways;
+      top = Math.max(top, relevance);
+      kept.push({
+        relevance,
+        r: {
+          ...m,
+          tier,
+          // Relevance leads. Importance and how well the memory has been
+          // retained scale it by at most a factor of three between them.
+          score: relevance * (0.7 + 0.3 * m.importance) * (0.5 + 0.5 * retentionOf(m, clock)),
+          byKeyword: c.byKeyword,
+          byMeaning: c.byMeaning,
+          sources: [],
+          readings: [],
+        },
+      });
+    }
+    let results = kept.filter((k) => k.relevance >= relevanceFloor * top).map((k) => k.r);
+    results.sort((a, b) => (a.score !== b.score ? b.score - a.score : b.n - a.n));
+    if (results.length > limit) results = results.slice(0, limit);
+    if (results.length === 0) return [];
+
+    this.st.logRecalls([
+      { at: this.now(), session: this.knownSession(session), query, ids: results.map((r) => r.id), clock },
+    ]);
+    return results;
+  }
+
+  // expand returns memories in full, whatever tier they are in. Reading a
+  // memory in full is what strengthens it; that is logged before this
+  // returns. session is the caller's session id and may be empty.
+  expand(ids: string[], session: string): Result[] {
+    const want: string[] = [];
+    for (let id of ids) {
+      id = trimSpace(id);
+      if (id !== "" && !want.includes(id)) want.push(id);
+    }
+    if (want.length === 0) throw new InvalidInput("ids is required");
+    if (want.length > MaxExpand) throw new InvalidInput(`at most ${MaxExpand} ids per call`);
+    const ms = this.st.get(want);
+    if (ms.length === 0) return [];
+    const clock = this.st.clock();
+    const out: Result[] = [];
+    const read: string[] = [];
+    for (const m of ms) {
+      const r: Result = { ...m, tier: tierOf(m, clock), score: 0, byKeyword: false, byMeaning: false, sources: [], readings: [] };
+      out.push(r);
+      if (m.state === StateErased) continue; // there is nothing left to read
+      r.sources = this.st.sources(m.id);
+      r.readings = this.st.readings(m.id);
+      if (!m.retracted) read.push(m.id);
+    }
+    if (read.length > 0) {
+      this.st.logRecalls([{ at: this.now(), session: this.knownSession(session), read: true, ids: read, clock }]);
+    }
+    return out;
+  }
+
+  // knownSession returns id if it names a session and "" otherwise. A read
+  // is never refused over who is asking; an id that names nothing is just
+  // not recorded.
+  private knownSession(id: string): string {
+    id = trimSpace(id);
+    if (id === "") return "";
+    return this.st.session(id) === undefined ? "" : id;
+  }
+}

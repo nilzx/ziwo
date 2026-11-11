@@ -110,6 +110,19 @@ export interface TextHit {
   score: number;
 }
 
+// Preference is a standing rule about what to remember, set in conversation.
+export interface Preference {
+  id: string;
+  createdAt: number;
+  text: string;
+}
+
+// RestoreNote says that a memory was brought back from an export.
+export interface RestoreNote {
+  at: number; // when it was brought back
+  exportedAt: number; // when the export was made
+}
+
 // LogStats describes a memory from its event log alone.
 export interface LogStats {
   memories: number; // memories ever written
