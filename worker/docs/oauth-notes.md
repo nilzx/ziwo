@@ -45,7 +45,7 @@ Not KV, but written without a credential: a wrong credential at the consent page
 
 ## Steps in the page not checked against a running client
 
-None of the client steps were run against a client: every step for the Claude apps, Claude Code, ChatGPT, Codex and the ChatGPT desktop app is written from the documentation above. The flow itself was checked with curl and Chrome against `wrangler dev`.
+The Claude apps (web and phone) have connected through sign-in to a deployed Worker (2026-11-12), with Claude's published identity as the client. The steps for Claude Code, ChatGPT, Codex and the ChatGPT desktop app are written from the documentation above and have not been run against those clients. The flow itself was checked with curl and Chrome against `wrangler dev`, and with a script against the deployed Worker.
 
 ## Not built
 

@@ -1,6 +1,8 @@
 // The access log: one JSON line per request and one per tool call, through
-// console.log. Only figures and fixed words: never an argument, a result, a
-// token, a body or anything a memory says.
+// console.log. Figures and fixed words, and of what a caller chooses only
+// the method, the path (which names the memory), the agent and the protocol
+// version, each cut to length: never an argument, a result, a token, a body
+// or anything a memory says.
 
 export type LogFields = Record<string, string | number | boolean>;
 

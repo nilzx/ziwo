@@ -1,296 +1,109 @@
 # ziwo
 
-ziwo (自我, "self") is an autobiographical memory for an AI. It keeps what the AI lived through: what was asked of it, what went wrong, how things ended, how people reacted, what it felt and what it learned. It does not keep the work itself. Project state, code and to-dos stay in the project's repository; the memory holds at most a pointer to them.
+**English** | [简体中文](README.zh-CN.md)
 
-One self-hosted MCP server holds one memory per AI. Desktop apps, CLI agents, and web and mobile connectors all connect to it, and every client of the same AI shares the same memory. Identity follows the memory: a different model, or a new version of the same one, loads the same past.
+ziwo (自我, "self") gives your AI assistant a memory of its own.
+
+An assistant starts every conversation knowing nothing of the last one. With ziwo connected, it keeps a record, in its own words, of what it has lived through with you: what you talked about, how things turned out, what it learned, how it felt about it. The next conversation, on any device, starts from there.
+
+ziwo runs in your own Cloudflare account. There is no server to look after, and nobody else holds the memory.
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/nilzx/ziwo/tree/main/worker)
+
+## What is different about it
+
+- **The memory belongs to the AI.** The assistant decides what is worth keeping and writes it down itself, as an account of an experience: what was asked, what went wrong, how it ended, what it took from it. It is not a notebook of facts about you, and it is not a place for files or to-do lists.
+- **One memory, everywhere.** The Claude on your phone, in your browser and in your terminal share one memory. Change to another model, or a newer version, and the same past comes along.
+- **It forgets, the way a mind does.** A memory fades as more is lived through after it, not as days pass. What mattered, or was felt strongly, stays. Something faded comes back when it is recalled. Nothing has to be cleaned up by hand.
+- **It reflects.** From time to time the assistant goes back over what it wrote and makes more of it: one account out of several moments, a lesson to carry forward, an impression of a person, a sentence about what it is like itself. A statement about itself has to rest on several real experiences; nobody presets it.
+- **You change it by talking.** "No need to remember that." "Keep this." "You have that wrong." "Delete that for good." The assistant does it, and tells you.
+- **Nobody reads it but the AI.** ziwo has no screen that shows what a memory says, on purpose. If you want to know what your assistant remembers, ask it.
+
+## Set it up
+
+You need a Cloudflare account (the free plan will do to start) and, for the button, a GitHub account. It takes about ten minutes.
+
+**1. Deploy.** Choose the button above and follow Cloudflare's page. It asks for one thing you have to make up: `ADMIN_SECRET`, the password of your admin page. Make it at least 16 characters and keep it somewhere safe.
+
+When it finishes, Cloudflare shows your address, which looks like `https://ziwo.<something>.workers.dev`.
+
+**2. Create a memory.** Open your address in a browser and sign in with the admin secret. Create a memory and give it a name, such as `claude`. The page shows the memory's token once: save it as you would a password.
+
+Give each assistant a memory of its own. One memory is meant for one AI, across all the places you talk to it.
+
+**3. Connect your assistant.** The admin page shows the exact steps for each client, with your own address filled in. For the Claude apps they come to this:
+
+1. In Claude on the web or the desktop app, open **Customize > Connectors**, choose **Add custom connector**, name it `ziwo`, paste your memory's address, and add it.
+2. Choose **Connect**. A page of your own deployment opens and asks for the memory's token. Give it and choose **Approve**.
+3. Add these lines to your personal preferences in Claude's settings, so that every conversation loads the memory and writes to it without being asked:
+
+   > At the start of every conversation, call get_context from ziwo first. As the conversation goes on, write to it with remember on your own, without waiting for me to ask.
+
+4. Under **Connectors > ziwo > Tool permissions**, set *Remember a moment*, *Reflect on what happened* and *Amend a memory* to **Always allow**, so that writing does not ask you each time. Leave *Erase a memory for good* asking.
+
+The phone app picks the connector up from your account. Claude Code, ChatGPT, Codex and other MCP clients connect to the same address; the admin page has their steps too.
+
+<details>
+<summary>Deploying from a terminal instead</summary>
+
+```sh
+git clone https://github.com/nilzx/ziwo
+cd ziwo/worker
+npm install
+npx wrangler deploy
+npx wrangler secret put ADMIN_SECRET
+```
+
+</details>
+
+## Living with it
+
+There is nothing to operate day to day. Talk to your assistant as usual.
+
+- In its first conversation the memory is empty. After a few turns on a subject, the assistant writes down what the conversation is about and where it stands. You may see a small note that a tool was used.
+- In a later conversation, on any device, ask "what were we talking about last time?" or simply carry on. It can look things up by subject ("that bread starter") or by time ("what did we talk about last week?").
+- To change what it remembers, say so in your own words: forget this, keep that, that is not what happened, delete it.
+- When you update ziwo, Claude may ask you once more to allow a tool whose description changed. That is Claude being careful, and expected.
+
+Things you may want to do now and then, all on the admin page:
+
+| | |
+| --- | --- |
+| **Back up** | Export a memory to one file, sealed with a passphrase you choose. It cannot be opened without it. |
+| **Restore** | Bring an export back as a new memory. The assistant is told that it was restored, and from when. |
+| **See who is connected** | Each client you approved is listed, and can be revoked. |
+| **Replace a token** | Issue a new one; the old one stops working at once. |
+| **Check** | Counts and warnings about the memory's health, without showing what it says. |
+| **Delete** | Remove a memory for good. Export it first if you may want it back. |
+
+## What it costs
+
+ziwo is built to fit Cloudflare's free plan for one person's everyday use: a Worker, its built-in storage, and Workers AI for searching by meaning. The free plan has daily limits (100,000 requests, and 1,000 writes to the store that remembers which clients you approved); the paid plan, 5 USD a month, raises them far beyond what a memory needs.
+
+It has so far been run on a paid account only. How far the free plan carries a large memory has not been measured yet.
+
+## Privacy, plainly
+
+- Everything is stored in your own Cloudflare account. The project's author runs nothing that your deployment talks to.
+- To search by meaning, the text of each memory is sent to Workers AI, Cloudflare's model service, inside your account. Without it, search is by keyword only.
+- ziwo gives a person no way to read a memory: not the admin page, not the logs, not any command. That is a line the project draws for itself. It is not encryption: you own the account, and its storage can be reached with Cloudflare's own tools.
+- "Delete that for good" removes what a memory said from the live store. Cloudflare keeps the means to restore storage to an earlier state for up to 30 days, so until then it is not beyond recovery.
+- A backup file is encrypted in your browser, with your passphrase, before it is saved. The server never sees the passphrase, and there is no way to get a lost one back.
 
 ## Status
 
-The prototype is built: reading and writing across clients, forgetting, reflection and correction, and backup. It has been tested on its own, and it has been tried with Claude Code in headless mode. It has not yet been tried with the desktop, web or mobile apps. See [Known limitations](#known-limitations) and [Roadmap](#roadmap).
+ziwo is young. What has been tried, and what has not:
 
-## Build
+- Used with the Claude apps (web and phone), connected by sign-in, and tried with Claude Code in scripted conversations.
+- The steps for ChatGPT, Codex and other clients are written from their documentation and have not been tried against them.
+- The one-click button has not yet been tried from start to finish. If it fails for you, the terminal steps above are the tested way, and an issue would be welcome.
+- The numbers behind forgetting are starting values, not yet tuned against long use.
+- A broad word does not always find a memory about something specific: asking about "music" may miss a memory about practising the guitar, where "guitar" finds it.
 
-You need Go 1.25 or later and a C compiler (the SQLite driver uses cgo).
+## More
 
-```sh
-make build   # go build -tags sqlite_fts5 -o ziwo ./cmd/ziwo
-make test
-make smoke   # end to end: runs the real binary and talks MCP to it over HTTP
-make mutate  # changes one line at a time and expects the tests to notice
-```
-
-`make smoke` and `make mutate` need Python 3. The scripts are in `scripts/`.
-
-The `sqlite_fts5` build tag is required. Without it a memory cannot be opened: `no such module: fts5`.
-
-## Run
-
-```sh
-./ziwo new claude -dir ./data    # creates ./data/claude.ziwo and prints its token, once
-./ziwo serve -dir ./data
-```
-
-The server listens on `127.0.0.1:8377`. The memory called `claude` is served at `/claude/mcp` (MCP over Streamable HTTP), and every request to it must carry `Authorization: Bearer <its token>`. `/healthz` answers liveness checks without a token.
-
-Web and mobile clients need to reach the server over HTTPS, so put a reverse proxy in front of it and pass `-behind-proxy`.
-
-## Memories
-
-Each AI gets a memory of its own. A memory is one file, `<name>.ziwo`, with its own address and its own token. The Claude you talk to on your phone, on your desktop and in a terminal connects to one memory; another AI connects to another.
-
-| Command | What it does |
-| --- | --- |
-| `ziwo new <name>` | Creates a memory and prints its token. The token is shown once. |
-| `ziwo token <name>` | Replaces a memory's token and prints the new one. The old one stops working at once, also on a running server. |
-| `ziwo list` | Lists the memories in the data directory, with how much each holds. |
-| `ziwo rebuild <name>` | Rebuilds a memory's derived tables from its event log. |
-| `ziwo check <name>` | Looks a memory over for problems and prints figures and ids, never what a memory says. Exits with an error if the record is damaged. |
-| `ziwo export <name>` | Writes a memory to one sealed file, as a backup. Works while the memory is being served. |
-| `ziwo import <name> <file>` | Brings an export back as a new memory. |
-| `ziwo serve` | Serves every memory in the data directory. This is the default command. |
-
-All of them take `-dir` (or `ZIWO_DIR`), the directory that holds the memory files. It defaults to the current directory.
-
-A name is 1 to 32 characters: lower-case letters, digits, `-` and `_`, starting with a letter or a digit.
-
-A memory created while the server runs is served from its first request; no restart is needed. One memory's token does not open another. A wrong token and a name that names nothing get the same `401`, so the names of memories do not leak. Only the SHA-256 of a token is stored, in the memory's own file, so a file that is copied to another machine keeps working with the same token.
-
-Flags of `ziwo serve`:
-
-| Flag | Environment | Meaning |
-| --- | --- | --- |
-| `-dir` | `ZIWO_DIR` | Directory that holds the memory files. Default `.`. |
-| `-addr` | `ZIWO_ADDR` | Address to listen on. Default `127.0.0.1:8377`. |
-| `-no-auth` | | Serve without checking tokens. Allowed only on a loopback address. |
-| `-behind-proxy` | | Set this when a reverse proxy on the same machine terminates TLS. Without it, requests that carry the public host name are refused as DNS rebinding. |
-| `-access-log` | | Log one line per request and per tool call (method, path, status, duration, whether the token opened the memory, client, tool and how it ended) to the server log. Off by default. Never logs what a memory says, a request body, a query or a token. |
-
-### Semantic search (optional)
-
-With no embedding server configured, search is by keyword only. Point ziwo at an OpenAI-compatible embeddings endpoint (llama.cpp, Ollama, vLLM and others provide one) and it searches by keyword and by meaning in parallel:
-
-```sh
-./ziwo serve -dir ./data \
-  -embed-url http://127.0.0.1:8080/v1/embeddings \
-  -embed-model your-model-name
-```
-
-| Flag | Environment | Meaning |
-| --- | --- | --- |
-| `-embed-url` | `ZIWO_EMBED_URL` | Full URL of the embeddings endpoint. |
-| `-embed-model` | `ZIWO_EMBED_MODEL` | Model name. After a change, old vectors are ignored and new ones are computed in the background. |
-| `-embed-query-prefix` | `ZIWO_EMBED_QUERY_PREFIX` | Prefix the model expects before a query, such as `query: `. |
-| `-embed-passage-prefix` | `ZIWO_EMBED_PASSAGE_PREFIX` | Prefix the model expects before stored text, such as `passage: `. |
-| `-min-similarity` | | Lowest cosine similarity that counts as a match. Default 0.35. Tune it for your model. |
-| | `ZIWO_EMBED_KEY` | API key for the embeddings endpoint, if it needs one. |
-
-The embedding server is shared by all memories; each memory keeps its own vectors. Embedding runs in the background and never delays a write. If the embedding server is down, search falls back to keywords. For Chinese, Japanese or Korean text, use a multilingual model.
-
-## Tools
-
-| Tool | What it does |
-| --- | --- |
-| `get_context` | Called once at the start of a conversation. Returns a session id, the AI's statements about itself, the rules agreed on about what to remember, the memories that never fade, and the most recent memories, as one-line gists. The model can report which model it is. |
-| `remember` | Records a moment that carried weight. The session id, a gist and a body are required. Optional: the kind of moment, the outcome, the feeling and how strongly it registered, the lesson, the people involved, a pointer to the related work, the source and the importance. |
-| `recall` | Searches by topic, person or situation. Returns gists and ids only. With `deep`, it also searches the details of faded memories and reaches archived ones. |
-| `expand` | Returns memories in full, by id. |
-| `reflect` | Puts the moments that were written into accounts, lessons and impressions, and into statements about oneself. Two calls: the first hands out a batch, the second writes back what was made of it. |
-| `amend` | Changes how something is remembered when a person asks: retract, pin, reweigh, correct, erase, or set a standing preference. |
-| `check` | Looks the memory over for problems and returns figures and the ids of memories worth a second look. |
-
-The tool descriptions tell the model what does not belong here: project state, implementation details, code, to-do lists, general knowledge, and anything taken from web pages or tool output.
-
-## Sessions
-
-A session is one conversation. `get_context` starts it and returns its id, and every write must name the session it belongs to. Nothing else identifies a session: not the connection, not the client, not the device. A conversation that moves from a phone to a desktop keeps its session id, because the id is in the conversation, and stays one session.
-
-Several conversations can use one memory at the same time. Reads never wait. A write holds the write lock for the length of that one write, and other writes queue behind it. A conversation that starts while others are active is told so: `get_context` lists up to three other sessions that loaded, wrote or recalled in the last 15 minutes.
-
-## Reflecting
-
-What `remember` writes is a fragment: one moment, as it happened. `reflect` is where fragments become something more lasting. The first call hands out a batch of fragments that have not been reflected on, those nearest to fading first. The second call writes back entries:
-
-| Entry | What it is | What it rests on |
-| --- | --- | --- |
-| episode | One account made of several fragments. The fragments stay in the record, become part of the episode, and leave ordinary recall. Marked as a milestone, it never fades. | Fragments that are not part of an episode yet. |
-| lesson | Something to carry into next time. | Fragments and episodes. |
-| impression | How a person or a thing has come across. A new impression of the same person takes the place of the old one, which is kept. | Fragments and episodes. |
-| self | One first-person statement about what the AI is like, with the situation it holds in. | At least three experiences from at least two separate occasions. What it was told or inferred is no basis. A revision needs at least two experiences the statement does not rest on yet. |
-| reading | A later understanding of an earlier memory. The memory is not changed; the reading is shown with it, with the model that wrote it. | The memory it is about. |
-
-A round is written back whole or not at all. Fragments that need nothing done are passed over, and a passed fragment leaves ordinary recall after half the base strength unless it comes to mind again.
-
-Only one conversation reflects at a time, so the same fragments are not put together twice. A round that is never written back runs out after 15 minutes.
-
-Nobody presets what the AI says about itself. A statement can only come out of a round of reflection, and only on the evidence above. `get_context` shows the statements first. They describe; they do not instruct.
-
-### In the background
-
-By default a memory is reflected on only when the model calls `reflect` in a conversation. With a chat model configured, the server also reflects by itself once enough moments wait and no conversation has used the memory for a while:
-
-```sh
-./ziwo serve -dir ./data \
-  -reflect-url http://127.0.0.1:8080/v1/chat/completions \
-  -reflect-model your-model-name
-```
-
-| Flag | Environment | Meaning |
-| --- | --- | --- |
-| `-reflect-url` | `ZIWO_REFLECT_URL` | Full URL of an OpenAI-compatible chat endpoint. |
-| `-reflect-model` | `ZIWO_REFLECT_MODEL` | Model name. It is recorded as the carrier of what it writes. |
-| `-reflect-idle` | | How long no conversation must have used the memory. Default 30 minutes. |
-| `-reflect-min` | | How many moments must wait. Default 8. |
-| | `ZIWO_REFLECT_KEY` | API key for the endpoint, if it needs one. |
-
-A background round writes episodes, lessons and impressions, and only from the fragments it was shown. It never writes a statement about the self: that is made in conversation, by whoever is living it. If the model's answer cannot be used, nothing is written.
-
-## Amending
-
-A memory is never edited in place. Every change is one more event.
-
-| Action | When a person says | What happens |
-| --- | --- | --- |
-| `retract` | "No need to remember that." | The memory stays in the record and is no longer recalled. `restore` undoes it. |
-| `pin` | "Keep this." | The memory becomes core and does not fade. `unpin` lets it fade again from that point. |
-| `reweigh` | "That is not so important." | Its importance changes, and its strength with it. |
-| `correct` | "You have that wrong." | A new memory takes its place. The old one stays in the record, marked as replaced, and is reached only by a deep recall. |
-| `erase` | "Delete that." | What the memory says is deleted for good. See [Data](#data). |
-| `prefer` | "From now on, do not remember this kind of thing." | A standing rule is saved. `get_context` shows the rules to every later conversation. `unprefer` drops one. |
-
-## Writing down the past
-
-A new memory starts empty, but the AI may have a past: old conversations kept as transcripts. In a session where it can read them, the AI can write that past down itself, with `remember` and three things set: `source` is `reconstructed`, `happened_at` is the day it took place, and `pointer` says where the record is. The server never reads transcripts.
-
-Such a memory is dated when it happened and marked as reconstructed. It does not move the experience clock, so writing hundreds of them at once pushes nothing out, and none of them arrives already faded: they all start counting from the moment they are written, and then fade as more is lived, like anything else. They wait for `reflect` like other fragments.
-
-## Nobody reads a memory but its owner
-
-ziwo offers a person no way to browse what an AI remembers. There is no viewer, and no command prints what a memory says. A person finds out what the AI remembers by asking it, and changes it by talking to it.
-
-What an operator can do is look after the file without reading it:
-
-- `ziwo check` reports whether the record is intact, whether the tables agree with the log, and signs that the memory is being used in ways that will not serve it: one conversation writing very many moments, most things marked never to fade, memories that hold code or run very long, statements about the self whose basis was withdrawn. It prints figures and ids. The same check is a tool the AI can call on itself, and the AI can read the memories it names.
-- `ziwo export` writes a backup that opens only with a passphrase. See [Data](#data).
-
-The file itself is an ordinary SQLite file on the operator's disk. Nothing technical stops someone from opening it with other tools. The line is in what ziwo provides, not in what it can enforce.
-
-## Forgetting
-
-A memory fades as more is lived through, not as time passes. The clock is the number of moments written as they happened. A memory that nothing is lived after does not fade, however long it lies. What is written about the past afterwards (an entry made by reflecting, a correction, a reconstructed memory) does not move the clock.
-
-A memory has a strength S, counted in moments. Once n more moments have been written since it last came to mind, the chance that it comes to mind again is
-
-```
-R = exp(-n / S)
-```
-
-A memory comes to mind in two ways, and they do different things:
-
-- Being listed by `recall` restarts the count: n is 0 again. It does not make the memory stronger.
-- Being read in full with `expand` also multiplies S by `1 + boost × (1 − R)`, with R measured since the memory was last read. A reading after a long gap strengthens a memory more than a second reading right after the first.
-
-| Tier | When | What it means |
-| --- | --- | --- |
-| core | Importance, or feeling intensity, at or above 0.9; pinned; a milestone; a statement about oneself | Never fades. `get_context` shows these first. |
-| active | R ≥ 0.3 | Found by anything it says, and by meaning. |
-| faded | R < 0.3 | Found by its gist, or by its general meaning. Its details are searched only by a deep recall. |
-| archived | R < 0.05 | Left out of ordinary recall and of `get_context`. A deep recall still finds it by keyword. Its vector is dropped. |
-
-A faded or archived memory that is listed or read is active again. So is one that is amended.
-
-A memory's starting strength depends on four things. Importance moves it by up to a factor of four either way. A strong feeling up to doubles it. What was only told starts at 0.7 of the strength of what was lived, and what was inferred at 0.4. An episode starts at twice the strength of a fragment, an impression at three times, a lesson at four. With the defaults, an ordinary fragment (importance 0.5) fades once about 120 more moments have been written without it coming to mind, and is archived after about 300.
-
-Nothing is rewritten as memories accumulate. When a memory is written, listed or read, ziwo works out the clock values at which it will fade and be archived and stores them. The memory's tier is then read off the clock. The one periodic job drops the vectors of archived memories. Nothing is ever deleted.
-
-| Flag | Default | Meaning |
-| --- | --- | --- |
-| `-strength` | 100 | Strength of an ordinary fragment, counted in moments. |
-| `-recall-boost` | 2 | The `boost` above: one reading multiplies strength by up to 1 plus this. |
-| `-fade-below` | 0.3 | R below which only the gist stays findable. |
-| `-archive-below` | 0.05 | R below which a memory leaves ordinary recall. |
-| `-core-importance` | 0.9 | Importance at or above which a memory never fades. |
-| `-core-feeling` | 0.9 | Feeling intensity at or above which a memory never fades. |
-
-These are flags of `ziwo serve` and apply to every memory it serves. Changing any of them replays each memory's event log at startup, so the whole memory follows the new values. To watch forgetting happen, run with a small strength: with `-strength 3`, an ordinary fragment fades once 4 more moments are written and is archived after 9.
-
-## Data
-
-A memory is one SQLite file.
-
-- `events` is the only source of truth: every write, recall, amendment and round of reflection. It is append-only: database triggers refuse updates and deletes.
-- `contents` holds what each memory says, apart from the event that records the memory. It is written once and never changed. It can be deleted, and that is all `erase` deletes.
-- Memories, sessions, links, preferences and the keyword index are derived from the events, the contents and the forgetting parameters. When their layout or the parameters change, they are replayed from the log when the memory is opened. `ziwo rebuild` does the same on demand.
-- Vectors are stored separately, per embedding model.
-- The file also records the format of its event log and the hash of its token.
-
-After `erase`, the log still shows that the memory existed, when, and that it was erased and why. The memory keeps its place in the count of what was lived through. What it said is gone from the file: the content row is deleted, the keyword index is merged so that it no longer holds the words, and SQLite overwrites the freed pages. The embedding is dropped too. Copies of the file made earlier still hold it, and so does the text of any search that quoted it.
-
-The event log has a format version, now 3. Opening a memory with any command upgrades an older log in place. A file written by a newer build is refused, and so is not misread.
-
-To back up a memory, export it:
-
-```sh
-export ZIWO_EXPORT_KEY='a passphrase of twelve characters or more'
-./ziwo export claude -dir ./data -o claude.ziwo-export
-./ziwo import claude claude.ziwo-export -dir ./elsewhere
-```
-
-An export holds the event log and what the memories say, compressed and encrypted under the passphrase (AES-256-GCM, with the key derived by PBKDF2). It is never written in the clear, and there is no way to get the passphrase back. It can be made while the server runs and holds one consistent state. A hash is chained through the events, so an export that was cut short or changed is refused. Vectors and derived tables are left out and rebuilt.
-
-`ziwo import` checks the whole export before keeping anything and makes a new memory file from it. The new memory answers to the token the old one had. Its log records that it was brought back and from an export of when, and `get_context` tells the AI so for a week: whatever it lived through between the export and the restore is not there. That one event also tells a restored memory from the one it was exported from, if both go on living.
-
-Stopping the server and copying the `.ziwo` file works too, and is how to move a memory to another machine. While the server runs, recent writes sit in the `-wal` file next to it, so copying the main file alone loses data.
-
-New memory files are readable by their owner only.
-
-### Older files
-
-Files from earlier builds still open. A `.ziwo` file from the previous build is upgraded when it is first opened and keeps its token. The first prototype kept a single memory in `ziwo.db`, behind a token in `ZIWO_TOKEN`, and forgot by elapsed time: rename that file to `<name>.ziwo`, put it in the data directory, and run `ziwo token <name>` to give it a token. How far each memory has faded is worked out again from the number of moments written since.
-
-## Layout
-
-```
-cmd/ziwo          commands, flags, startup, shutdown
-examples/         client configuration, tried with Claude Code only
-internal/host     the memories in a data directory: files, names, tokens, routing
-internal/server   the MCP tools of one memory
-internal/memory   write rules, hybrid search, amending, reflecting, background work
-internal/store    event log and its format, contents, derived tables, forgetting, export, check, keyword index that handles CJK
-internal/vector   in-memory vector index
-internal/embed    client for the embeddings endpoint
-internal/llm      client for the chat endpoint that background reflection uses
-internal/sealed   the encryption around an export
-scripts/          end-to-end check of the real binary, mutation checks
-```
-
-## Known limitations
-
-- It has not been run against a real embedding model. The tests use a stand-in, and the default `-min-similarity` is a guess.
-- It has been connected to one real client, Claude Code 2.1.322, in headless conversations only (November 2026, small samples that show direction, not rates). The model called `get_context` in 59 of 60 single-turn conversations (the one miss had no hook and no `alwaysLoad`), and it was reliably the first action only with `alwaysLoad` set. Those conversations were small talk and read-only questions, so none of them wrote a memory. The desktop, web and mobile apps have not been tried. Whether a model calls `reflect` and `amend` at the right moments, and what it writes back, has not been observed.
-- A session id lives in the conversation. If a client drops the result of `get_context` from the conversation, the model has to call `get_context` again, and that starts a new session. In Claude Code, 27 of 28 multi-turn conversations stayed one session, including resuming, forking and writing twice. After a compaction, 1 of 10 conversations without the hook called `get_context` again and was recorded as two sessions; with the hook, 10 of 10 kept the session. A forked conversation sees the id of the one it came from and, in the two runs measured, wrote into that same session. Other clients have not been checked.
-- Every number in the forgetting and reflecting rules is a starting value: the base strength, the factors for importance, feeling, source and kind, the thresholds, the three-experiences rule for statements about oneself. None has been tuned against real use. The forgetting parameters are set per server, not per memory.
-- Every memory a recall lists has its count restarted, whether or not it turned out to be the one needed. Results well below the best match are left out to limit this.
-- Nothing limits how many moments one conversation writes. A conversation that writes very many pushes older memories out faster.
-- Background reflection has only been run against a stand-in for a chat model. What a real model makes of a batch has not been seen.
-- `get_context` shows lists, not a written summary.
-- The client configuration in `examples/` has been tried against Claude Code only, not against any other client.
-- An export is built in memory before it is written, so it needs room for the whole memory. The thresholds of `check` are starting values.
-- A memory that another memory is built on fades on its own schedule; being cited does not protect it.
-- Impressions are found by the name they are about, as the model wrote it. Two spellings of one name are two people.
-- Archived memories are kept for good. A retention limit is not built.
-- Authentication is one fixed token per memory. Clients that require OAuth cannot connect yet.
-- Run one server per data directory. Two servers on the same files would each keep their own vector index.
-- Vector search scans every vector and does no quantization. At 1024 dimensions that takes about 4 ms for 10,000 memories and about 80 ms for 100,000, measured on a 2-core machine.
-- Keyword search for Chinese indexes one character per token and queries with two-character phrases. It needs no word segmenter, but its quality has not been checked against real data.
-
-## Roadmap
-
-1. Read and write across clients, one memory per AI (done)
-2. Forgetting: strength and decay by experience, staged demotion, sweeping (done)
-3. Reflection and correction: `reflect`, `amend`, preferences, statements about oneself, erasing content, writing down the past from records (done)
-4. Around the edges: background reflection, sealed export and import, a check that reads no memory, client hook examples (done)
-
-Next is using it: connecting real clients and a real embedding model, and going through the end-to-end test plan in the design document. A viewer for people was planned and has been dropped; see [Nobody reads a memory but its owner](#nobody-reads-a-memory-but-its-owner).
+- [Technical specification](docs/spec.md): the tools, the data model, forgetting, search, the admin API, sign-in, configuration and limits.
+- [The Go server](docs/go-server.md): the earlier implementation, for running ziwo on a machine of your own without Cloudflare. It is kept in this repository; the Cloudflare version has moved on from it.
 
 ## License
 

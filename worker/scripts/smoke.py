@@ -27,12 +27,14 @@ persist directory (twice); writing and its validation messages; recall and
 expand; amending (each action); erasing (a tool of its own here); reflecting
 (both steps); reconstructed memories; the check tool.
 
-Left out, because the Worker has no way to do them over HTTP yet:
-  - anything that needs the forgetting parameters changed. There is no route
-    for them, so the Go script's forgetting-by-experience checks, which rely on
-    a base strength of 10, cannot be ported as they are. What is checked
-    instead is that nothing fades under the default strength of 100.
-  - export and import (the sealed backup and its restore).
+Left out:
+  - anything that needs the forgetting parameters changed. The Go script's
+    forgetting-by-experience checks rely on a base strength of 10; this script
+    was written before the admin API could set the parameters and has not
+    taken them up. What is checked instead is that nothing fades under the
+    default strength of 100. The tests in test/ cover forgetting.
+  - export and import (the sealed backup and its restore), which the admin
+    API has had since; the tests in test/ cover them.
   - the upgrade of files written by older builds.
   - the command-line commands (new, list, token, rebuild, check, serve, -h).
   - embeddings and search by meaning.
