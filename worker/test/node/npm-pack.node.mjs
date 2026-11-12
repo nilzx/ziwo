@@ -58,13 +58,14 @@ describe("the package pack-npm writes", () => {
     const pkg = JSON.parse(await readFile(path.join(out, "package.json"), "utf8"));
     const own = JSON.parse(await readFile(path.join(workerDir, "package.json"), "utf8"));
     assert.equal(own.version, "0.1.0");
-    assert.deepEqual(Object.keys(pkg).sort(), ["bin", "dependencies", "description", "engines", "files", "homepage", "license", "name", "repository", "type", "version"]);
-    assert.equal(pkg.name, "ziwo");
+    assert.deepEqual(Object.keys(pkg).sort(), ["bin", "dependencies", "description", "engines", "files", "homepage", "license", "name", "publishConfig", "repository", "type", "version"]);
+    assert.equal(pkg.name, "@ziwo/memory");
+    assert.deepEqual(pkg.publishConfig, { access: "public" });
     assert.equal(pkg.version, "0.1.0");
     assert.equal(pkg.license, "MIT");
     assert.equal(pkg.type, "module");
     assert.ok(pkg.description.length > 20);
-    assert.deepEqual(pkg.bin, { ziwo: "bin/ziwo.mjs" });
+    assert.deepEqual(pkg.bin, { "ziwo-memory": "bin/ziwo.mjs" });
     assert.deepEqual(pkg.files, ["bin/", "lib/", "worker/", "wrangler.jsonc"]);
     assert.deepEqual(pkg.engines, { node: wranglerPkg.engines.node });
     assert.equal(pkg.homepage, "https://github.com/nilzx/ziwo");

@@ -841,7 +841,7 @@ A broad word in a query may not reach an item that names a specific instance of 
 
 ### The npm package
 
-`npx ziwo@latest deploy` deploys ziwo to the Cloudflare account the person signs in to and, run again, updates it. The package `ziwo` on npm holds:
+`npx @ziwo/memory@latest deploy` deploys ziwo to the Cloudflare account the person signs in to and, run again, updates it. The package `@ziwo/memory` on npm (in the organization `ziwo`; npm refuses the bare name as too close to another package's) holds:
 
 - the Worker, prebuilt: the modules `wrangler deploy` uploads from `worker/wrangler.jsonc` (the bundle, and the admin page's eight files as text), taken byte for byte from a dry run when the package was made, without the source map;
 - a Wrangler configuration that uploads them without bundling again (`no_bundle`), with the same name, bindings, migrations, compatibility date and flags;

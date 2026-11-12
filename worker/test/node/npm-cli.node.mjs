@@ -13,7 +13,7 @@ import { after, before, describe, it } from "node:test";
 import { address, help, language, minNode, olderThan, parse, run, texts } from "../../npm/lib/cli.mjs";
 import { removeScratch, scratch, workerDir } from "./go.mjs";
 
-const pkgDir = path.join("/somewhere", "node_modules", "ziwo");
+const pkgDir = path.join("/somewhere", "node_modules", "@ziwo", "memory");
 const wranglerBin = path.join("/somewhere", "node_modules", "wrangler", "bin", "wrangler.js");
 
 /**
@@ -92,10 +92,10 @@ describe("the command line", () => {
 
   it("prints the help alone, with --help, and on --help after deploy, and runs nothing", async () => {
     assert.equal(help.split("\n")[0], "ziwo: a memory of its own for an AI. This command runs it in your Cloudflare account.");
-    assert.match(help, /^ {2}npx ziwo@latest deploy {14}deploy, or update, ziwo$/m);
+    assert.match(help, /^ {2}npx @ziwo\/memory@latest deploy {6}deploy, or update, ziwo$/m);
     assert.match(help, /^ {6}--name <name> {19}deploy under another Worker name \(default: ziwo\)$/m);
     assert.match(help, /^ {6}--dry-run {23}build and check, deploy nothing$/m);
-    assert.match(help, /^ {2}npx ziwo@latest --version$/m);
+    assert.match(help, /^ {2}npx @ziwo\/memory@latest --version$/m);
     assert.match(help, /\n\nhttps:\/\/github\.com\/nilzx\/ziwo\n$/);
     for (const argv of [[], ["--help"], ["-h"], ["deploy", "--help"]]) {
       const { io, seen } = fake({ argv });
@@ -246,7 +246,7 @@ If this is a new deployment: open that address in a browser now and choose
 your admin secret. The page offers this for one hour.
 If you are updating: nothing else to do. Your memories are untouched.
 
-To update later, run the same command again:  npx ziwo@latest deploy
+To update later, run the same command again:  npx @ziwo/memory@latest deploy
 `);
   });
 
@@ -259,17 +259,17 @@ ziwo 已部署到 https://ziwo.someone.workers.dev
 如果这是新部署:现在就在浏览器里打开这个地址,设置管理密钥。页面只在一小时内提供这个入口。
 如果是更新:不用再做什么,你的记忆没有动。
 
-以后要更新,再运行一次同样的命令:  npx ziwo@latest deploy
+以后要更新,再运行一次同样的命令:  npx @ziwo/memory@latest deploy
 `);
   });
 
   it("names the Worker in the command to update with, when it was deployed under another name", async () => {
     let f = fake({ argv: ["deploy", "--name", "second"], written: deployLine(["https://second.someone.workers.dev"]) });
     assert.equal(await run(f.io), 0);
-    assert.match(f.seen.out, /run the same command again:  npx ziwo@latest deploy --name second\n$/);
+    assert.match(f.seen.out, /run the same command again:  npx @ziwo\/memory@latest deploy --name second\n$/);
     f = fake({ argv: ["deploy", "--name=second"], env: { LANG: "zh_CN.UTF-8" } });
     assert.equal(await run(f.io), 0);
-    assert.match(f.seen.out, /再运行一次同样的命令:  npx ziwo@latest deploy --name second\n$/);
+    assert.match(f.seen.out, /再运行一次同样的命令:  npx @ziwo\/memory@latest deploy --name second\n$/);
   });
 
   it("points at wrangler's own line when it has no address", async () => {

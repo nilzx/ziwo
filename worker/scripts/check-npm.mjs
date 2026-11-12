@@ -20,17 +20,18 @@
 // 5. Runs scripts/smoke.py against the installed prebuilt Worker, through a
 //    configuration without the Workers AI binding written beside it.
 //
-// It leaves nothing behind but the scratch directory, which it names at the
-// end. Every wrangler run in it is a dry run, or `wrangler dev --local`.
+// It removes its scratch directory when every check passed; when one failed,
+// or with --keep, it leaves it and names it. Every wrangler run in it is a dry
+// run, or `wrangler dev --local`.
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { fixedFiles, jsonc, localConfig, pack, workerDir } from "./pack-npm.mjs";
+import { commandName, fixedFiles, jsonc, localConfig, pack, packageName, workerDir } from "./pack-npm.mjs";
 import { compareUploads, dryRun, moduleName } from "./upload-form.mjs";
 
 const failures = [];
@@ -100,7 +101,7 @@ async function main() {
   await writeFile(path.join(installDir, "package.json"), '{ "private": true }\n');
   const inst = sh(npm, ["install", "--no-audit", "--no-fund", "--loglevel=error", "--cache", cache, tarball], { cwd: installDir });
   check("npm install of the tarball", inst.code === 0, inst.err);
-  const installed = path.join(installDir, "node_modules", "ziwo");
+  const installed = path.join(installDir, "node_modules", ...packageName.split("/"));
   const installedWrangler = JSON.parse(await readFile(path.join(installDir, "node_modules", "wrangler", "package.json"), "utf8"));
   check(`it installs wrangler ${packed.wrangler}`, installedWrangler.version === packed.wrangler, installedWrangler.version);
 
@@ -108,7 +109,7 @@ async function main() {
   /** @type {Record<string, string>} */
   const env = { PATH: process.env.PATH ?? "", HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: path.join(home, ".config"), npm_config_cache: cache };
   if (process.env.SystemRoot) env.SystemRoot = process.env.SystemRoot;
-  const bin = path.join(installDir, "node_modules", ".bin", process.platform === "win32" ? "ziwo.cmd" : "ziwo");
+  const bin = path.join(installDir, "node_modules", ".bin", process.platform === "win32" ? `${commandName}.cmd` : commandName);
   const ziwo = (/** @type {string[]} */ args, /** @type {Record<string, string>} */ extra = {}) =>
     sh(bin, args, { cwd: scratch, env: { ...env, LC_ALL: "en_US.UTF-8", ...extra } });
 
@@ -180,10 +181,17 @@ async function main() {
   console.log("sizes");
   console.log(`  tarball ${path.basename(tarball)}: ${tarSize} bytes (${kib(tarSize)}), ${files.length} files`);
   console.log(`  installed: the package ${mib(await du(installed))}; with wrangler and its dependencies ${mib(await du(path.join(installDir, "node_modules")))}`);
-  console.log(`scratch directory, left for inspection: ${scratch}`);
   if (failures.length > 0) {
+    console.log(`scratch directory, left for inspection: ${scratch}`);
     console.log(`CHECK-NPM: ${failures.length} FAILED: ${failures.join("; ")}`);
     process.exit(1);
+  }
+  // An installed copy is a third of a gigabyte: gone once everything passed.
+  if (process.argv.includes("--keep")) {
+    console.log(`scratch directory, kept: ${scratch}`);
+  } else {
+    await rm(scratch, { recursive: true, force: true });
+    console.log("scratch directory removed (run with --keep to leave it)");
   }
   console.log("CHECK-NPM: all checks passed");
 }

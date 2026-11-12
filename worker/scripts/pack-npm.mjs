@@ -1,4 +1,4 @@
-// Assembles the npm package `ziwo` in worker/pkg/, ready to publish as it is
+// Assembles the npm package `@ziwo/memory` in worker/pkg/, ready to publish as it is
 // (the publishing itself is done by hand, never here).
 //
 // The package holds the Worker prebuilt: a dry run of `wrangler deploy` with
@@ -17,6 +17,12 @@ import { dryRun, moduleName, moduleTypes, sourceMapType } from "./upload-form.mj
 
 export const workerDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 export const repoURL = "https://github.com/nilzx/ziwo";
+
+// The package's name on npm, in the organization `ziwo` (the bare name was
+// refused there as too close to another package's), and its command, named so
+// that it leaves room for other packages of that organization.
+export const packageName = "@ziwo/memory";
+export const commandName = "ziwo-memory";
 
 /** The files in the package apart from the prebuilt Worker's modules. */
 export const fixedFiles = ["LICENSE", "README.md", "bin/ziwo.mjs", "lib/cli.mjs", "package.json", "wrangler.jsonc"];
@@ -38,17 +44,19 @@ export async function lockedWrangler(dir) {
  */
 export function packageJson(o) {
   return {
-    name: "ziwo",
+    name: packageName,
     version: o.version,
     description: "A memory of its own for an AI, across the platforms it is used on. This command deploys it to your Cloudflare account, and updates it.",
     license: "MIT",
     type: "module",
-    bin: { ziwo: "bin/ziwo.mjs" },
+    bin: { [commandName]: "bin/ziwo.mjs" },
     files: ["bin/", "lib/", "worker/", "wrangler.jsonc"],
     engines: { node: o.node },
     dependencies: { wrangler: o.wrangler },
     repository: { type: "git", url: `git+${repoURL}.git` },
     homepage: repoURL,
+    // A scoped package is private to its organization unless it says so.
+    publishConfig: { access: "public" },
   };
 }
 
@@ -183,7 +191,7 @@ async function clean(dir) {
   }
   let ours = false;
   try {
-    ours = JSON.parse(await readFile(path.join(dir, "package.json"), "utf8")).name === "ziwo";
+    ours = JSON.parse(await readFile(path.join(dir, "package.json"), "utf8")).name === packageName;
   } catch {
     ours = (await readdir(dir)).length === 0;
   }
@@ -219,7 +227,7 @@ export async function pack(o = {}) {
       cwd: workerDir,
     });
     const { modules } = await assemble({ upload, raw: rawConfig, outDir, version, wrangler: locked, node: wranglerPkg.engines.node });
-    log(`pack-npm: ziwo ${version} in ${outDir}`);
+    log(`pack-npm: ${packageName} ${version} in ${outDir}`);
     log(`  wrangler ${locked}, Node.js ${wranglerPkg.engines.node}`);
     log(`  ${modules.length} modules: ${modules.join(", ")}`);
     return { outDir, version, wrangler: locked, node: wranglerPkg.engines.node, upload, modules };

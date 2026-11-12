@@ -17,7 +17,7 @@ ziwo is a small server that the AI's clients connect to. The ready way to run on
 1. **Deploy.** Run this in a terminal. It signs you in to Cloudflare in your browser and prints your address, which looks like `https://ziwo.<something>.workers.dev`. The first run takes a minute or two, and on a new Cloudflare account it asks you to pick the name in that address.
 
    ```sh
-   npx ziwo@latest deploy
+   npx @ziwo/memory@latest deploy
    ```
 
 2. **Choose an admin secret.** Open your address straight away. The page asks for a password of at least 16 characters, or offers one. Keep it somewhere safe. The page offers this for one hour only.

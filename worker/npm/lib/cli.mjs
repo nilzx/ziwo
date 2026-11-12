@@ -10,12 +10,15 @@ import path from "path";
 
 const repo = "https://github.com/nilzx/ziwo";
 
+// How the command is run: through npx, by the package's name on npm.
+const npx = "npx @ziwo/memory@latest";
+
 export const help = `ziwo: a memory of its own for an AI. This command runs it in your Cloudflare account.
 
-  npx ziwo@latest deploy              deploy, or update, ziwo
+  ${npx} deploy      deploy, or update, ziwo
       --name <name>                   deploy under another Worker name (default: ziwo)
       --dry-run                       build and check, deploy nothing
-  npx ziwo@latest --version
+  ${npx} --version
 
 ${repo}
 `;
@@ -251,7 +254,7 @@ export async function run(io) {
   const first = at ? t.deployedAt({ address: at }) : t.deployedSomewhere({});
   // The command that updates this deployment: under another name, with it,
   // or the plain command would make a second deployment beside this one.
-  const command = `npx ziwo@latest deploy${cmd.name !== undefined ? ` --name ${cmd.name}` : ""}`;
+  const command = `${npx} deploy${cmd.name !== undefined ? ` --name ${cmd.name}` : ""}`;
   io.out(`\n${first}\n\n${t.next({ command })}\n`);
   return 0;
 }
