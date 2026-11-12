@@ -1,5 +1,6 @@
 {
   "name": "ziwo",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,7 +11,9 @@
     "smoke": "python3 scripts/smoke.py",
     "typecheck": "tsc --noEmit",
     "build": "wrangler deploy --dry-run --outdir dist",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "pack:npm": "node scripts/pack-npm.mjs",
+    "check:npm": "node scripts/check-npm.mjs"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.7.0",

@@ -2,3 +2,5 @@ node_modules
 .wrangler
 dist
 .dev.vars
+pkg
+.npm-build

@@ -8,7 +8,12 @@ The expected counts are exact.
 
 Usage:
   npm run smoke            (from worker/)
-  python3 scripts/smoke.py
+  python3 scripts/smoke.py [--config PATH]
+
+--config names the wrangler configuration to run (default wrangler.dev.jsonc,
+relative to worker/). scripts/check-npm.mjs gives it a local-only
+configuration of the npm package's prebuilt Worker. Whatever it names must
+have no binding that reaches an account (no Workers AI).
 
 It starts `npx wrangler dev --local` on a free port, with a random admin secret
 given by --var and its state in a scratch directory under the system temp
@@ -46,6 +51,7 @@ Left out:
   - the command-line commands (new, list, token, rebuild, check, serve, -h).
   - embeddings and search by meaning.
 """
+import argparse
 import atexit
 import datetime
 import json
@@ -64,6 +70,7 @@ import urllib.request
 HERE = os.path.dirname(os.path.abspath(__file__))
 WORKER = os.path.dirname(HERE)
 VERBOSE = bool(os.environ.get("SMOKE_VERBOSE"))
+CONFIG = "wrangler.dev.jsonc"  # --config
 failures = 0
 passed = 0
 
@@ -145,7 +152,7 @@ class Worker:
                "WRANGLER_REGISTRY_PATH": os.path.join(self.scratch, "registry"),
                "NO_UPDATE_NOTIFIER": "1", "CI": "1"}
         self.proc = subprocess.Popen(
-            ["npx", "wrangler", "dev", "--config", "wrangler.dev.jsonc", "--local", "--ip", "127.0.0.1", "--port", str(self.port),
+            ["npx", "wrangler", "dev", "--config", CONFIG, "--local", "--ip", "127.0.0.1", "--port", str(self.port),
              "--inspector-port", str(self.iport), "--persist-to", self.persist,
              "--var", f"ADMIN_SECRET:{self.secret}"],
             cwd=WORKER, stdin=subprocess.DEVNULL, stdout=log, stderr=log, env=env, start_new_session=True)
@@ -845,6 +852,25 @@ def run_setup(w):
 
 
 def main():
+    global CONFIG
+    parser = argparse.ArgumentParser(description="End-to-end check of the ziwo Worker under wrangler dev --local.")
+    parser.add_argument("--config", default=CONFIG, help="the wrangler configuration to run (default: %(default)s, relative to worker/)")
+    given = parser.parse_args().config
+    CONFIG = os.path.join(WORKER, given)
+    if not os.path.isfile(CONFIG):
+        print(f"  FAIL no configuration at {CONFIG}")
+        sys.exit(1)
+    with open(CONFIG) as f:
+        lines = [l for l in f if not l.strip().startswith("//")]
+    try:
+        reaches = "ai" in json.loads("".join(lines))
+    except ValueError:
+        reaches = '"ai"' in "".join(lines)
+    if reaches:
+        print(f"  FAIL {CONFIG} has the Workers AI binding, which reaches an account")
+        sys.exit(1)
+    if given != parser.get_default("config"):
+        print(f"SMOKE: configuration {CONFIG}")
     scratch = tempfile.mkdtemp(prefix="ziwo-smoke-")
     secret = "smoke-" + os.urandom(16).hex()
     w = Worker(scratch, secret)
