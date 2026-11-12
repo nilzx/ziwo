@@ -3,7 +3,8 @@
 // Durable Object in one RPC.
 
 import { type CallToolResult, McpServer } from "@modelcontextprotocol/server";
-import type { QueryEmbedding } from "../embed";
+import { type QueryEmbedding, queryMaxRunes } from "../embed";
+import { clip, queryParts, trimSpace } from "../memory/clean";
 import type { Memory } from "../memory-object";
 import { check, instructions, listed, tools } from "./tools";
 import { logLine } from "../log";
@@ -29,6 +30,28 @@ export interface Call {
   instance?: string;
 }
 
+// RecallShape is what the access log says of a recall: by subject or by
+// time, how many parts of the query were searched on their own (1 for a
+// query that names one thing, 0 for a listing by time), and which ends of a
+// span were given.
+interface RecallShape {
+  by: "subject" | "time";
+  parts: number;
+  span: "none" | "since" | "until" | "both";
+}
+
+function recallShape(c: { query: string; since?: string; until?: string }): RecallShape {
+  const query = clip(trimSpace(c.query), queryMaxRunes);
+  const since = trimSpace(c.since ?? "") !== "";
+  const until = trimSpace(c.until ?? "") !== "";
+  const n = query === "" ? 0 : queryParts(query).length;
+  return {
+    by: query === "" ? "time" : "subject",
+    parts: query === "" ? 0 : n >= 2 ? n : 1,
+    span: since && until ? "both" : since ? "since" : until ? "until" : "none",
+  };
+}
+
 function toolError(text: string): CallToolResult {
   return { content: [{ type: "text", text }], isError: true };
 }
@@ -51,6 +74,7 @@ export function buildServer(call: Call): McpServer {
         let outcome: "ok" | "invalid" | "error" = "ok";
         let failed = "";
         let embedded: QueryEmbedding["took"];
+        let recalled: RecallShape | undefined;
         try {
           const checked = check(def, raw, call.client);
           if ("invalid" in checked) {
@@ -58,6 +82,7 @@ export function buildServer(call: Call): McpServer {
             return toolError(checked.invalid);
           }
           let toolCall = checked.ok;
+          if (toolCall.tool === "recall") recalled = recallShape(toolCall);
           if (toolCall.tool === "recall" && call.embedQuery !== undefined) {
             const meaning = await call.embedQuery(toolCall.query);
             embedded = meaning.took;
@@ -87,6 +112,8 @@ export function buildServer(call: Call): McpServer {
             ...(failed === "" ? {} : { error: failed }),
             // Figures and fixed words about the query's embedding, never the query.
             ...(embedded === undefined ? {} : { embed_ms: embedded.ms, embed_second: embedded.second, embed_answer: embedded.answer }),
+            // What kind of recall it was, in fixed words and a figure.
+            ...(recalled === undefined ? {} : { recall_by: recalled.by, recall_parts: recalled.parts, recall_span: recalled.span }),
           });
         }
       },

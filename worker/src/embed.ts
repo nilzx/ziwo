@@ -6,7 +6,7 @@
 // goes to a log.
 
 import { logLine } from "./log";
-import { clip, trimSpace } from "./memory/clean";
+import { clip, queryParts, trimSpace } from "./memory/clean";
 import { type Label, maxDims } from "./store/vectors";
 
 export const defaultModel = "@cf/qwen/qwen3-embedding-0.6b";
@@ -103,11 +103,13 @@ export function embedSettings(env: EmbedEnv): EmbedSettings | undefined {
   };
 }
 
-// Embedder turns text into vectors, as the model returns them. Documents
-// are what memories say; a query is what recall is asked.
+// Embedder turns text into vectors, as the model returns them, one per text
+// in the order given. Documents are what memories say; queries are what
+// recall is asked: a query, and the things it names when it names several,
+// in one call.
 export interface Embedder {
   documents(texts: string[]): Promise<ArrayLike<number>[]>;
-  query(text: string, signal?: AbortSignal): Promise<ArrayLike<number>>;
+  queries(texts: string[], signal?: AbortSignal): Promise<ArrayLike<number>[]>;
 }
 
 // The part of the AI binding used here. The model is a setting, so its
@@ -162,9 +164,13 @@ export class WorkersAI implements Embedder {
     return out;
   }
 
-  async query(text: string, signal?: AbortSignal): Promise<number[]> {
-    const inputs = this.qwen() ? { queries: [text], instruction: queryInstruction } : { text: [text] };
-    return vectorsOf(await this.ai.run(this.model, inputs, signal === undefined ? undefined : { signal }), 1)[0]!;
+  // Both input forms take a list of up to maxTextsPerCall texts (the
+  // model's input schema, 2026-11-12); a query and its parts are at most
+  // 1 + MaxQueryParts of them. Qwen takes one instruction for the list.
+  async queries(texts: string[], signal?: AbortSignal): Promise<number[][]> {
+    if (texts.length === 0 || texts.length > maxTextsPerCall) throw new EmbedError(`${texts.length} queries in one call`);
+    const inputs = this.qwen() ? { queries: texts, instruction: queryInstruction } : { text: texts };
+    return vectorsOf(await this.ai.run(this.model, inputs, signal === undefined ? undefined : { signal }), texts.length);
   }
 }
 
@@ -186,11 +192,13 @@ export function prepare(v: ArrayLike<number>, dims: number): Float32Array {
 }
 
 // QueryVector is the embedding of a recall's query, handed to the object
-// with the label it was made under.
+// with the label it was made under. parts, when the query names several
+// things, holds the embedding of each, in the order queryParts gives them.
 export interface QueryVector {
   model: string;
   dims: number;
   values: Float32Array;
+  parts?: Float32Array[];
 }
 
 // SecondCall says whether a query's second call was made, in fixed words:
@@ -216,15 +224,20 @@ export function queryEmbedding(env: EmbedEnv, embedder?: Embedder): ((query: str
   return (query) => embedQuery(emb, settings, query);
 }
 
-// embedQuery embeds the query recall will read, within the time limit. It
+// embedQuery embeds the query recall will read, within the time limit, and
+// when it names several things each of them too, in the same call. It
 // makes one call and, if that has not answered after queryHedgeMs, a second
 // beside it; a first call that fails before then starts the second at once.
-// Whichever answers first with a usable vector is used and the other is
+// Whichever answers first with usable vectors is used and the other is
 // aborted; an answer that comes later is dropped. On failure, or when the
 // limit runs out, the vector is absent and recall answers from keywords.
 export function embedQuery(emb: Embedder, s: EmbedSettings, query: string): Promise<QueryEmbedding> {
   const text = clip(trimSpace(query), queryMaxRunes);
   if (text === "") return Promise.resolve({});
+  // Split as recall splits it, so that the object pairs each part with its
+  // vector by place.
+  const parts = queryParts(text);
+  const texts = parts.length >= 2 ? [text, ...parts] : [text];
   const start = Date.now();
   const stop = new AbortController();
   return new Promise<QueryEmbedding>((resolve) => {
@@ -232,7 +245,7 @@ export function embedQuery(emb: Embedder, s: EmbedSettings, query: string): Prom
     let second: SecondCall = s.queryHedgeMs > 0 ? "not_needed" : "off";
     let running = 0;
     const timers: ReturnType<typeof setTimeout>[] = [];
-    const finish = (answer: "first" | "second" | "none", values?: Float32Array, failure?: unknown) => {
+    const finish = (answer: "first" | "second" | "none", values?: Float32Array[], failure?: unknown) => {
       if (settled) return;
       settled = true;
       for (const t of timers) clearTimeout(t);
@@ -245,14 +258,24 @@ export function embedQuery(emb: Embedder, s: EmbedSettings, query: string): Prom
         });
       }
       const took = { ms: Date.now() - start, second, answer };
-      resolve(values === undefined ? { took } : { vector: { model: s.model, dims: s.dims, values }, took });
+      if (values === undefined) {
+        resolve({ took });
+        return;
+      }
+      const [whole, ...rest] = values;
+      const vector: QueryVector = { model: s.model, dims: s.dims, values: whole!, ...(rest.length > 0 ? { parts: rest } : {}) };
+      resolve({ vector, took });
     };
     const call = (which: "first" | "second") => {
       running++;
-      // A vector the settings cannot use counts as that call's failure.
+      // A vector the settings cannot use, or an answer that does not hold
+      // one vector for each text, counts as that call's failure.
       Promise.resolve()
-        .then(() => emb.query(text, stop.signal))
-        .then((raw) => prepare(raw, s.dims))
+        .then(() => emb.queries(texts, stop.signal))
+        .then((raw) => {
+          if (raw.length !== texts.length) throw new EmbedError(`the model returned ${raw.length} vectors for ${texts.length} texts`);
+          return raw.map((v) => prepare(v, s.dims));
+        })
         .then(
           (values) => finish(which, values),
           (err: unknown) => {

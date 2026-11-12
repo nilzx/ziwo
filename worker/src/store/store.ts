@@ -100,6 +100,7 @@ import type {
   RememberInput,
   RestoreNote,
   Session,
+  Span,
   TextHit,
 } from "./types";
 
@@ -157,6 +158,22 @@ const memorySelect = `SELECT m.n, m.id, m.created_at, m.written_at, m.session_id
   m.about, m.context, m.ref, m.milestone, m.reviewed IS NULL AS unreviewed
 FROM memories m`;
 const memoryJoin = ` LEFT JOIN sessions s ON s.id = m.session_id `;
+
+// spanCond is the condition on memories m that keeps them to span, with its
+// arguments. created_at is when a memory took place.
+function spanCond(span: Span): { cond: string; args: number[] } {
+  let cond = "";
+  const args: number[] = [];
+  if (span.since !== undefined) {
+    cond += " AND m.created_at >= ?";
+    args.push(span.since);
+  }
+  if (span.until !== undefined) {
+    cond += " AND m.created_at <= ?";
+    args.push(span.until);
+  }
+  return { cond, args };
+}
 
 function paramsJSON(p: Params): string {
   // Fixed key order, so that equal parameters give an equal derived mark.
@@ -644,15 +661,41 @@ export class Store {
     );
   }
 
+  // inSpanList returns the newest memories that took place within span,
+  // newest first: those the recent list may show, and with deep the
+  // archived ones too. An end of span left out is open.
+  inSpanList(clock: number, span: Span, deep: boolean, limit: number): Memory[] {
+    const { cond, args } = spanCond(span);
+    return this.memoriesBy(
+      "memories_standing_recent",
+      `WHERE ${isLive} AND ${isListed}${deep ? "" : ` AND ${notArchived}`}${cond} ORDER BY m.created_at DESC, m.n DESC LIMIT ?`,
+      ...(deep ? [] : [clock]), ...args, limit,
+    );
+  }
+
+  // inSpanNs returns the row numbers of the standing memories that took
+  // place within span: what a search by meaning kept to it may find. Read
+  // from the index alone.
+  inSpanNs(span: Span): Set<number> {
+    const { cond, args } = spanCond(span);
+    return new Set(
+      this.db
+        .all(`SELECT m.n FROM memories m INDEXED BY memories_standing_recent WHERE ${isLive} AND ${isListed}${cond}`, ...args)
+        .map((r) => num(r.n)),
+    );
+  }
+
   // searchText returns the memories that best match query by keyword when the
-  // clock reads clock, best first.
+  // clock reads clock, best first, among those that took place within span
+  // when one is given.
   //
   // An ordinary search matches active and core memories on anything they say,
   // and faded memories on their gist alone. Archived memories are left out. A
   // deep search matches every memory on anything it says.
-  searchText(query: string, clock: number, deep: boolean, limit: number): TextHit[] {
+  searchText(query: string, clock: number, deep: boolean, limit: number, span?: Span): TextHit[] {
     const match = matchQuery(query);
     if (match === "") return [];
+    const { cond, args } = span === undefined ? { cond: "", args: [] } : spanCond(span);
     // CROSS JOIN fixes the order: the keyword index is read first and each
     // match looked up by row number. Left to choose, the planner may walk an
     // index of memories and probe the keyword index once per memory.
@@ -661,21 +704,21 @@ export class Store {
           `SELECT memories_fts.rowid AS n, bm25(memories_fts) AS score
              FROM memories_fts CROSS JOIN memories m ON m.n = memories_fts.rowid
             WHERE memories_fts MATCH ? AND ${isListed} AND m.retracted = 0
-              AND m.state IN ('', '${StateSuperseded}', '${StateAbsorbed}')
+              AND m.state IN ('', '${StateSuperseded}', '${StateAbsorbed}')${cond}
             ORDER BY score LIMIT ?`,
-          match, limit,
+          match, ...args, limit,
         )
       : this.db.all(
           `SELECT n, score FROM (
              SELECT memories_fts.rowid AS n, bm25(memories_fts) AS score
                FROM memories_fts CROSS JOIN memories m ON m.n = memories_fts.rowid
-              WHERE memories_fts MATCH ? AND ${isLive} AND ${isListed} AND ${notYetFaded}
+              WHERE memories_fts MATCH ? AND ${isLive} AND ${isListed} AND ${notYetFaded}${cond}
              UNION ALL
              SELECT memories_fts.rowid, bm25(memories_fts)
                FROM memories_fts CROSS JOIN memories m ON m.n = memories_fts.rowid
-              WHERE memories_fts MATCH ? AND ${isLive} AND ${isListed} AND ${isFadedBand}
+              WHERE memories_fts MATCH ? AND ${isLive} AND ${isListed} AND ${isFadedBand}${cond}
            ) ORDER BY score LIMIT ?`,
-          match, clock, "gist : (" + match + ")", clock, clock, limit,
+          match, clock, ...args, "gist : (" + match + ")", clock, clock, ...args, limit,
         );
     // bm25 is negative, more so for a better match.
     return rows.map((r) => ({ n: num(r.n), score: -num(r.score) }));
@@ -966,10 +1009,11 @@ export class Store {
   }
 
   // searchVectors returns up to k memories whose vectors of label are
-  // closest to the unit vector q, best first, at or above min. The first
-  // search after the object wakes loads the vectors.
-  searchVectors(label: Label, q: Float32Array, k: number, min: number): VectorHit[] {
-    return this.vec.search(label, q, k, min);
+  // closest to the unit vector q, best first, at or above min, and only
+  // memories in among when it is given. The first search after the object
+  // wakes loads the vectors.
+  searchVectors(label: Label, q: Float32Array, k: number, min: number, among?: ReadonlySet<number>): VectorHit[] {
+    return this.vec.search(label, q, k, min, among);
   }
 
   // vectorCount reports how many vectors of label are stored.

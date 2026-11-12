@@ -308,7 +308,9 @@ describe("object", () => {
     const rs = await stub.recall({ query: "一件事" });
     if (isInvalid(rs)) throw new Error(rs.invalid);
     expect(rs.map((x) => [x.id, x.tier, x.byKeyword, x.recallCount])).toEqual([[r.id, "active", true, 0]]);
-    expect(await stub.recall({ query: " " })).toEqual({ invalid: "query is required" });
+    // A query is no longer required (a recall without one lists by time);
+    // a since that is not a date is what the caller can fix here.
+    expect(await stub.recall({ query: " ", since: "soon" })).toEqual({ invalid: "cannot read since \"soon\" as a date: write it like 2026-03-14 or 2026-03-14T09:30:00Z" });
     const es = await stub.expand({ ids: [r.id] });
     if (isInvalid(es)) throw new Error(es.invalid);
     expect(es[0]!.recallCount).toBe(1);

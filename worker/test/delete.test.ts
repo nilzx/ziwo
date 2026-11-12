@@ -246,7 +246,7 @@ describe("deleting a memory", () => {
     let open!: () => void;
     const gate = new Promise<void>((r) => (open = r));
     const slow = new WorkersAI(ai.asAi(), settings.model);
-    const held = { documents: async (t: string[]) => { await gate; return slow.documents(t); }, query: () => Promise.reject(new Error("no")) };
+    const held = { documents: async (t: string[]) => { await gate; return slow.documents(t); }, queries: () => Promise.reject(new Error("no")) };
     const stub = env.MEMORY.getByName(m.name);
     await runInDurableObject(stub, (obj: MemoryObject) => {
       obj.embedding = new Embedding(settings, held);

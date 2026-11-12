@@ -104,10 +104,21 @@ function ago(d: number): string {
   return `${Math.trunc(d / minute)} min ago`;
 }
 
-// formatRecall lays out what a recall found.
-export function formatRecall(results: Result[], deep: boolean, zone: string): string {
+// The sentences a recall answers when it finds or lists nothing. A search
+// that finds nothing points to the listing by time.
+export const nothingFound = "no matching memories; recall without a query lists your newest memories";
+export const nothingFoundShallow =
+  "no matching memories; recall with deep=true also searches what has faded, and recall without a query lists your newest memories";
+export const nothingInSpan = "no memories took place in that time";
+export const nothingListed = "no memories to list";
+const deepLists = "; recall with deep=true also lists those that have left ordinary recall";
+
+// formatRecall lays out what a recall found, or, given listed, what a recall
+// without a query listed; span says whether it was kept to a time.
+export function formatRecall(results: Result[], deep: boolean, zone: string, listed?: { span: boolean }): string {
   if (results.length === 0) {
-    return deep ? "no matching memories" : "no matching memories; recall with deep=true also searches what has faded";
+    if (listed !== undefined) return (listed.span ? nothingInSpan : nothingListed) + (deep ? "" : deepLists);
+    return deep ? nothingFound : nothingFoundShallow;
   }
   let b = "";
   for (const r of results) b += writeGist(r, r.tier, zone);

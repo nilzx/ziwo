@@ -103,6 +103,13 @@ export interface RecallNote {
   clock?: number;
 }
 
+// Span is the time a recall is kept to, by when its memories took place,
+// both ends included, in unix milliseconds. An end left out is open.
+export interface Span {
+  since?: number;
+  until?: number;
+}
+
 // TextHit is a memory matched by keyword.
 export interface TextHit {
   n: number;

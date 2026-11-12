@@ -128,7 +128,9 @@ describe("the query", () => {
     ]);
     for (const l of tools.filter((t) => t.tool === "recall")) {
       expect(typeof l.embed_ms).toBe("number");
-      expect(Object.keys(l).sort()).toEqual(["dur_ms", "embed_answer", "embed_ms", "embed_second", "memory", "msg", "outcome", "tool"]);
+      expect(Object.keys(l).sort()).toEqual([
+        "dur_ms", "embed_answer", "embed_ms", "embed_second", "memory", "msg", "outcome", "recall_by", "recall_parts", "recall_span", "tool",
+      ]);
     }
     expect(tools[3]!.embed_ms as number).toBeGreaterThanOrEqual(150);
     // Two calls for each of the last two recalls.
@@ -138,6 +140,33 @@ describe("the query", () => {
       { msg: "query embedding failed", reason: "timeout", limit_ms: 200 },
     ]);
     for (const l of lines) for (const w of ["feline", "部署"]) expect(JSON.stringify(l)).not.toContain(w);
+  });
+
+  it("names several things: embedded with its parts in one call, and searched part by part", async () => {
+    const s = await setup();
+    const log = vi.spyOn(console, "log");
+    const text = await s.c.ok("recall", { query: " feline、 release ", session_id: s.session });
+    expect(text).toContain(s.cat);
+    expect(text).toContain(s.deploy);
+    expect(s.workerAI.calls.map((x) => [x.form, x.texts, x.instruction])).toEqual([
+      ["queries", ["feline、 release", "feline", "release"], queryInstruction],
+    ]);
+    // The model failing, each part is searched by keyword.
+    s.workerAI.fail = true;
+    const kw = await s.c.ok("recall", { query: "猫, 部署", session_id: s.session });
+    expect([kw.includes(s.cat), kw.includes(s.deploy)]).toEqual([true, true]);
+    // Two calls for that one, the second try beside the first.
+    expect(s.workerAI.calls.map((x) => x.texts.length)).toEqual([3, 3, 3]);
+    const tools = logLines(log).filter((l) => l.msg === "tool");
+    expect(tools.map((l) => [l.recall_by, l.recall_parts, l.recall_span, l.embed_answer])).toEqual([
+      ["subject", 2, "none", "first"],
+      ["subject", 2, "none", "none"],
+    ]);
+    // A listing by time embeds nothing.
+    s.workerAI.fail = false;
+    await s.c.ok("recall", { since: "2026-01-01", session_id: s.session });
+    expect(s.workerAI.calls).toHaveLength(3);
+    for (const l of logLines(log)) for (const w of ["feline", "release", "部署"]) expect(JSON.stringify(l)).not.toContain(w);
   });
 
   it("is not embedded when search by meaning is off", async () => {

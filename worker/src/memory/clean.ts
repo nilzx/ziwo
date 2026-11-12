@@ -7,7 +7,7 @@
 // runes.
 
 import { SourceReconstructed } from "../store/content";
-import type { RememberInput } from "../store/types";
+import type { RememberInput, Span } from "../store/types";
 import { asUTC, instantOf, UTC } from "../zone";
 
 // Limits on what a single memory may hold. A memory is an account of a
@@ -204,6 +204,78 @@ const whenLayouts = [
 
 // The zero time of Go, in unix milliseconds.
 const goZeroTime = -62135596800000;
+
+// MaxQueryParts is how many parts of a query recall searches on their own.
+export const MaxQueryParts = 4;
+
+// Where a query that names several things is split: list punctuation, in
+// either width, and line breaks. A slash is left alone (dates, addresses),
+// and so is a comma between two digits (1,000).
+const partBreak = /[、，;；|\n\r\v\f\u0085\u2028\u2029]|(?<!\d),|,(?!\d)/u;
+
+// queryParts splits a query into the things it names, trimmed, empty ones
+// dropped. Past MaxQueryParts, the last part kept holds the rest as written
+// between them, so that what they name is still searched apart from the
+// first ones. A query that names one thing comes back as one part.
+export function queryParts(query: string): string[] {
+  const parts: string[] = [];
+  let rest = query;
+  for (;;) {
+    const m = partBreak.exec(rest);
+    if (parts.length === MaxQueryParts - 1 || m === null) {
+      const last = trimSpace(rest);
+      // The rest, once cut, may begin or end with a break of its own.
+      const tail = parts.length === MaxQueryParts - 1 ? trimBreaks(last) : last;
+      if (tail !== "") parts.push(tail);
+      return parts;
+    }
+    const part = trimSpace(rest.slice(0, m.index));
+    if (part !== "") parts.push(part);
+    rest = rest.slice(m.index + m[0].length);
+  }
+}
+
+const edgeBreaks = new RegExp(`^(?:${partBreak.source}|\\p{White_Space})+|(?:${partBreak.source}|\\p{White_Space})+$`, "gu");
+function trimBreaks(s: string): string {
+  return s.replace(edgeBreaks, "");
+}
+
+const dateAlone = /^\d{4}-\d{2}-\d{2}$/;
+
+// parseSpan reads the since and until of a recall in zone, as parseWhen
+// reads happened_at. A date alone is the whole day: since from its start,
+// until to its end. undefined when neither is given; blank counts as not
+// given.
+export function parseSpan(since: string | undefined, until: string | undefined, zone: string = UTC): Span | undefined {
+  const from = spanEnd("since", since, zone, false);
+  const to = spanEnd("until", until, zone, true);
+  if (from === undefined && to === undefined) return undefined;
+  if (from !== undefined && to !== undefined && from > to) {
+    throw invalid("since is after until: give a since that comes before until, or leave one out");
+  }
+  return { ...(from === undefined ? {} : { since: from }), ...(to === undefined ? {} : { until: to }) };
+}
+
+function spanEnd(field: string, s: string | undefined, zone: string, end: boolean): number | undefined {
+  if (s === undefined) return undefined;
+  s = trimSpace(s);
+  if (s === "") return undefined;
+  let at: number | undefined;
+  try {
+    at = parseWhen(s, zone);
+  } catch (err) {
+    if (err instanceof InvalidInput) {
+      throw invalid(`cannot read ${field} ${goQuote(s)} as a date: write it like 2026-03-14 or 2026-03-14T09:30:00Z`);
+    }
+    throw err;
+  }
+  if (!end || !dateAlone.test(s)) return at ?? goZeroTime;
+  // To the end of the day: the start of the next one, less a millisecond.
+  const [y, mo, d] = s.split("-").map(Number) as [number, number, number];
+  const next = new Date(asUTC({ year: y, month: mo, day: d + 1, hour: 0, minute: 0, second: 0, ms: 0 }));
+  const wall = { year: next.getUTCFullYear(), month: next.getUTCMonth() + 1, day: next.getUTCDate(), hour: 0, minute: 0, second: 0, ms: 0 };
+  return (zone === UTC ? asUTC(wall) : instantOf(wall, zone)) - 1;
+}
 
 function daysIn(month: number, year: number): number {
   if (month === 2) return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0) ? 29 : 28;

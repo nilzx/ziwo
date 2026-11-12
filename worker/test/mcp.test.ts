@@ -41,6 +41,30 @@ const rememberChanges: [string, string][] = [
   ],
 ];
 
+// What recall says beyond Go: it looks by time, and a query may name
+// several things.
+const recallChanges: [string, string][] = [
+  [
+    "the ones that matter. Memories marked faded",
+    "the ones that matter. To ask about several things at once, name them in one query separated by commas. To look by time instead, leave out query and give since, until, or neither for your newest memories; with a query, since and until keep the search to that time. Memories marked faded",
+  ],
+  ["A memory that is listed stays within reach.", "A memory that a search lists stays within reach."],
+];
+const recallFields = {
+  query: {
+    type: "string",
+    description: "what you are trying to remember; several things separated by commas are each searched; leave out to look by time",
+  },
+  since: {
+    type: "string",
+    description: "only memories from this time on, such as 2026-03-14 or 2026-03-14 09:30, in the time zone of this conversation; a date alone counts from the start of that day",
+  },
+  until: {
+    type: "string",
+    description: "only memories up to this time, written as for since; a date alone counts to the end of that day",
+  },
+};
+
 // expected is what Go showed, with the changes this port makes and no
 // others.
 function expectedListing(): { instructions: string; tools: Map<string, Omit<ToolListing, "title" | "annotations">> } {
@@ -72,6 +96,16 @@ function expectedListing(): { instructions: string; tools: Map<string, Omit<Tool
         expect(copy.description).toContain(was);
         copy.description = copy.description.replace(was, is);
       }
+    }
+    if (t.name === "recall") {
+      for (const [was, is] of recallChanges) {
+        expect(copy.description).toContain(was);
+        copy.description = copy.description.replace(was, is);
+      }
+      // query is no longer required; since and until are new.
+      expect(copy.inputSchema.required).toEqual(["query"]);
+      delete copy.inputSchema.required;
+      Object.assign(copy.inputSchema.properties as Record<string, unknown>, recallFields);
     }
     if (t.name === "get_context") {
       const props = copy.inputSchema.properties as Record<string, unknown>;
@@ -144,7 +178,7 @@ describe.each(generations)("%s protocol generation", (gen) => {
     // Required fields stay required in what the client sees.
     const required = Object.fromEntries(listed.map((t) => [t.name, t.inputSchema.required ?? []]));
     expect(required).toEqual({
-      get_context: [], remember: ["session_id", "gist", "body"], recall: ["query"], expand: ["ids"],
+      get_context: [], remember: ["session_id", "gist", "body"], recall: [], expand: ["ids"],
       reflect: ["session_id"], amend: ["session_id", "action"], erase: ["session_id", "id"], check: [],
     });
   });
@@ -231,8 +265,9 @@ describe.each(generations)("%s protocol generation", (gen) => {
     W.forEach((w, i) => (ids[`W${i}`] = w));
 
     // The only differences from Go: get_context shows the time now and ends
-    // with what the server says, set apart from the memories, and an answer
-    // that shows a time or a date names its zone.
+    // with what the server says, set apart from the memories, an answer
+    // that shows a time or a date names its zone, and a recall that finds
+    // nothing points to a recall without a query.
     const nowLine = "now: 2026-11-11 08:00Z (UTC)\n";
     const zoneLine = "time zone: UTC\n";
     const withNow = (s: string): string => s.replace(/^(session: [^\n]*\n)/, `$1${nowLine}`) + serverSpeaks + writeUnasked;
@@ -245,6 +280,8 @@ describe.each(generations)("%s protocol generation", (gen) => {
       "expand-built": (s) => s + zoneLine,
       "reflect-nothing": (s) => s + zoneLine,
       "recall-all": (s) => s + zoneLine,
+      "recall-none-deep": (s) => s + "; recall without a query lists your newest memories",
+      "recall-none": (s) => s + ", and recall without a query lists your newest memories",
     };
     expect(Object.keys(got).sort()).toEqual(Object.keys(goAnswers).sort());
     for (const [step, text] of Object.entries(got)) {
@@ -273,7 +310,9 @@ describe("arguments that do not fit a tool", () => {
       ["remember", { session_id: s, gist: "g", body: "b", people: "Ann" }, "people must be a list of text"],
       ["remember", { session_id: s, gist: "g", body: "b", people: ["Ann", 2] }, "people must be a list of text"],
       ["remember", { session_id: s, gist: "g", body: "b", mood: "x" }, `"mood" is not a field`],
-      ["recall", {}, "query is required"],
+      ["recall", { since: 5 }, "since must be text"],
+      ["recall", { until: "yesterday" }, `cannot read until "yesterday" as a date: write it like 2026-03-14 or 2026-03-14T09:30:00Z`],
+      ["recall", { since: "2026-03-15", until: "2026-03-14 23:00" }, "since is after until: give a since that comes before until, or leave one out"],
       ["recall", { query: "q", limit: 2.5 }, "limit must be a whole number"],
       ["recall", { query: "q", deep: "yes" }, "deep must be true or false"],
       ["expand", {}, "ids is required"],

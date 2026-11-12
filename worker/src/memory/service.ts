@@ -10,7 +10,7 @@ import { StateErased } from "../store/content";
 import { retentionOf, type Tier, type TierCounts, tierOf } from "../store/decay";
 import { covered, searchTerms } from "../store/segment";
 import { NoSessionError, type Store } from "../store/store";
-import { type CarrierNote, isLive, type Memory, type Preference, type RestoreNote, type Session } from "../store/types";
+import { type CarrierNote, isLive, type Memory, type Preference, type RestoreNote, type Session, type Span } from "../store/types";
 import {
   amend,
   type AmendRequest,
@@ -29,6 +29,7 @@ import {
   InvalidInput,
   MaxExpand,
   MaxRecall,
+  queryParts,
   type RememberRequest,
   trimSpace,
 } from "./clean";
@@ -80,6 +81,11 @@ export interface Result extends Memory {
 export interface MeaningHit {
   n: number;
   score: number;
+}
+
+// within says whether an instant falls within span, both ends included.
+export function within(at: number, span: Span): boolean {
+  return (span.since === undefined || at >= span.since) && (span.until === undefined || at <= span.until);
 }
 
 // recallDepth is how many matches recall weighs from each way of searching
@@ -145,95 +151,117 @@ export class Service {
   }
 
   // recall searches by keyword, takes the matches by meaning it is given,
-  // and returns the best of them.
+  // and returns the best of them. Without a query it lists instead: see list.
   //
   // An ordinary search finds active and core memories by anything they say
   // and faded ones by their gist or their meaning. A deep search also reads
-  // the details of faded memories and reaches archived ones.
+  // the details of faded memories and reaches archived ones. With a span,
+  // only memories that took place within it are searched.
   //
-  // Being listed restarts a memory's decay; it is logged before this
-  // returns. The results describe the memories as they were before. session
-  // is the caller's session id and may be empty.
-  recall(query: string, limit: number, deep: boolean, session: string, byMeaning?: MeaningHit[]): Result[] {
+  // A query that names several things (queryParts) is searched whole and
+  // part by part; byMeaning holds the matches by meaning of the whole query,
+  // and partsByMeaning, when given, those of each part in order.
+  //
+  // Being listed by a search restarts a memory's decay; it is logged before
+  // this returns. The results describe the memories as they were before.
+  // session is the caller's session id and may be empty.
+  recall(
+    query: string, limit: number, deep: boolean, session: string, byMeaning?: MeaningHit[],
+    more: { span?: Span; partsByMeaning?: (MeaningHit[] | undefined)[] } = {},
+  ): Result[] {
     query = trimSpace(query);
-    if (query === "") throw new InvalidInput("query is required");
-    query = clip(query, 500);
     if (limit <= 0) limit = DefaultRecall;
     else if (limit > MaxRecall) limit = MaxRecall;
+    if (query === "") return this.list(more.span, limit, deep);
+    query = clip(query, 500);
     const depth = recallDepth(limit);
     const clock = this.st.clock();
-    const byKeyword = this.st.searchText(query, clock, deep, depth);
 
-    // Each way of searching scores a memory between 0 and 1: keyword matches
-    // relative to the best keyword match and by how much of the search they
-    // hold, matches by meaning by their cosine similarity. Relevance is the
-    // average over the ways that found anything, so a memory found both ways
-    // outranks one found by a single way.
-    interface Cand {
-      keyword: number;
-      meaning: number;
-      byKeyword: boolean;
-      byMeaning: boolean;
+    // The searches made: the whole query, then each part when it has two or
+    // more. Each scores a memory between 0 and 1 as a recall of its text
+    // alone would: keyword matches relative to its best keyword match and by
+    // how much of its terms they hold, matches by meaning by their cosine
+    // similarity. A search's relevance is the average over the ways that
+    // found anything in it, so a memory found both ways outranks one found by
+    // a single way.
+    interface Search {
+      terms: string[];
+      keyword: Map<number, number>;
+      meaning: Map<number, number>;
+      ways: number;
     }
-    const cands = new Map<number, Cand>();
-    const get = (n: number): Cand => {
-      let c = cands.get(n);
-      if (c === undefined) {
-        c = { keyword: 0, meaning: 0, byKeyword: false, byMeaning: false };
-        cands.set(n, c);
+    const parts = queryParts(query);
+    const texts = parts.length >= 2 ? [query, ...parts] : [query];
+    const searches: Search[] = texts.map((text, i) => {
+      const s: Search = { terms: searchTerms(text), keyword: new Map(), meaning: new Map(), ways: 0 };
+      const byKeyword = this.st.searchText(text, clock, deep, depth, more.span);
+      if (byKeyword.length > 0) {
+        s.ways++;
+        const best = byKeyword[0]!.score;
+        for (const h of byKeyword) s.keyword.set(h.n, best > 0 ? h.score / best : 1);
       }
-      return c;
-    };
-    let ways = 0;
-    if (byKeyword.length > 0) {
-      ways++;
-      const best = byKeyword[0]!.score;
-      for (const h of byKeyword) {
-        const c = get(h.n);
-        c.byKeyword = true;
-        c.keyword = best > 0 ? h.score / best : 1;
+      const meaning = i === 0 ? byMeaning : more.partsByMeaning?.[i - 1];
+      if (meaning !== undefined) {
+        if (meaning.length > 0) s.ways++;
+        for (const h of meaning) s.meaning.set(h.n, h.score);
       }
-    }
-    if (byMeaning !== undefined) {
-      if (byMeaning.length > 0) ways++;
-      for (const h of byMeaning) {
-        const c = get(h.n);
-        c.byMeaning = true;
-        c.meaning = h.score;
-      }
-    }
-    if (cands.size === 0) return [];
+      return s;
+    });
+    const ns = new Set<number>();
+    for (const s of searches) for (const n of [...s.keyword.keys(), ...s.meaning.keys()]) ns.add(n);
+    if (ns.size === 0) return [];
 
-    const found = this.st.byN([...cands.keys()]);
-    const terms = searchTerms(query);
-    const kept: { r: Result; relevance: number }[] = [];
-    let top = 0;
+    const found = this.st.byN([...ns]);
+    // What each search gives each memory it may return, and its best.
+    interface Scored {
+      m: Memory;
+      tier: Tier;
+      by: ({ relevance: number; byKeyword: boolean; byMeaning: boolean } | undefined)[];
+    }
+    const scored: Scored[] = [];
+    const tops = searches.map(() => 0);
     for (const [n, m] of found) {
       const tier = tierOf(m, clock);
       if (tier === "archived" && !deep) continue; // its vector may not have been dropped yet
       // The same goes for a memory that no longer stands. One that was
       // replaced or put into an episode is still reached by a deep search.
       if (m.retracted || m.state === StateErased || (!isLive(m) && !deep)) continue;
-      const c = cands.get(n)!;
-      if (c.byKeyword) c.keyword *= this.share(terms, m, tier === "faded" && !deep);
-      const relevance = (c.keyword + c.meaning) / ways;
-      top = Math.max(top, relevance);
-      kept.push({
-        relevance,
-        r: {
-          ...m,
-          tier,
-          // Relevance leads. Importance and how well the memory has been
-          // retained scale it by at most a factor of three between them.
-          score: relevance * (0.7 + 0.3 * m.importance) * (0.5 + 0.5 * retentionOf(m, clock)),
-          byKeyword: c.byKeyword,
-          byMeaning: c.byMeaning,
-          sources: [],
-          readings: [],
-        },
+      if (more.span !== undefined && !within(m.createdAt, more.span)) continue;
+      const by = searches.map((s, i) => {
+        const k = s.keyword.get(n);
+        const mean = s.meaning.get(n);
+        if (k === undefined && mean === undefined) return undefined;
+        const keyword = k === undefined ? 0 : k * this.share(s.terms, m, tier === "faded" && !deep);
+        const relevance = (keyword + (mean ?? 0)) / s.ways;
+        tops[i] = Math.max(tops[i]!, relevance);
+        return { relevance, byKeyword: k !== undefined, byMeaning: mean !== undefined };
+      });
+      scored.push({ m, tier, by });
+    }
+    // A search keeps what reaches the floor under its own best match, as a
+    // recall of its text alone would. A memory takes the best relevance of
+    // the searches that keep it, and is marked as that search found it; the
+    // whole query wins a tie.
+    let results: Result[] = [];
+    for (const { m, tier, by } of scored) {
+      let best: { relevance: number; byKeyword: boolean; byMeaning: boolean } | undefined;
+      by.forEach((r, i) => {
+        if (r === undefined || r.relevance < relevanceFloor * tops[i]!) return;
+        if (best === undefined || r.relevance > best.relevance) best = r;
+      });
+      if (best === undefined) continue;
+      results.push({
+        ...m,
+        tier,
+        // Relevance leads. Importance and how well the memory has been
+        // retained scale it by at most a factor of three between them.
+        score: best.relevance * (0.7 + 0.3 * m.importance) * (0.5 + 0.5 * retentionOf(m, clock)),
+        byKeyword: best.byKeyword,
+        byMeaning: best.byMeaning,
+        sources: [],
+        readings: [],
       });
     }
-    let results = kept.filter((k) => k.relevance >= relevanceFloor * top).map((k) => k.r);
     results.sort((a, b) => (a.score !== b.score ? b.score - a.score : b.n - a.n));
     if (results.length > limit) results = results.slice(0, limit);
     if (results.length === 0) return [];
@@ -242,6 +270,18 @@ export class Service {
       { at: this.now(), session: this.knownSession(session), query, ids: results.map((r) => r.id), clock },
     ]);
     return results;
+  }
+
+  // list returns the newest memories that took place within span, or the
+  // newest of all without one, newest first: those the recent list of a new
+  // session may show, and with deep the archived ones too. Like that list, it
+  // counts as nothing coming to mind: nothing is logged and no decay
+  // restarts. limit is already within bounds.
+  private list(span: Span | undefined, limit: number, deep: boolean): Result[] {
+    const clock = this.st.clock();
+    return this.st.inSpanList(clock, span ?? {}, deep, limit).map((m) => ({
+      ...m, tier: tierOf(m, clock), score: 0, byKeyword: false, byMeaning: false, sources: [], readings: [],
+    }));
   }
 
   // share is the part of a search's terms that a memory found by keyword

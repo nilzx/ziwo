@@ -43,6 +43,7 @@ export class TopicEmbedder implements Embedder {
   documentCalls = 0;
   documentTexts = 0;
   queryCalls = 0;
+  queryTexts = 0;
 
   async documents(texts: string[]): Promise<number[][]> {
     this.documentCalls++;
@@ -52,10 +53,11 @@ export class TopicEmbedder implements Embedder {
     return texts.map(topicVector);
   }
 
-  async query(text: string): Promise<number[]> {
+  async queries(texts: string[]): Promise<number[][]> {
     this.queryCalls++;
+    this.queryTexts += texts.length;
     if (this.down) throw new Error("connection refused");
-    return topicVector(text);
+    return texts.map(topicVector);
   }
 }
 

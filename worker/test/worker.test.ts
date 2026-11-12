@@ -331,7 +331,11 @@ describe("the access log", () => {
       expect(l).not.toContain(m.token);
       for (const r of results) expect(l).not.toContain(r.trim().split("\n")[0]);
       const p = parsed[i]!;
-      if (p.msg === "tool") {
+      if (p.msg === "tool" && p.tool === "recall") {
+        // A recall adds what kind it was, in fixed words and a figure.
+        expect(Object.keys(p).sort()).toEqual(["dur_ms", "memory", "msg", "outcome", "recall_by", "recall_parts", "recall_span", "tool"]);
+        expect([p.recall_by, p.recall_parts, p.recall_span]).toEqual(["subject", 1, "none"]);
+      } else if (p.msg === "tool") {
         expect(Object.keys(p).sort()).toEqual(["dur_ms", "memory", "msg", "outcome", "tool"]);
       } else {
         expect(p.msg).toBe("request");

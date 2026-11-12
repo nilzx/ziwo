@@ -293,7 +293,8 @@ describe("service", () => {
       const m = f.get((r as { id: string }).id);
       expect([m.moment, m.source, m.importance, m.people, m.gist === long(MaxGistRunes)]).toEqual(["other", "lived", 0.5, ["年糕"], true]);
 
-      expect(f.obj.recall({ query: "  " })).toEqual({ invalid: "query is required" });
+      // A blank query lists by time; a since that is not a date is refused.
+      expect(f.obj.recall({ query: "  ", since: "soon" })).toEqual({ invalid: "cannot read since \"soon\" as a date: write it like 2026-03-14 or 2026-03-14T09:30:00Z" });
       expect(f.obj.expand({ ids: [] })).toEqual({ invalid: "ids is required" });
       expect(f.obj.expand({ ids: distinct(MaxExpand + 1) })).toEqual({ invalid: "at most 10 ids per call" });
     }));

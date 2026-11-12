@@ -5,7 +5,9 @@
 // server instructions say when to use erase, and the instructions and
 // remember say that a conversation is to leave a memory of what it was about
 // and where it was left (a real client loaded its memory, talked an idea
-// over, met none of the listed moments and wrote nothing).
+// over, met none of the listed moments and wrote nothing), and recall looks
+// by time and takes several things in one query (a real client asked for
+// "the recent conversations" and for a list of topics, and found nothing).
 //
 // The SDK checks arguments against a tool's schema and answers a mismatch in
 // its own words. Here each tool's schema checks nothing (see listed): the
@@ -41,7 +43,7 @@ Importance decides how long a memory lasts without coming to mind. 0.5 is an ord
 
 To write down what you lived through before this memory existed, from a record you are reading such as an old transcript: set source to "reconstructed", happened_at to the day it took place, and pointer to where the record is. Write a few accounts for each conversation, not one for each turn, and take the oldest conversation first. Leave feeling empty unless the record itself shows it. Only your own past goes in this way; what another AI lived through is something you were told.`;
 
-const recallDesc = `Search your memories by topic, person or situation. Returns one-line gists with ids; call expand for the full text of the ones that matter. Memories marked faded were matched on their gist or their general meaning; their details are no longer searched. Set deep to search those details and to reach memories that have dropped out of ordinary recall. A memory that is listed stays within reach. It grows stronger only when you read it with expand.`;
+const recallDesc = `Search your memories by topic, person or situation. Returns one-line gists with ids; call expand for the full text of the ones that matter. To ask about several things at once, name them in one query separated by commas. To look by time instead, leave out query and give since, until, or neither for your newest memories; with a query, since and until keep the search to that time. Memories marked faded were matched on their gist or their general meaning; their details are no longer searched. Set deep to search those details and to reach memories that have dropped out of ordinary recall. A memory that a search lists stays within reach. It grows stronger only when you read it with expand.`;
 
 const expandDesc = `Return memories in full, by id. Reading a memory in full strengthens it and brings it back if it had faded.`;
 
@@ -157,7 +159,18 @@ export const tools: ToolDef[] = [
   {
     name: "recall", title: "Recall memories", description: recallDesc, annotations: reads,
     fields: [
-      { name: "query", type: "string", required: true, description: "what you are trying to remember" },
+      {
+        name: "query", type: "string",
+        description: "what you are trying to remember; several things separated by commas are each searched; leave out to look by time",
+      },
+      {
+        name: "since", type: "string",
+        description: "only memories from this time on, such as 2026-03-14 or 2026-03-14 09:30, in the time zone of this conversation; a date alone counts from the start of that day",
+      },
+      {
+        name: "until", type: "string",
+        description: "only memories up to this time, written as for since; a date alone counts to the end of that day",
+      },
       { name: "limit", type: "integer", description: "how many memories to return; default 5, at most 20" },
       {
         name: "deep", type: "boolean",
@@ -367,7 +380,10 @@ function callOf(tool: ToolName, a: Args, client: string): ToolCall {
         },
       };
     case "recall":
-      return { tool, query: text(a, "query") ?? "", limit: num(a, "limit"), deep: flag(a, "deep"), sessionId: text(a, "session_id") };
+      return {
+        tool, query: text(a, "query") ?? "", limit: num(a, "limit"), deep: flag(a, "deep"), sessionId: text(a, "session_id"),
+        since: text(a, "since"), until: text(a, "until"),
+      };
     case "expand":
       return { tool, ids: list(a, "ids") ?? [], sessionId: text(a, "session_id") };
     case "reflect":

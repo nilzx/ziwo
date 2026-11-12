@@ -1,8 +1,8 @@
 import { DurableObject } from "cloudflare:workers";
-import { InvalidInput, parseWhen, type RememberRequest, trimSpace } from "./memory/clean";
+import { clip, InvalidInput, parseSpan, parseWhen, queryParts, type RememberRequest, trimSpace } from "./memory/clean";
 import type { AmendRequest, EntryRequest, EraseRequest, ReflectView } from "./memory/amend";
 import { type ContextView, type MeaningHit, recallDepth, type Result, Service } from "./memory/service";
-import { embedSettings, prepare, type QueryVector, WorkersAI } from "./embed";
+import { embedSettings, prepare, type QueryVector, queryMaxRunes, WorkersAI } from "./embed";
 import { type EmbedRun, Embedding } from "./memory/embedding";
 import { logLine } from "./log";
 import type { HeldFigure, Label } from "./store/vectors";
@@ -31,13 +31,26 @@ export interface Invalid {
 // session that writes it.
 export type RememberArgs = Omit<RememberRequest, "happened"> & { happenedAt?: string };
 
+// RecallArgs is a recall as a tool call sends it. query may be empty, to
+// list by time; since and until are text, read in the zone of the session
+// that asks, as happened_at is. meaning is the query's embedding, made by the
+// Worker, if it made one.
+export interface RecallArgs {
+  query: string;
+  limit?: number;
+  deep?: boolean;
+  sessionId?: string;
+  since?: string;
+  until?: string;
+  meaning?: QueryVector;
+}
+
 // ToolCall is one tool call, its arguments already checked against the
 // tool's schema, as the Worker hands it to answer.
 export type ToolCall =
   | { tool: "get_context"; model?: string; timezone?: string; client?: string }
   | { tool: "remember"; args: RememberArgs }
-  // meaning is the query's embedding, made by the Worker, if it made one.
-  | { tool: "recall"; query: string; limit?: number; deep?: boolean; sessionId?: string; meaning?: QueryVector }
+  | ({ tool: "recall" } & RecallArgs)
   | { tool: "expand"; ids: string[]; sessionId?: string }
   | {
       tool: "reflect";
@@ -196,28 +209,52 @@ export class Memory extends DurableObject<Env> {
   }
 
   // meaningFor searches the vectors with the query's embedding, which the
-  // Worker made. Without one, or with one of another label, recall reads
-  // keywords alone. The object never calls the model for a query.
-  private meaningFor(query: string, v: QueryVector | undefined, limit: number): MeaningHit[] | undefined {
+  // Worker made, and with those of the query's parts when it names several
+  // things: the whole query's hits, then each part's in order. Without a
+  // vector, or with one of another label, recall reads keywords alone; parts
+  // whose vectors do not fit the parts of the query are read by keyword. The
+  // object never calls the model for a query. among keeps the search to the
+  // memories of a span.
+  private meaningFor(
+    query: string, v: QueryVector | undefined, limit: number, among?: ReadonlySet<number>,
+  ): { whole?: MeaningHit[]; parts?: (MeaningHit[] | undefined)[] } {
     const emb = this.emb;
-    if (emb === null || v === undefined || trimSpace(query) === "") return undefined;
+    if (emb === null || v === undefined || trimSpace(query) === "") return {};
     const s = emb.settings;
-    if (v.model !== s.model || v.dims !== s.dims || v.values.length !== s.dims) return undefined;
-    let q: Float32Array;
-    try {
-      q = prepare(v.values, s.dims);
-    } catch {
-      return undefined;
-    }
-    return this.store.searchVectors(emb.label, q, recallDepth(limit), s.minSimilarity);
+    if (v.model !== s.model || v.dims !== s.dims) return {};
+    const search = (values: Float32Array): MeaningHit[] | undefined => {
+      if (values.length !== s.dims) return undefined;
+      let q: Float32Array;
+      try {
+        q = prepare(values, s.dims);
+      } catch {
+        return undefined;
+      }
+      return this.store.searchVectors(emb.label, q, recallDepth(limit), s.minSimilarity, among);
+    };
+    const whole = search(v.values);
+    if (whole === undefined) return {};
+    // The Worker split the query as recall splits it, from the same text.
+    const parts = queryParts(clip(trimSpace(query), queryMaxRunes));
+    if (parts.length < 2 || v.parts === undefined || v.parts.length !== parts.length) return { whole };
+    return { whole, parts: v.parts.map(search) };
   }
 
-  private recallWith(args: { query: string; limit?: number; deep?: boolean; sessionId?: string; meaning?: QueryVector }): Result[] {
+  private recallWith(args: RecallArgs): Result[] {
     const query = args.query ?? "";
     const limit = args.limit ?? 0;
-    const results = this.service.recall(query, limit, args.deep ?? false, args.sessionId ?? "", this.meaningFor(query, args.meaning, limit));
-    // Listed, an archived memory comes back, and needs its vector again.
-    if (results.some((r) => r.tier === "archived")) this.askFull();
+    const deep = args.deep ?? false;
+    const span = parseSpan(args.since, args.until, this.zoneFor(args.sessionId));
+    const among = span !== undefined && trimSpace(query) !== "" && args.meaning !== undefined && this.emb !== null
+      ? this.store.inSpanNs(span) : undefined;
+    const meaning = this.meaningFor(query, args.meaning, limit, among);
+    const results = this.service.recall(query, limit, deep, args.sessionId ?? "", meaning.whole, {
+      ...(span === undefined ? {} : { span }),
+      ...(meaning.parts === undefined ? {} : { partsByMeaning: meaning.parts }),
+    });
+    // Listed by a search, an archived memory comes back, and needs its vector
+    // again. A listing by time brings nothing back.
+    if (trimSpace(query) !== "" && results.some((r) => r.tier === "archived")) this.askFull();
     return results;
   }
 
@@ -378,7 +415,7 @@ export class Memory extends DurableObject<Env> {
     });
   }
 
-  recall(args: { query: string; limit?: number; deep?: boolean; sessionId?: string; meaning?: QueryVector }): Result[] | Invalid {
+  recall(args: RecallArgs): Result[] | Invalid {
     return outcome(() => this.recallWith(args));
   }
 
@@ -436,7 +473,9 @@ export class Memory extends DurableObject<Env> {
         }
         case "recall": {
           const results = this.recallWith(call);
-          return { text: formatRecall(results, call.deep ?? false, this.zoneFor(call.sessionId)) };
+          const listed = trimSpace(call.query ?? "") === "";
+          const span = trimSpace(call.since ?? "") !== "" || trimSpace(call.until ?? "") !== "";
+          return { text: formatRecall(results, call.deep ?? false, this.zoneFor(call.sessionId), listed ? { span } : undefined) };
         }
         case "expand": {
           const results = this.expandWith(call.ids, call.sessionId ?? "");

@@ -27,6 +27,7 @@ interface Seen {
 
 class Scripted implements Embedder {
   seen: Seen[] = [];
+  texts: string[][] = []; // what each call was sent
   private t0 = 0;
 
   constructor(private readonly plays: Play[]) {}
@@ -35,7 +36,8 @@ class Scripted implements Embedder {
     throw new Error("not used");
   }
 
-  query(_text: string, signal?: AbortSignal): Promise<number[]> {
+  queries(texts: string[], signal?: AbortSignal): Promise<number[][]> {
+    this.texts.push(texts);
     if (this.seen.length === 0) this.t0 = Date.now();
     const play = this.plays[this.seen.length] ?? { delay: 0, fail: true };
     const seen: Seen = { startedAt: Date.now() - this.t0, aborted: false };
@@ -47,7 +49,8 @@ class Scripted implements Embedder {
       const end = () => {
         seen.settledAt = Date.now() - this.t0;
         if (play.fail) reject(new Error("model unavailable"));
-        else resolve(play.vector ?? [1, 0, 0]);
+        // One vector per text: the scripted one first, then other axes.
+        else resolve(texts.map((_t, i) => (i === 0 ? (play.vector ?? [1, 0, 0]) : [0, 1, 2].map((j) => (j === i % 3 ? 1 : 0)))));
       };
       if (play.delay === 0 && play.fail) {
         // Fails before anything is awaited.
@@ -190,6 +193,30 @@ describe("the second try", () => {
     expect(r.got.took).toMatchObject({ second: "not_needed", answer: "none" });
     expect(r.emb.seen).toHaveLength(1);
     expect(r.lines).toEqual([{ msg: "query embedding failed", reason: "timeout", limit_ms: 150 }]);
+  });
+
+  it("sends a query that names several things with its parts, on both calls, and hands back a vector for each", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const emb = new Scripted([{ delay: 400, vector: first, heedsAbort: true }, { delay: 10, vector: second }]);
+    const got = await embedQuery(emb, settings, " music, animals ");
+    expect(emb.texts).toEqual([["music, animals", "music", "animals"], ["music, animals", "music", "animals"]]);
+    expect(Array.from(got.vector!.values)).toEqual(second);
+    expect(got.vector!.parts!.map((p) => Array.from(p))).toEqual([[0, 1, 0], [0, 0, 1]]);
+    expect(got.took).toMatchObject({ second: "after_delay", answer: "second" });
+    // A query that names one thing has no parts.
+    const one = await embedQuery(new Scripted([{ delay: 0, vector: first }]), settings, "music,");
+    expect(one.vector!.parts).toBeUndefined();
+  });
+
+  it("counts an answer without a vector for each text as that call's failure", async () => {
+    const short: Embedder = {
+      documents: () => Promise.reject(new Error("not used")),
+      queries: () => Promise.resolve([[1, 0, 0]]),
+    };
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const got = await embedQuery(short, { ...settings, queryHedgeMs: 0 }, "music, animals");
+    expect(got.vector).toBeUndefined();
+    expect(got.took).toMatchObject({ answer: "none" });
   });
 
   it("calls nothing for an empty query", async () => {
