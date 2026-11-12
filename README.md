@@ -94,8 +94,8 @@ It has so far been run on a paid account only. How far the free plan carries a l
 
 ziwo is young. What has been tried, and what has not:
 
-- Used with the Claude apps (web and phone), connected by sign-in, and tried with Claude Code in scripted conversations.
-- The steps for ChatGPT, Codex and other clients are written from their documentation and have not been tried against them.
+- Used with the Claude apps (web and phone) and with ChatGPT (web, desktop and phone), connected by sign-in, and tried with Claude Code in scripted conversations.
+- The steps for Codex and other clients are written from their documentation and have not been tried against them.
 - The one-click button has not yet been tried from start to finish. If it fails for you, the terminal steps above are the tested way, and an issue would be welcome.
 - The numbers behind forgetting are starting values, not yet tuned against long use.
 - A broad word does not always find a memory about something specific: asking about "music" may miss a memory about practising the guitar, where "guitar" finds it.

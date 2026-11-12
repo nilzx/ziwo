@@ -666,7 +666,7 @@ The Worker is the OAuth authorization server of its own origin (`@cloudflare/wor
 
 No request without a credential writes to KV: a free account's KV takes 1,000 writes a day, which every client's renewals need. [oauth-notes.md](../worker/docs/oauth-notes.md) lists every KV write that remains and what the caller must hold for it, the sources, and what is not built.
 
-The whole flow was walked by a script against a deployment on 2026-11-12, and the Claude web and mobile apps connected through it the same day, approving with a memory's token. ChatGPT has not been connected yet.
+The whole flow was walked by a script against a deployment on 2026-11-12, and the Claude web and mobile apps connected through it the same day, approving with a memory's token. ChatGPT (web, desktop and mobile) connected the same day, identifying itself by a metadata document and authenticating with `none`.
 
 ### The limit on guessing
 
@@ -810,7 +810,7 @@ A broad word in a query may not reach an item that names a specific instance of 
 - The CPU of the code as it is now (with search by meaning, OAuth, recall by time and queries in parts) has not been measured on the platform.
 - How a real model's embeddings rank real memories; the threshold of 0.45 rests on made-up pairs.
 - Keyword search on real Chinese, Japanese and Korean text.
-- Clients other than Claude Code (headless, against `wrangler dev`, 2026-11-11) and the Claude web and mobile apps (against the deployed Worker, 2026-11-12). ChatGPT on the web and mobile, which need OAuth, have not been connected to the Worker.
+- Clients other than Claude Code (headless, against `wrangler dev`, 2026-11-11), and the Claude web and mobile apps and ChatGPT on the web, desktop and mobile (against the deployed Worker through OAuth, 2026-11-12).
 - How Workers AI usage counts against a free account's allowance.
 
 ## Development
