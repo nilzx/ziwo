@@ -27,9 +27,6 @@
   },
   "cloudflare": {
     "bindings": {
-      "ADMIN_SECRET": {
-        "description": "**At least 16 characters.** The password of your admin page, where you create memories and connect clients. This form does not check the length: a shorter one deploys, but the admin page stays locked until you set a longer one. Keep it somewhere safe: it cannot be shown again."
-      },
       "OAUTH_KV": {
         "description": "Keeps which clients you have approved. Created for you."
       },

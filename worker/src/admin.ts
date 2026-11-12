@@ -1,12 +1,16 @@
 // The admin API: what the owner of a deployment uses to run it. Every route
-// needs the bearer ADMIN_SECRET and is not there without one that counts
-// (adminSecretOf). No route but
-// export returns what a memory says: figures, ids, names, settings, the check
-// report and the clients granted access only.
+// needs the bearer admin secret and is not there without one
+// (adminSecretState): ADMIN_SECRET when it counts (adminSecretOf), else one
+// set on the admin page. /admin/setup alone needs no credential: it says
+// which of the two there is, and sets the second while that is allowed. No
+// route but export returns what a memory says: figures, ids, names,
+// settings, the check report and the clients granted access only.
 
-import { directoryName, type Listed } from "./directory";
+import { directoryName, type Listed, type StoredSecret } from "./directory";
 import { waitFor } from "./guard";
-import { bearer, encoder, invalidNameMessage, json, type JSONRecord, newToken, notFound, sha256Hex, unauthorized, validName } from "./http";
+import {
+  bearer, encoder, invalidNameMessage, json, type JSONRecord, newToken, notFound, sameOrigin, sha256Hex, unauthorized, validName,
+} from "./http";
 import type { Env } from "./index";
 import { logLine } from "./log";
 import { maxBytesInOneGo, tooManyBytes } from "./memory-object";
@@ -65,14 +69,244 @@ export function adminSecretOf(env: { ADMIN_SECRET?: string }): string | undefine
   return secret;
 }
 
-// adminAllowed compares the presented secret with ADMIN_SECRET in constant
-// time, by hashing both to the same length.
-async function adminAllowed(request: Request, secret: string): Promise<"ok" | "missing" | "rejected"> {
+// ---------------------------------------------------------------- the admin secret
+//
+// There are two kinds of admin secret. One from the dashboard: the Worker
+// secret ADMIN_SECRET, when it counts; it is then the admin secret and
+// nothing else is. One set on the admin page, kept by the directory as a
+// salt and a hash: the admin secret only while no dashboard secret counts.
+// It can be set only while the state is "open": no secret of either kind,
+// none ever (the directory's record that setting is closed, or a memory
+// listed), and a running version created at most setupWindowMs ago. The
+// first dashboard secret the Worker sees erases the page's and closes
+// setting for good, so that removing ADMIN_SECRET afterwards leaves no
+// admin secret at all: the dashboard is the way back in, for a forgotten
+// secret and for a deployment someone else reached first.
+
+// How long after its version is created a deployment may have its admin
+// secret set on the page; and how far in the future a version's time may be
+// before it is not believed.
+export const setupWindowMs = 3_600_000;
+const futureSkewMs = 60_000;
+
+// The longest admin secret the page may set.
+export const maxAdminSecret = 200;
+
+// What a deployment's admin secret is: from the dashboard, set on the page,
+// or none, and then whether one may be set on the page now ("open", until
+// when) or not ("closed").
+export type AdminSecretState =
+  | { kind: "dashboard"; secret: string }
+  | { kind: "page"; stored: StoredSecret }
+  | { kind: "open"; until: number }
+  | { kind: "closed" };
+
+// setupUntil is when setting the admin secret on the page closes for the
+// running version, in unix milliseconds, or undefined when it is closed
+// already: no version binding, a time that cannot be read, one more than
+// futureSkewMs ahead of now, or one more than setupWindowMs ago.
+export function setupUntil(version: WorkerVersionMetadata | undefined, now: number): number | undefined {
+  const raw: unknown = version?.timestamp;
+  if (typeof raw !== "string" || raw.trim() === "") return undefined;
+  const created = Date.parse(raw);
+  if (!Number.isFinite(created) || created > now + futureSkewMs) return undefined;
+  const until = created + setupWindowMs;
+  return now <= until ? until : undefined;
+}
+
+// Whether this isolate has told the directory that a dashboard secret
+// counts. Set only once the directory answered.
+let dashboardTold = false;
+
+// dashboardRules tells the directory, once per isolate, that a dashboard
+// secret counts: it erases the secret set on the page and closes setting
+// for good. A failure is logged and tried again on a later request.
+async function dashboardRules(env: Env): Promise<void> {
+  if (dashboardTold) return;
+  try {
+    await env.DIRECTORY.getByName(directoryName).dashboardRules(Date.now());
+    dashboardTold = true;
+  } catch (err) {
+    logLine({ msg: "directory unavailable", step: "dashboard secret", error: errorName(err) });
+  }
+}
+
+// adminSecretState answers what this deployment's admin secret is. It
+// throws when the directory cannot be reached and no dashboard secret
+// counts. The admin API (serveAdmin) and the consent page (consent.ts,
+// weigh) weigh the admin secret through this and adminSecretMatches alone.
+export async function adminSecretState(env: Env, now = Date.now()): Promise<AdminSecretState> {
+  const secret = adminSecretOf(env);
+  if (secret !== undefined) {
+    await dashboardRules(env);
+    return { kind: "dashboard", secret };
+  }
+  const record = await env.DIRECTORY.getByName(directoryName).adminSecret();
+  if (record.stored !== undefined) return { kind: "page", stored: record.stored };
+  if (record.closed) return { kind: "closed" };
+  const until = setupUntil(env.VERSION, now);
+  return until === undefined ? { kind: "closed" } : { kind: "open", until };
+}
+
+// adminSecretMatches says whether presented is the admin secret, comparing
+// in constant time two hashes of the same length.
+export async function adminSecretMatches(state: AdminSecretState, presented: string): Promise<boolean> {
+  let got: string;
+  let want: string;
+  if (state.kind === "dashboard") {
+    [got, want] = await Promise.all([sha256Hex(presented), sha256Hex(state.secret)]);
+  } else if (state.kind === "page") {
+    got = await sha256Hex(state.stored.salt + presented);
+    want = state.stored.hash;
+  } else {
+    return false;
+  }
+  const a = encoder.encode(got);
+  const b = encoder.encode(want);
+  return a.byteLength === b.byteLength && crypto.subtle.timingSafeEqual(a, b);
+}
+
+// storedSecret is what the directory keeps of a secret set on the page: a
+// random salt and the SHA-256 of the salt and the secret, as hex.
+//
+// A plain salted SHA-256, not a slow hash, on purpose. The only readers of
+// the directory's storage are the account's owner and Cloudflare, who can
+// reach every memory already; the secret is at least minAdminSecret
+// characters; guessing it online is limited by the guard (guard.ts); and the
+// free plan allows about 10 ms of CPU a request, which a slow hash would
+// spend on every request to the admin API.
+async function storedSecret(secret: string): Promise<StoredSecret> {
+  const salt = [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return { salt, hash: await sha256Hex(salt + secret) };
+}
+
+// newSecretProblem says what is wrong with a secret to be set on the page,
+// or undefined: it must be minAdminSecret to maxAdminSecret characters, each
+// a printable ASCII character other than space, so that it can be sent in an
+// Authorization header as it is (the page checks the same: logic.mjs,
+// newSecretProblem).
+export function newSecretProblem(secret: unknown): string | undefined {
+  if (typeof secret !== "string" || !/^[\x21-\x7e]*$/.test(secret) || secret.length < minAdminSecret || secret.length > maxAdminSecret) {
+    return `the admin secret must be ${minAdminSecret} to ${maxAdminSecret} characters, each a letter, digit or punctuation mark of plain ASCII, with no spaces`;
+  }
+  return undefined;
+}
+
+// adminAllowed weighs the bearer credential of a request against the admin
+// secret.
+async function adminAllowed(request: Request, state: AdminSecretState): Promise<"ok" | "missing" | "rejected"> {
   const got = bearer(request);
   if (got === null) return "missing";
   if (got === undefined) return "rejected";
-  const [a, b] = await Promise.all([sha256Hex(got), sha256Hex(secret)]);
-  return crypto.subtle.timingSafeEqual(encoder.encode(a), encoder.encode(b)) ? "ok" : "rejected";
+  return (await adminSecretMatches(state, got)) ? "ok" : "rejected";
+}
+
+const maxSetupBody = 4 * 1024;
+
+// readSmall reads a body of at most max bytes, or undefined when it is
+// larger; it stops reading once it is.
+async function readSmall(request: Request, max: number): Promise<Uint8Array | undefined> {
+  const length = request.headers.get("content-length");
+  if (length !== null && /^\d+$/.test(length.trim()) && Number(length.trim()) > max) return undefined;
+  if (request.body === null) return new Uint8Array();
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let n = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    n += value.byteLength;
+    if (n > max) {
+      await reader.cancel().catch(() => undefined);
+      return undefined;
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(n);
+  let at = 0;
+  for (const c of chunks) {
+    out.set(c, at);
+    at += c.byteLength;
+  }
+  return out;
+}
+
+// readSetup reads the body of POST /admin/setup: the secret, or what is
+// wrong with the request, in one line.
+async function readSetup(request: Request): Promise<{ secret: string } | { problem: string }> {
+  const type = (request.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
+  if (type !== "application/json") return { problem: "the body must be JSON, sent as content-type: application/json" };
+  const bytes = await readSmall(request, maxSetupBody);
+  if (bytes === undefined) return { problem: `the body must be at most ${maxSetupBody} bytes` };
+  let v: unknown;
+  try {
+    v = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes));
+  } catch {
+    v = undefined;
+  }
+  const shape = `the body must be a JSON object with one field, secret: {"secret":"..."}`;
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return { problem: shape };
+  const keys = Object.keys(v);
+  if (keys.length !== 1 || keys[0] !== "secret") return { problem: shape };
+  const secret = (v as JSONRecord).secret;
+  const problem = newSecretProblem(secret);
+  return problem === undefined ? { secret: secret as string } : { problem };
+}
+
+const directoryDown = (): Response => json(503, { error: "the admin secret cannot be read right now; see the server log" });
+
+function publicState(state: AdminSecretState): JSONRecord {
+  if (state.kind === "open") return { state: "open", min: minAdminSecret, until: state.until };
+  return { state: state.kind === "closed" ? "closed" : "set", min: minAdminSecret };
+}
+
+// serveSetup answers /admin/setup, without a credential. GET says whether
+// there is an admin secret ("set", of either kind), whether one may be set
+// on the page ("open", until when) or not ("closed"). POST sets it, while
+// open. The access log learns the outcome in fixed words, and nothing of
+// the body.
+async function serveSetup(request: Request, env: Env, note: Note): Promise<Response> {
+  if (request.method === "GET") {
+    try {
+      return json(200, publicState(await adminSecretState(env)));
+    } catch (err) {
+      logLine({ msg: "directory unavailable", step: "setup", error: errorName(err) });
+      return directoryDown();
+    }
+  }
+  // A browser's post must come from this origin; a script sends no Origin
+  // and no Sec-Fetch-Site, and may set it as well as the page.
+  const script = request.headers.get("origin") === null && request.headers.get("sec-fetch-site") === null;
+  if (!script && !sameOrigin(request, new URL(request.url).origin)) {
+    note.outcome = "setup_forged";
+    return json(403, { error: "this request was not sent from this deployment's admin page" });
+  }
+  const read = await readSetup(request);
+  if ("problem" in read) {
+    note.outcome = "setup_invalid";
+    return json(400, { error: read.problem });
+  }
+  const taken = (): Response => {
+    note.outcome = "setup_taken";
+    return json(409, { error: "an admin secret is set already", state: "set" });
+  };
+  const closed = (): Response => {
+    note.outcome = "setup_closed";
+    return json(403, { error: "the admin secret can no longer be set from this page; set ADMIN_SECRET in the Cloudflare dashboard", state: "closed" });
+  };
+  try {
+    const state = await adminSecretState(env);
+    if (state.kind === "dashboard" || state.kind === "page") return taken();
+    if (state.kind === "closed") return closed();
+    const r = await env.DIRECTORY.getByName(directoryName).setIfOpen(await storedSecret(read.secret), Date.now());
+    if (r === "taken") return taken();
+    if (r === "closed") return closed();
+  } catch (err) {
+    logLine({ msg: "directory unavailable", step: "setup", error: errorName(err) });
+    return directoryDown();
+  }
+  note.outcome = "setup_set";
+  return json(201, { state: "set" });
 }
 
 const noSuchMemory = (name: string): Response => json(404, { error: `no such memory: ${JSON.stringify(name)}` });
@@ -92,6 +326,9 @@ function errorName(err: unknown): string {
 // serveAdmin answers a request whose path starts with /admin/. Unknown paths
 // and methods are answered 404 before the secret is weighed, as before.
 export async function serveAdmin(request: Request, env: Env, parts: string[], note: Note): Promise<Response> {
+  if (parts.length === 3 && parts[2] === "setup" && (request.method === "GET" || request.method === "POST")) {
+    return serveSetup(request, env, note);
+  }
   let action: Action | "list" | undefined;
   let name = "";
   let grant = "";
@@ -109,11 +346,17 @@ export async function serveAdmin(request: Request, env: Env, parts: string[], no
     }
   }
   if (action === undefined) return notFound();
-  const secret = adminSecretOf(env);
-  // The admin page tells "no secret that counts" (404) from "a secret is set"
-  // (401 without a credential) by this answer: keep these checks in this order.
-  if (secret === undefined) return notFound();
-  note.auth = await adminAllowed(request, secret);
+  let state: AdminSecretState;
+  try {
+    state = await adminSecretState(env);
+  } catch (err) {
+    logLine({ msg: "directory unavailable", step: "admin secret", error: errorName(err) });
+    return directoryDown();
+  }
+  // Without an admin secret the API is not there (404); with one, a request
+  // without a credential is answered 401: keep these checks in this order.
+  if (state.kind !== "dashboard" && state.kind !== "page") return notFound();
+  note.auth = await adminAllowed(request, state);
   // A secret presented, right or wrong, is weighed against the limit on
   // guessing; a request without one guesses nothing.
   if (note.auth !== "missing") {
@@ -136,8 +379,9 @@ export async function serveAdmin(request: Request, env: Env, parts: string[], no
   }
 }
 
-// register lists a memory just created. A failure is logged and does not
-// undo the creation: the directory is a list, not an authority.
+// register lists a memory just created, which also closes setting the admin
+// secret on the page for good. A failure is logged and does not undo the
+// creation: the directory is a list, not an authority.
 async function register(env: Env, name: string): Promise<void> {
   try {
     await env.DIRECTORY.getByName(directoryName).register(name, Date.now());

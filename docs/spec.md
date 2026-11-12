@@ -23,7 +23,7 @@ Contents: [Terms](#terms) · [Architecture](#architecture) · [MCP surface](#mcp
 | reading | An item returned in full by `expand`. It restarts its decay and strengthens it. |
 | grant | An OAuth approval of one client for one memory, kept in KV. |
 | instance | An id (`i_…`) drawn when a memory is created or imported. It tells a memory apart from an earlier one of the same name. |
-| admin secret | The secret `ADMIN_SECRET` of the deployment. It opens the admin API and the admin page, and can approve OAuth grants. |
+| admin secret | The password of whoever owns a deployment: the Worker secret `ADMIN_SECRET` when it is set and counts, else one chosen on the admin page while the deployment was new (see [The admin secret](#the-admin-secret)). It opens the admin API and the admin page, and can approve OAuth grants. |
 
 ## Architecture
 
@@ -60,7 +60,7 @@ Not on the path of an MCP request: the `Directory`, the `Guard`, the admin API, 
 | `/healthz` | Worker | `GET` and `HEAD` answer `200 ok`; other methods `405`. No credential. |
 | `/` and `/_page/*` | Worker | The admin page: static files, `GET` and `HEAD` only. Reaches no Durable Object. |
 | `/<name>/mcp` | Worker, then the memory's object | MCP over Streamable HTTP. A path whose name breaks the name rule is `404`. |
-| `/admin/...` | Worker | The admin API. `404` unless the deployment has an admin secret that counts. |
+| `/admin/...` | Worker | The admin API. `404` unless the deployment has an admin secret; `/admin/setup` alone needs none. |
 | `/oauth/authorize` | Worker | The consent page (`GET`) and its form (`POST`). |
 | `/oauth/token`, `/oauth/register` | Worker, OAuth library | Token and registration endpoints. |
 | `/.well-known/oauth-authorization-server` | Worker, OAuth library | RFC 8414 metadata. |
@@ -543,9 +543,29 @@ A fixed token is `ziwo_` followed by 32 random bytes in base64url (43 characters
 
 The instance id is drawn when a memory is created or imported and is never carried by an export. An OAuth grant records the instance it was given for, and the object refuses a call whose grant names another instance: a grant left over from a memory that was deleted and created again under the same name opens nothing.
 
+### The admin secret
+
+A deployment has at most one admin secret, of one of two kinds.
+
+- **From the dashboard**: the Worker secret `ADMIN_SECRET`. It counts when it is set, at least 16 characters long, and not `change-me` (a value an earlier example file carried). When it counts it is the admin secret, and nothing else is.
+- **Chosen on the admin page**: kept by the `Directory` object as a random salt and the SHA-256 of salt and secret, never in the clear. It is the admin secret only while no dashboard secret counts. It is 16 to 200 printable ASCII characters other than space, so that it can travel in an `Authorization` header as it is.
+
+A secret can be chosen on the page only while all of this holds (the state `open`): there is no admin secret of either kind; there never was one, and no memory is listed in the directory; and the running version was created at most one hour ago, by the time the version metadata binding (`VERSION`) gives. Without the binding, or with a time that cannot be read or lies more than a minute ahead, it is not open. With no admin secret and not open, the state is `closed`: the admin API is not there, and the secret has to be set in the dashboard.
+
+Closing is for good. The directory records it when a secret is chosen on the page, when the Worker sees a dashboard secret that counts, and when a memory is registered; a directory that lists a memory counts as closed without the record. A dashboard secret that counts also erases the one chosen on the page (the Worker tells the directory once per isolate), so taking `ADMIN_SECRET` away afterwards leaves no admin secret and the state `closed`. That makes the dashboard the way back in, for a secret that was forgotten and for a deployment whose page someone else reached first.
+
+What this costs, and what bounds it: whoever opens a new deployment's page in its first hour chooses its secret. A deployment nobody set up stops offering after the hour, and each new version (a redeploy, or a change to a variable or secret in the dashboard) offers again for an hour as long as setting was never closed. The hash is a plain salted SHA-256, not a slow one: the only readers of the directory's storage are the account's owner and Cloudflare, who can reach every memory already, and guessing online is limited (see [The limit on guessing](#the-limit-on-guessing)).
+
+| Method and path | Does | Answer |
+| --- | --- | --- |
+| `GET /admin/setup` | Says, without a credential, which state the deployment is in. | `{"state", "min": 16, "until"}`: `state` is `set` (either kind), `open` or `closed`; `until`, in unix milliseconds, is there only when open. |
+| `POST /admin/setup` | Chooses the admin secret, while open. The body is JSON, `{"secret"}`, at most 4 KiB. A browser's post must come from the deployment's own origin; a script, which sends neither `Origin` nor `Sec-Fetch-Site`, may post too. | `201 {"state": "set"}`; `400` for a secret that breaks the rule or a body not as described; `409` when a secret is set already; `403` when closed (the body says `"state": "closed"`) or sent from another site. |
+
+Of several posts at once exactly one sets the secret. Both routes answer `503` when the directory cannot be reached and no dashboard secret counts; so do the other admin routes then.
+
 ### Admin routes
 
-Every route needs `Authorization: Bearer <admin secret>`. The admin API is not there (every route answers `404`) when the deployment has no admin secret that counts: `ADMIN_SECRET` unset or empty, equal to `change-me` (the value the example file used to carry), or shorter than 16 characters. An unknown path or method is `404` before the secret is weighed. A missing header is `401`; a wrong secret is `401` and counts against the limit on guessing (see [Authentication](#authentication)), which answers `429` with `Retry-After`. A name that breaks the name rule is `400`; a name that holds no memory is `404`. A failure inside is `500` with no detail; the log records the error's class name.
+Every route here needs `Authorization: Bearer <admin secret>`. The admin API is not there (every route answers `404`) when the deployment has no admin secret. An unknown path or method is `404` before the secret is weighed. A missing header is `401`; a wrong secret is `401` and counts against the limit on guessing (see [Authentication](#authentication)), which answers `429` with `Retry-After`. A name that breaks the name rule is `400`; a name that holds no memory is `404`. A failure inside is `500` with no detail; the log records the error's class name.
 
 | Method and path | Does | Answer |
 | --- | --- | --- |
@@ -611,7 +631,7 @@ Between the Worker and the admin page or script, the export travels in the clear
 
 ### The admin page
 
-`GET /` serves a static page (`worker/page/`): plain JavaScript modules, no framework, no request to any other origin. It is served with a Content Security Policy (`default-src 'none'`, scripts, styles and connections from its own origin only, `frame-ancestors 'none'`, Trusted Types required), `X-Frame-Options: DENY` and `Referrer-Policy: no-referrer`. The admin secret typed into it is kept in the page's memory only and is gone on reload. It sets text with `textContent` only.
+`GET /` serves a static page (`worker/page/`): plain JavaScript modules, no framework, no request to any other origin. It is served with a Content Security Policy (`default-src 'none'`, scripts, styles and connections from its own origin only, `frame-ancestors 'none'`, Trusted Types required), `X-Frame-Options: DENY` and `Referrer-Policy: no-referrer`. The admin secret typed into it is kept in the page's memory only and is gone on reload. It sets text with `textContent` only. Before its first view the page asks `GET /admin/setup`: for `open` it shows a form to choose the admin secret, with one made in the browser on offer; for `closed`, the steps to set `ADMIN_SECRET` in the Cloudflare dashboard; otherwise the sign-in form, with the same steps under it for a secret that was forgotten.
 
 With it the owner can: list and create memories; issue a new token (shown once); see how each client connects (Claude Code, the Claude apps, ChatGPT, Codex, others; OAuth first, the fixed token after); change the default time zone and the six forgetting parameters; read the check report; rebuild; export (sealed in the browser) and import (opened in the browser); list and revoke OAuth grants; and delete a memory (its name typed again). It is in English and Chinese, chosen from the browser's languages. The per-client steps were written from each client's documentation; see [oauth-notes.md](../worker/docs/oauth-notes.md) for which were checked against a running client.
 
@@ -698,6 +718,7 @@ The deployment is configured by `worker/wrangler.jsonc`. `worker/wrangler.dev.js
 | `GUARD` | Durable Object, class `Guard` | One per address, and one named ` all addresses` for the registration count in all. |
 | `OAUTH_KV` | KV namespace | No id in the file: the first `wrangler deploy` creates a namespace (`ziwo-oauth-kv`) and later deploys find it; `wrangler dev` simulates it. |
 | `AI` | Workers AI | In `wrangler.jsonc` only. |
+| `VERSION` | Version metadata | The time the running version was created, which bounds when the admin secret may be chosen on the admin page. |
 
 ### Migrations
 
@@ -713,7 +734,7 @@ None of the vars is set in the wrangler files; set them as Worker vars to change
 
 | Name | Kind | Default | Meaning |
 | --- | --- | --- | --- |
-| `ADMIN_SECRET` | secret | unset | Opens the admin API and the admin page, and can approve OAuth grants for any existing memory. Counts only when set, not `change-me`, and at least 16 characters; otherwise the admin API answers `404` everywhere and the consent page accepts only a memory's own token. |
+| `ADMIN_SECRET` | secret | unset | The admin secret from the dashboard. Not needed: the admin secret is normally chosen on the admin page. When it counts (set, not `change-me`, at least 16 characters) it is the admin secret and replaces one chosen on the page, for good (see [The admin secret](#the-admin-secret)). With no admin secret of either kind the admin API answers `404` and the consent page accepts only a memory's own token. |
 | `REGISTER_PER_DAY` | var | `100` | OAuth client registrations allowed in any 24 hours from all addresses. A whole number; `0` switches registration off. Anything else counts as the default and is logged. |
 | `EMBED_MODEL` | var | `@cf/qwen/qwen3-embedding-0.6b` | The Workers AI embedding model. Set it empty to switch search by meaning off. A model whose name does not start with `@cf/qwen/qwen3-embedding` is sent plain text on both sides, as `@cf/baai/bge-m3` takes it. |
 | `EMBED_DIMS` | var | `512` | How many leading components of each vector are kept: a whole number from 1 to 4,096, at most what the model returns. |
@@ -723,7 +744,7 @@ None of the vars is set in the wrangler files; set them as Worker vars to change
 
 Search by meaning is off when there is no `AI` binding, when `EMBED_MODEL` is empty, or when any `EMBED_*` var cannot be read; the last is logged once per isolate, by the var's name, without its value. A memory's forgetting parameters and default time zone are not deployment settings: they belong to each memory (see [Forgetting](#forgetting)).
 
-`package.json` carries descriptions of `ADMIN_SECRET`, `OAUTH_KV` and `AI` under `cloudflare.bindings`, which Cloudflare's Deploy to Cloudflare button shows to whoever deploys. `worker/.dev.vars.example` names the secrets, for that button and as the template for local ones. It gives `ADMIN_SECRET` no value, because the button's form shows a value given there as if it had been filled in; the value the file used to carry, `change-me`, still counts as no secret. The form checks nothing, so a deployment can come up with no admin secret that counts. The admin page finds that out before anyone signs in (`GET /admin/memories` without a credential answers `404` then, and `401` when a secret counts) and shows how to set one in the Cloudflare dashboard, with a secret made in the browser on offer.
+`package.json` carries descriptions of `OAUTH_KV` and `AI` under `cloudflare.bindings`, which Cloudflare's Deploy to Cloudflare button shows to whoever deploys. `worker/.dev.vars.example` names no secret, so the button's form asks for none: that form showed an example value as if it had been filled in, and checks nothing.
 
 ## The access log
 
@@ -745,7 +766,7 @@ One line per request (`msg: "request"`), written when the answer starts (a strea
 | `mcp_version` | MCP requests that state one | cut to 32 characters |
 | `rpc` | MCP requests | what the first message asks: `initialize`, `notifications/initialized`, `server/discover`, `ping`, `tools/list`, `tools/call`, `resources/list`, `resources/templates/list`, `prompts/list`, or `other` |
 | `oauth` | OAuth paths | `resource-metadata`, `server-metadata`, `authorize`, `register`, `token` |
-| `outcome` | OAuth paths, and an admin request turned away by the limit | a fixed word, such as `shown`, `refused`, `approved`, `denied`, `forged`, `too_many`, `registered`, `over_budget`, `issued`, `refreshed`, `revoked`, `assertion_refused`, or the library's error code |
+| `outcome` | OAuth paths, and an admin request turned away by the limit | a fixed word, such as `shown`, `refused`, `approved`, `denied`, `forged`, `too_many`, `setup_set`, `setup_invalid`, `setup_taken`, `setup_closed`, `setup_forged`, `registered`, `over_budget`, `issued`, `refreshed`, `revoked`, `assertion_refused`, or the library's error code |
 | `reason` | when the OAuth library refused | the name of the check that failed |
 | `memory` | consent page | the memory the consent was for |
 
@@ -826,7 +847,7 @@ All commands run in `worker/`. Node and npm are needed; `npm install` first.
 | `npm run smoke` | `python3 scripts/smoke.py`: starts `wrangler dev --local` on a free port with a random admin secret and a scratch state directory, creates memories through the admin API, talks MCP as several clients, and checks the answers (260 checks). It never contacts a Cloudflare account and prints no answer, only shapes. |
 | `npx tsc --noEmit` | Type check (`npm run typecheck`). |
 | `npx wrangler deploy --dry-run --outdir dist` | Builds the bundle without deploying (`npm run build`). At this commit: 1,274 KiB, 291 KiB gzipped. |
-| `npm run dev` | `wrangler dev --local --config wrangler.dev.jsonc`: the Worker on this machine, keyword search only. Needs `worker/.dev.vars` with an `ADMIN_SECRET` of at least 16 characters for the admin API. OAuth works there on `http://localhost`. |
+| `npm run dev` | `wrangler dev --local --config wrangler.dev.jsonc`: the Worker on this machine, keyword search only. The admin secret is `ADMIN_SECRET` from `worker/.dev.vars` when that is there and counts; without it the admin page offers to choose one, for an hour after each start (locally the version's time is the time the server started). OAuth works there on `http://localhost`. |
 
 At commit `bc1a625` on 2026-11-12, 359 Vitest tests and 69 Node tests passed, and the smoke check passed.
 

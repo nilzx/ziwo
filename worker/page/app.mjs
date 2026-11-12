@@ -6,8 +6,8 @@
 import { connectGuide } from "./connect.mjs";
 import { makeH } from "./dom.mjs";
 import {
-  adminState, ApiError, defaultParams, makeApi, makeSecret, minAdminSecret, SecretError, memoryHash, namesMatch, paramNames, pickLanguage,
-  reportGroups, route, sealedFileName, settingsChange, workerNameOf,
+  adminState, ApiError, defaultParams, makeApi, makeSecret, maxAdminSecret, minAdminSecret, newSecretProblem, SecretError, memoryHash, namesMatch,
+  paramNames, pickLanguage, reportGroups, route, sealedFileName, setAdminSecret, settingsChange, workerNameOf,
 } from "./logic.mjs";
 import { minPassphrase, open, seal, SealError } from "./seal.mjs";
 import { format, texts } from "./texts.mjs";
@@ -23,11 +23,21 @@ const state = {
   flash: undefined,
   /** @type {string | undefined} what a deletion reported, shown once on the list */
   notice: undefined,
-  /** @type {"ready" | "unset" | "unknown"} whether the deployment has an admin secret that counts */
+  /** @type {"ready" | "open" | "closed" | "unknown"} whether the deployment has an admin secret, or one may be set here (adminState) */
   admin: "unknown",
-  /** a secret offered on the set-up view, made once per page load; kept here only, never stored or sent */
+  /** @type {number | undefined} while admin is "open", when setting it here closes (unix milliseconds) */
+  until: undefined,
+  /** @type {"taken" | "closed" | undefined} why setting it here just failed, said once on the next view */
+  refused: undefined,
+  /** a secret offered on the set-up views, made once per page load; kept here only, never stored, and sent only if the owner chooses it */
   offered: makeSecret(),
 };
+
+/** @param {Awaited<ReturnType<typeof adminState>>} s */
+function takeState(s) {
+  state.admin = s.state;
+  state.until = s.state === "open" ? s.until : undefined;
+}
 
 /** @param {string} key @param {Record<string, string | number>} [vars] */
 function t(key, vars) {
@@ -169,6 +179,8 @@ function lock() {
 
 function loginView() {
   const secret = field(t("secretLabel"), { type: "password", autocomplete: "off", required: true, spellcheck: "false" }, t("secretHint"));
+  const taken = state.refused === "taken";
+  state.refused = undefined;
   const out = outBox();
   const button = h("button", { type: "submit", text: t("signIn") });
   const form = h("form", {
@@ -180,7 +192,8 @@ function loginView() {
           await api.list();
         } catch (err) {
           if (err instanceof ApiError && err.status === 404) {
-            state.admin = "unset";
+            // No admin secret after all: show the view for what there is.
+            takeState(await adminState());
             render();
             return;
           }
@@ -194,23 +207,112 @@ function loginView() {
       });
     },
   }, secret.wrap, button);
-  show(t("signInTitle"), h("p", { text: t("intro") }), form, out);
+  show(t("signInTitle"),
+    taken ? h("p", { class: "warn", role: "alert", text: t("chooseTaken") }) : null,
+    h("p", { text: t("intro") }), form, out,
+    state.admin === "ready" ? forgotDetails() : null);
+}
+
+// How the owner of the Cloudflare account replaces an admin secret that is
+// forgotten, or that someone else set.
+function forgotDetails() {
+  const name = workerNameOf(location.hostname);
+  return h("details", {},
+    h("summary", { text: t("forgotSummary") }),
+    h("p", { text: t("forgotWhy") }),
+    h("ol", {},
+      h("li", { text: t("setupStep1", { named: name === "" ? "" : t("setupNamed", { name }) }) }),
+      h("li", { text: t("setupStep2") }),
+      h("li", { text: t("setupStep3", { min: minAdminSecret }) }),
+      h("li", { text: t("forgotStep4") })),
+    dashboardLink(),
+    h("p", { text: t("forgotNotYou") }));
+}
+
+function dashboardLink() {
+  return h("p", {}, h("a", { href: "https://dash.cloudflare.com/?to=/:account/workers-and-pages", target: "_blank", rel: "noopener noreferrer", text: t("setupDash") }));
+}
+
+// ---------------------------------------------------------------- choose
+
+// Shown while the admin secret may be set on this page: a new deployment
+// with none, in the first hour of its version. The secret typed goes only
+// into the request that sets it and the API's calls after it, never into
+// storage or the address.
+function chooseView() {
+  const secret = field(t("chooseLabel"),
+    { type: "text", autocomplete: "off", autocapitalize: "none", spellcheck: "false", required: true, maxlength: maxAdminSecret },
+    t("chooseHint", { min: minAdminSecret }));
+  const savedId = nextId("f");
+  const out = outBox();
+  const use = h("button", {
+    type: "button",
+    text: t("chooseUse"),
+    onclick: () => {
+      secret.input.value = state.offered;
+      secret.input.focus();
+    },
+  });
+  const button = h("button", { type: "submit", class: "primary", text: t("chooseSet") });
+  const form = h("form", {
+    onsubmit: (/** @type {Event} */ e) => {
+      e.preventDefault();
+      const value = secret.input.value;
+      const problem = newSecretProblem(value);
+      if (problem === "short") return sayError(out, t("chooseTooShort", { n: [...value].length, min: minAdminSecret }));
+      if (problem === "unsendable") return sayError(out, new SecretError());
+      act(/** @type {HTMLButtonElement} */ (button), out, async () => {
+        const r = await setAdminSecret(value);
+        if (r !== "set") {
+          state.refused = r;
+          state.admin = r === "taken" ? "ready" : "closed";
+          state.until = undefined;
+          render();
+          return;
+        }
+        secret.input.value = "";
+        state.admin = "ready";
+        state.until = undefined;
+        // Signed in with the secret just set, as the sign-in form would.
+        const api = makeApi({ secret: value });
+        try {
+          await api.list();
+        } catch {
+          render(); // the sign-in form: the secret is set
+          return;
+        }
+        state.api = api;
+        render();
+      });
+    },
+  },
+  secret.wrap,
+  h("p", { text: t("chooseOffer") }),
+  codeBlock(state.offered),
+  h("p", {}, use),
+  h("p", { class: "check" }, h("input", { type: "checkbox", id: savedId, required: true }), h("label", { for: savedId, text: t("chooseSaved") })),
+  button);
+  show(t("chooseTitle"), h("p", { text: t("chooseWhy", { until: when(state.until) }) }), form, out);
 }
 
 // ---------------------------------------------------------------- set up
 
-// Shown while the deployment has no admin secret that counts: how to set one.
+// Shown while the deployment has no admin secret and one can no longer be
+// set on this page: how to set one in the dashboard.
 function setupView() {
   const name = workerNameOf(location.hostname);
+  const closed = state.refused === "closed";
+  state.refused = undefined;
   const out = outBox();
   const again = h("button", { type: "button", text: t("setupAgain") });
   again.addEventListener("click", () =>
     act(/** @type {HTMLButtonElement} */ (again), out, async () => {
-      state.admin = await adminState();
-      if (state.admin === "unset") return sayError(out, t("setupStill"));
+      takeState(await adminState());
+      if (state.admin === "closed") return sayError(out, t("setupStill"));
       render();
     }));
   show(t("setupTitle"),
+    closed ? h("p", { class: "warn", role: "alert", text: t("chooseClosed") }) : null,
     h("p", { text: t("setupWhy", { min: minAdminSecret }) }),
     h("p", { text: t("setupHow") }),
     h("ol", {},
@@ -218,7 +320,7 @@ function setupView() {
       h("li", { text: t("setupStep2") }),
       h("li", { text: t("setupStep3", { min: minAdminSecret }) }),
       h("li", { text: t("setupStep4") })),
-    h("p", {}, h("a", { href: "https://dash.cloudflare.com/?to=/:account/workers-and-pages", target: "_blank", rel: "noopener noreferrer", text: t("setupDash") })),
+    dashboardLink(),
     h("p", { text: t("setupOffer") }),
     codeBlock(state.offered),
     h("p", {}, again),
@@ -603,7 +705,11 @@ function deleteSection(name) {
 
 async function render() {
   drawTools();
-  if (state.api === undefined) return state.admin === "unset" ? setupView() : loginView();
+  if (state.api === undefined) {
+    if (state.admin === "open") return chooseView();
+    if (state.admin === "closed") return setupView();
+    return loginView();
+  }
   const r = route(location.hash);
   if (r.view === "memory") return memoryView(r.name);
   return listView();
@@ -626,8 +732,8 @@ addEventListener("hashchange", () => {
 });
 
 // Ask before the first view, but wait at most two seconds for the answer.
-state.admin = await Promise.race([
+takeState(await Promise.race([
   adminState(),
-  /** @type {Promise<"unknown">} */ (new Promise((resolve) => setTimeout(() => resolve("unknown"), 2000))),
-]);
+  /** @type {Promise<{ state: "unknown" }>} */ (new Promise((resolve) => setTimeout(() => resolve({ state: "unknown" }), 2000))),
+]));
 render();

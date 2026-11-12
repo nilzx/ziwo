@@ -23,17 +23,17 @@ ziwo runs in your own Cloudflare account. There is no server to look after, and 
 
 You need a Cloudflare account (the free plan will do to start) and, for the button, a GitHub account. It takes about ten minutes.
 
-**1. Deploy.** Choose the button above and follow Cloudflare's page. It asks for one thing you have to make up: `ADMIN_SECRET`, the password of your admin page. Make it **at least 16 characters** and keep it somewhere safe.
+**1. Deploy.** Choose the button above and follow Cloudflare's page. There is nothing to fill in beyond what it suggests. When it finishes, Cloudflare shows your address, which looks like `https://ziwo.<something>.workers.dev`.
 
-Cloudflare's page does not check the length. If yours is shorter, or left empty, the deployment still succeeds but the admin page stays locked: open it, and it shows how to set a proper one.
+**2. Choose an admin secret.** Open your address in a browser straight away. The page asks you to choose an admin secret, the password of this page: at least 16 characters, or take the one it offers. Keep it somewhere safe, because it cannot be shown again.
 
-When it finishes, Cloudflare shows your address, which looks like `https://ziwo.<something>.workers.dev`.
+Do this right after deploying. Until a secret is chosen, whoever opens the address first can choose it, so the page offers this only during the first hour. After that, or if you ever lose the secret, the page shows how to set one in the Cloudflare dashboard instead.
 
-**2. Create a memory.** Open your address in a browser and sign in with the admin secret. Create a memory and give it a name, such as `claude`. The page shows the memory's token once: save it as you would a password.
+**3. Create a memory.** Once signed in, create a memory and give it a name, such as `claude`. The page shows the memory's token once: save it as you would a password.
 
 Give each assistant a memory of its own. One memory is meant for one AI, across all the places you talk to it.
 
-**3. Connect your assistant.** The admin page shows the exact steps for each client, with your own address filled in. For the Claude apps they come to this:
+**4. Connect your assistant.** The admin page shows the exact steps for each client, with your own address filled in. For the Claude apps they come to this:
 
 1. In Claude on the web or the desktop app, open **Customize > Connectors**, choose **Add custom connector**, name it `ziwo`, paste your memory's address, and add it.
 2. Choose **Connect**. A page of your own deployment opens and asks for the memory's token. Give it and choose **Approve**.
@@ -53,7 +53,6 @@ git clone https://github.com/nilzx/ziwo
 cd ziwo/worker
 npm install
 npx wrangler deploy
-npx wrangler secret put ADMIN_SECRET
 ```
 
 </details>
@@ -99,6 +98,7 @@ ziwo is young. What has been tried, and what has not:
 - Used with the Claude apps (web and phone) and with ChatGPT (web, desktop and phone), connected by sign-in, and tried with Claude Code in scripted conversations.
 - The steps for Codex and other clients are written from their documentation and have not been tried against them.
 - The one-click button has deployed ziwo to a new account on the free plan. Using it there (creating a memory, connecting an assistant) has not been tried yet. If the button fails for you, the terminal steps above are the tested way, and an issue would be welcome.
+- Choosing the admin secret on the page is new. It has been tried on a local server, not yet on a deployment.
 - The numbers behind forgetting are starting values, not yet tuned against long use.
 - A broad word does not always find a memory about something specific: asking about "music" may miss a memory about practising the guitar, where "guitar" finds it.
 

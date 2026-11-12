@@ -49,10 +49,10 @@ import {
   type ConsentDescription,
   type OAuthHelpers,
 } from "@cloudflare/workers-oauth-provider";
-import { adminSecretOf, type Note } from "./admin";
+import { adminSecretMatches, adminSecretState, type Note } from "./admin";
 import { consentTexts, type Lang, pickLang, type TextKey } from "./consent-texts";
 import { waitFor } from "./guard";
-import { encoder, plain, sha256Hex, validName } from "./http";
+import { plain, sameOrigin, sha256Hex, validName } from "./http";
 import type { Env } from "./index";
 import { clipText } from "./log";
 import { authServer, type GrantMetadata, type GrantProps, memoryOfResource, paths, resourceOf, word } from "./oauth";
@@ -287,13 +287,6 @@ async function authorizePage(env: Env, issuer: string, url: URL, lang: Lang, not
   return htmlResponse(refused ? 403 : 200, document(lang, toggleFor(query, lang), body), securityHeaders(redirectOrigin(read.req.redirectUri)));
 }
 
-// sameOrigin says whether a post was sent from a page of this origin.
-function sameOrigin(request: Request, issuer: string): boolean {
-  const origin = request.headers.get("origin");
-  if (origin !== null && origin !== "null") return origin === issuer;
-  return request.headers.get("sec-fetch-site") === "same-origin";
-}
-
 const maxForm = 16 * 1024;
 
 async function readForm(request: Request): Promise<URLSearchParams | undefined> {
@@ -305,18 +298,25 @@ async function readForm(request: Request): Promise<URLSearchParams | undefined> 
 }
 
 // weigh says which credential approves a grant for memory: the memory's own
-// token, or the admin secret for a memory that exists; and the memory's
-// instance, which the grant records. The memory's object is asked the same
-// whatever was typed, so the answer takes as long either way.
+// token, or the admin secret (of either kind, admin.ts) for a memory that
+// exists; and the memory's instance, which the grant records. The memory's
+// object, and the directory for the admin secret, are asked the same
+// whatever was typed, so the answer takes as long either way. When the
+// directory cannot be reached, a right token still approves; anything else
+// throws, so that the owner's admin secret is not counted as a miss.
 async function weigh(env: Env, memory: string, typed: string): Promise<{ via?: "token" | "admin"; instance: string }> {
   const credential = typed.trim();
   const hash = await sha256Hex(credential);
   const stub = env.MEMORY.getByName(memory);
-  const [access, instance] = await Promise.all([stub.authorize(hash), stub.instance()]);
+  const [access, instance, admin] = await Promise.all([
+    stub.authorize(hash),
+    stub.instance(),
+    adminSecretState(env).then((state) => ({ state }), (err: unknown) => ({ err })),
+  ]);
   if (access === "ok") return { via: "token", instance };
-  const secret = adminSecretOf(env);
-  if (secret === undefined || credential === "") return { instance };
-  const same = crypto.subtle.timingSafeEqual(encoder.encode(hash), encoder.encode(await sha256Hex(secret)));
+  if ("err" in admin) throw admin.err;
+  if (credential === "") return { instance };
+  const same = await adminSecretMatches(admin.state, credential);
   return same && access !== "unknown" ? { via: "admin", instance } : { instance };
 }
 

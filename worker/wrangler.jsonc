@@ -15,6 +15,10 @@
   // namespace (ziwo-oauth-kv) and later deploys find it on the Worker;
   // wrangler dev simulates it.
   "kv_namespaces": [{ "binding": "OAUTH_KV" }],
+  // The running version's id, tag and creation time. The admin secret may be
+  // set on the admin page only in the first hour after a version is created
+  // (src/admin.ts, setupUntil).
+  "version_metadata": { "binding": "VERSION" },
   "durable_objects": {
     "bindings": [
       { "name": "MEMORY", "class_name": "Memory" },

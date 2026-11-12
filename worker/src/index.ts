@@ -24,14 +24,21 @@ export { newToken, validName } from "./http";
 
 export interface Env extends EmbedEnv {
   MEMORY: DurableObjectNamespace<Memory>;
-  // The list of memories the admin API keeps; never reached by MCP.
+  // The list of memories the admin API keeps, and the admin secret set on
+  // the admin page; never reached by MCP.
   DIRECTORY: DurableObjectNamespace<Directory>;
   // The limit on guessing at the consent page and the admin API, and the
   // budget on client registrations, one object per address and one for all
   // addresses (guard.ts); never reached by MCP.
   GUARD: DurableObjectNamespace<Guard>;
-  // The secret of the admin API; without it the admin API is not there.
+  // The admin secret from the dashboard. When it counts it is the admin
+  // secret; else one set on the admin page is, if any (admin.ts).
   ADMIN_SECRET?: string;
+  // The version metadata binding: the running version's id, tag and the
+  // time it was created. That time decides whether the admin secret may be
+  // set on the admin page (admin.ts, setupUntil); without the binding it
+  // may not.
+  VERSION?: WorkerVersionMetadata;
   // OAuth's clients, grants and tokens (workers-oauth-provider). Never read
   // for a request that carries a memory's fixed token.
   OAUTH_KV: KVNamespace;

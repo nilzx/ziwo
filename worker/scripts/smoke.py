@@ -27,6 +27,13 @@ persist directory (twice); writing and its validation messages; recall and
 expand; amending (each action); erasing (a tool of its own here); reflecting
 (both steps); reconstructed memories; the check tool.
 
+New here: the admin secret set on the admin page. A second Worker, on a
+scratch directory of its own and with ADMIN_SECRET given empty (so that none
+counts, whatever worker/.dev.vars says), is a new deployment in the first hour
+of its version: /admin/setup is open there, takes one secret and no other, and
+the secret set opens the admin API, also after a restart. The first Worker,
+whose ADMIN_SECRET counts, says it is set.
+
 Left out:
   - anything that needs the forgetting parameters changed. The Go script's
     forgetting-by-experience checks rely on a base strength of 10; this script
@@ -176,15 +183,17 @@ class Worker:
             except ProcessLookupError:
                 pass
             code = self.proc.wait()
-        # whatever is left of the group
+        # whatever is left of the group. PermissionError: only processes this
+        # one may not signal are left (seen on macOS for a group of zombies),
+        # so there is nothing more to stop.
         for _ in range(20):
             try:
                 os.killpg(self.proc.pid, 0)
-            except ProcessLookupError:
+            except (ProcessLookupError, PermissionError):
                 break
             try:
                 os.killpg(self.proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
+            except (ProcessLookupError, PermissionError):
                 break
             time.sleep(0.2)
         self.proc = None
@@ -349,6 +358,8 @@ def run(w):
     check("a refused call created nothing", mcp_status(base, "zz", claude_token) == 401)
     check("a token route for a memory that does not exist: 404", admin(base, "/admin/memories/zz/token", secret)[0] == 404)
     check("the token route needs the secret too", admin(base, "/admin/memories/claude/token", None)[0] == 401)
+    st, _, raw = http("GET", base + "/admin/setup")
+    check("with ADMIN_SECRET set, /admin/setup says an admin secret is set", st == 200 and json.loads(raw) == {"state": "set", "min": 16}, st)
 
     print("== one server, several memories")
     desktop = Client(base, "claude", claude_token, "desktop-app")
@@ -787,22 +798,78 @@ def run(w):
     print(f"   ({elapsed:.0f} s)")
 
 
+def setup_post(base, body, headers=None):
+    h = {"Content-Type": "application/json", **(headers or {})}
+    st, _, raw = http("POST", base + "/admin/setup", h, json.dumps(body).encode())
+    try:
+        return st, json.loads(raw)
+    except ValueError:
+        return st, {"raw": raw}
+
+
+def run_setup(w):
+    """A new deployment without an admin secret that counts: set one on the page."""
+    base = w.base
+    print("== a new deployment: the admin secret is set on the admin page")
+    st, _, raw = http("GET", base + "/admin/setup")
+    state = json.loads(raw) if st == 200 else {}
+    check("/admin/setup says it may be set here", st == 200 and state.get("state") == "open" and state.get("min") == 16, st)
+    until = state.get("until", 0) / 1000
+    check("until about an hour after the server started", time.time() + 50 * 60 < until <= time.time() + 60 * 60 + 60, until - time.time())
+    check("the admin API is not there yet", admin(base, "/admin/memories", None, method="GET")[0] == 404)
+    secret = "set-on-page-" + os.urandom(12).hex()
+    check("a post from another site is refused",
+          setup_post(base, {"secret": secret}, {"Origin": "https://evil.example"})[0] == 403)
+    st, body = setup_post(base, {"secret": "short"})
+    check("a secret too short is refused with 400", st == 400 and "16 to 200 characters" in body.get("error", ""), st)
+    check("a secret with a space is refused with 400", setup_post(base, {"secret": "x" * 16 + " y"})[0] == 400)
+    st, body = setup_post(base, {"secret": secret})
+    check("a good one is taken: 201", st == 201 and body == {"state": "set"}, st)
+    st, body = setup_post(base, {"secret": "another-" + os.urandom(12).hex()})
+    check("a second is refused: 409", st == 409, st)
+    st, _, raw = http("GET", base + "/admin/setup")
+    check("/admin/setup now says it is set", st == 200 and json.loads(raw).get("state") == "set", st)
+    check("without a credential the admin API answers 401", admin(base, "/admin/memories", None, method="GET")[0] == 401)
+    check("a wrong secret: 401", admin(base, "/admin/memories", "wrong-" + secret, method="GET")[0] == 401)
+    st, made = admin(base, "/admin/memories/onpage", secret)
+    check("the secret set opens the admin API: a memory is created", st == 201 and bool(re.match(TOKEN_RE, made.get("token", ""))), st)
+    w.stop()
+    check("the secret is not in the files", secret.encode() not in scan(w.persist))
+    w.start()
+    print("== restarted: the secret set on the page is still the admin secret")
+    st, _, raw = http("GET", base + "/admin/setup")
+    check("/admin/setup still says set", st == 200 and json.loads(raw).get("state") == "set", st)
+    st, listed = admin(base, "/admin/memories", secret, method="GET")
+    check("and the secret still opens the admin API", st == 200 and [m.get("name") for m in listed.get("memories", [])] == ["onpage"], st)
+    check("nothing more can be set", setup_post(base, {"secret": "again-" + os.urandom(12).hex()})[0] == 409)
+
+
 def main():
     scratch = tempfile.mkdtemp(prefix="ziwo-smoke-")
     secret = "smoke-" + os.urandom(16).hex()
     w = Worker(scratch, secret)
+    setup_scratch = os.path.join(scratch, "setup")
+    os.makedirs(setup_scratch)
+    # ADMIN_SECRET given empty: no admin secret counts.
+    fresh = Worker(setup_scratch, "")
 
     def cleanup():
         try:
             w.stop()
         finally:
-            shutil.rmtree(scratch, ignore_errors=True)
+            try:
+                fresh.stop()
+            finally:
+                shutil.rmtree(scratch, ignore_errors=True)
 
     atexit.register(cleanup)
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     try:
         w.start()
         run(w)
+        w.stop()
+        fresh.start()
+        run_setup(fresh)
     except KeyboardInterrupt:
         print("  interrupted")
         global failures

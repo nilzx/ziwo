@@ -9,8 +9,9 @@ import { describe, it } from "node:test";
 import { codexTomlOAuth, connectGuide, hookScript, hookSettings, mcpJson, mcpJsonOAuth } from "../../page/connect.mjs";
 import { makeH } from "../../page/dom.mjs";
 import {
-  adminState, ApiError, defaultParams, errorText, generatedSecretLength, makeApi, makeSecret, memoryHash, memoryPath, minAdminSecret, namesMatch,
-  paramNames, pickLanguage, reportGroups, reportText, route, SecretError, sealedFileName, settingsChange, utcStamp, workerNameOf,
+  adminState, ApiError, defaultParams, errorText, generatedSecretLength, makeApi, makeSecret, maxAdminSecret, memoryHash, memoryPath, minAdminSecret,
+  namesMatch, newSecretProblem, paramNames, pickLanguage, reportGroups, reportText, route, SecretError, sealedFileName, setAdminSecret, settingsChange,
+  utcStamp, workerNameOf,
 } from "../../page/logic.mjs";
 import { format, texts } from "../../page/texts.mjs";
 import { repoRoot, workerDir } from "./go.mjs";
@@ -249,30 +250,100 @@ describe("the page's decisions", () => {
 });
 
 describe("the set-up of an admin secret", () => {
-  const answering = (/** @type {number} */ status) => {
+  const answering = (/** @type {number} */ status, body = "") => {
     /** @type {RequestInit[]} */
     const seen = [];
-    const fetchFn = /** @type {typeof fetch} */ (async (_url, init) => {
+    /** @type {string[]} */
+    const urls = [];
+    const fetchFn = /** @type {typeof fetch} */ (async (url, init) => {
+      urls.push(String(url));
       seen.push(init ?? {});
-      return new Response("", { status });
+      return new Response(body, { status });
     });
-    return { fetchFn, seen };
+    return { fetchFn, seen, urls };
   };
+  const stateOf = (/** @type {unknown} */ v, status = 200) => adminState(answering(status, typeof v === "string" ? v : JSON.stringify(v)).fetchFn);
 
-  it("tells a secret that counts (401) from none (404) before anything is typed", async () => {
-    assert.equal(await adminState(answering(401).fetchFn), "ready");
-    assert.equal(await adminState(answering(404).fetchFn), "unset");
-    assert.equal(await adminState(answering(500).fetchFn), "unknown");
-    assert.equal(await adminState(async () => { throw new TypeError("offline"); }), "unknown");
+  it("reads what the deployment's admin secret is before anything is typed", async () => {
+    assert.deepEqual(await stateOf({ state: "set", min: 16 }), { state: "ready" });
+    assert.deepEqual(await stateOf({ state: "closed", min: 16 }), { state: "closed" });
+    assert.deepEqual(await stateOf({ state: "open", min: 16, until: 1_800_000_000_000 }), { state: "open", until: 1_800_000_000_000 });
   });
 
-  it("sends no credential when asking", async () => {
-    const { fetchFn, seen } = answering(401);
+  it("takes anything unexpected for unknown", async () => {
+    for (const junk of [
+      { state: "open", min: 16 }, { state: "open", until: "soon" }, { state: "open", until: null }, { state: "unset" }, { state: "SET" },
+      {}, [], null, 7, "set", "{not json", "", { error: "x" },
+    ]) {
+      assert.deepEqual(await stateOf(junk), { state: "unknown" }, JSON.stringify(junk));
+    }
+    // The old way of asking, and answers other than 200, say nothing.
+    for (const status of [401, 404, 403, 500, 503]) assert.deepEqual(await stateOf({ state: "set" }, status), { state: "unknown" }, String(status));
+    assert.deepEqual(await adminState(async () => { throw new TypeError("offline"); }), { state: "unknown" });
+  });
+
+  it("sends no credential when asking, and asks /admin/setup", async () => {
+    const { fetchFn, seen, urls } = answering(200, `{"state":"set","min":16}`);
     await adminState(fetchFn);
     assert.equal(seen.length, 1);
+    assert.deepEqual(urls, ["/admin/setup"]);
     const headers = new Headers(seen[0].headers);
     assert.equal(headers.has("authorization"), false);
     assert.equal(seen[0].method, "GET");
+  });
+
+  it("checks a secret to set as the server does", () => {
+    assert.equal(newSecretProblem("x".repeat(minAdminSecret)), undefined);
+    assert.equal(newSecretProblem("A1!~" + "z".repeat(minAdminSecret)), undefined);
+    assert.equal(newSecretProblem(makeSecret()), undefined);
+    assert.equal(newSecretProblem(""), "short");
+    assert.equal(newSecretProblem("x".repeat(minAdminSecret - 1)), "short");
+    // Counted as characters, as the message counts them.
+    assert.equal(newSecretProblem("密".repeat(minAdminSecret - 1)), "short");
+    for (const bad of ["密".repeat(minAdminSecret), `${"x".repeat(minAdminSecret)} y`, ` ${"x".repeat(minAdminSecret)}`, `${"x".repeat(minAdminSecret)}\t`,
+      `${"x".repeat(minAdminSecret)}\n`, `${"x".repeat(minAdminSecret)}\x7f`, `${"x".repeat(minAdminSecret)}é`]) {
+      assert.equal(newSecretProblem(bad), "unsendable", JSON.stringify(bad));
+    }
+  });
+
+  it("lets through only secrets the API can send", async () => {
+    // Every printable ASCII character but space, each in a secret of its own.
+    for (let c = 0x21; c <= 0x7e; c++) {
+      const secret = String.fromCharCode(c).repeat(minAdminSecret);
+      assert.equal(newSecretProblem(secret), undefined, secret);
+      let sent = "";
+      const api = makeApi({ secret, fetch: /** @type {typeof fetch} */ (async (_u, init) => {
+        sent = new Headers(init?.headers).get("authorization") ?? "";
+        return new Response("{}", { status: 200 });
+      }) });
+      await api.list();
+      assert.equal(sent, `Bearer ${secret}`);
+    }
+  });
+
+  it("sets a secret with one JSON post, and reads the three answers", async () => {
+    const secret = makeSecret();
+    const { fetchFn, seen, urls } = answering(201, `{"state":"set"}`);
+    assert.equal(await setAdminSecret(secret, fetchFn), "set");
+    assert.deepEqual(urls, ["/admin/setup"]);
+    assert.equal(seen[0].method, "POST");
+    const headers = new Headers(seen[0].headers);
+    assert.equal(headers.get("content-type"), "application/json");
+    assert.equal(headers.has("authorization"), false);
+    assert.deepEqual(JSON.parse(String(seen[0].body)), { secret });
+    assert.equal(await setAdminSecret(secret, answering(409, `{"error":"an admin secret is set already","state":"set"}`).fetchFn), "taken");
+    assert.equal(await setAdminSecret(secret, answering(403, `{"error":"no longer","state":"closed"}`).fetchFn), "closed");
+    // A 403 that does not say closed, and anything else, is the API's error.
+    for (const [status, body, text] of [[403, `{"error":"not sent from this page"}`, "not sent from this page"], [400, `{"error":"too short"}`, "too short"],
+      [503, "", "no answer"]]) {
+      await assert.rejects(setAdminSecret(secret, answering(/** @type {number} */ (status), /** @type {string} */ (body)).fetchFn), (/** @type {unknown} */ err) => {
+        assert.ok(err instanceof ApiError);
+        assert.equal(err.status, status);
+        assert.equal(err.text, text);
+        assert.equal(err.message.includes(secret), false);
+        return true;
+      });
+    }
   });
 
   it("draws a secret of the right length from letters and digits, and skips bytes from 248 up", () => {
@@ -309,6 +380,9 @@ describe("the set-up of an admin secret", () => {
     const m = /export const minAdminSecret = (\d+);/.exec(admin);
     assert.ok(m !== null, "minAdminSecret not found in src/admin.ts");
     assert.equal(minAdminSecret, Number(m[1]));
+    const x = /export const maxAdminSecret = (\d+);/.exec(admin);
+    assert.ok(x !== null, "maxAdminSecret not found in src/admin.ts");
+    assert.equal(maxAdminSecret, Number(x[1]));
   });
 });
 

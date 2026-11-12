@@ -47,6 +47,15 @@ export function bearer(request: Request): string | null | undefined {
   return h.slice(at + 1).trim();
 }
 
+// sameOrigin says whether a post was sent from a page of this origin: by its
+// Origin header, or, where a browser withholds it (or sends "null"), by
+// Sec-Fetch-Site. issuer is this deployment's origin.
+export function sameOrigin(request: Request, issuer: string): boolean {
+  const origin = request.headers.get("origin");
+  if (origin !== null && origin !== "null") return origin === issuer;
+  return request.headers.get("sec-fetch-site") === "same-origin";
+}
+
 // The name rule of Go's host: lower case so a name means the same thing
 // everywhere, and plain enough to sit in a URL path.
 const nameRE = /^[a-z0-9][a-z0-9_-]{0,31}$/;

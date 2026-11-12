@@ -1,11 +1,13 @@
-# The secrets this Worker takes. Cloudflare's Deploy button reads this file
-# for their names, and a value given here turns up in its form as if it had
-# been filled in. So none is given: the field starts empty.
+# Local settings for wrangler dev. Nothing here is needed: copy this file to
+# .dev.vars, which git ignores, only if you want to set something.
 #
-# For wrangler dev, copy this file to .dev.vars, which git ignores, and fill
-# it in.
+# Cloudflare's Deploy button reads this file for the secrets to ask for, and
+# shows a value given here as if it had been filled in. So the file names
+# none, and that form asks for nothing.
 #
-# ADMIN_SECRET is the password of the admin page and of the admin API. At
-# least 16 characters. Without one that long the admin API is not there
-# (404), and the admin page says how to set one.
-ADMIN_SECRET=
+# The admin secret is chosen on the admin page the first time a new
+# deployment is opened. ADMIN_SECRET, when set (at least 16 characters), is
+# the admin secret instead, and replaces one chosen on the page for good. On a
+# deployment it is set in the Cloudflare dashboard, as the way back in when
+# the secret is forgotten.
+# ADMIN_SECRET=

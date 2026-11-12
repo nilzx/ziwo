@@ -235,22 +235,78 @@ export function utcStamp(ms) {
 // minAdminSecret in src/admin.ts; a test keeps the two equal.
 export const minAdminSecret = 16;
 
+// The longest admin secret the page may set. It mirrors maxAdminSecret in
+// src/admin.ts; a test keeps the two equal.
+export const maxAdminSecret = 200;
+
 /**
- * adminState asks the deployment whether it has an admin secret that counts,
- * without presenting one: 401 says one is set, 404 says none counts. A
- * request without a credential is not weighed against the limit on guessing.
+ * adminState asks the deployment, without presenting a credential, what its
+ * admin secret is (GET /admin/setup): "ready" when one is set, of either
+ * kind; "open" when one may be set on this page, with until, the time that
+ * closes (unix milliseconds); "closed" when it has to be set in the
+ * Cloudflare dashboard. Anything unexpected is "unknown". A request without
+ * a credential is not weighed against the limit on guessing.
  * @param {typeof fetch} [fetchFn]
- * @returns {Promise<"ready" | "unset" | "unknown">}
+ * @returns {Promise<{ state: "ready" | "closed" | "unknown" } | { state: "open", until: number }>}
  */
 export async function adminState(fetchFn = globalThis.fetch.bind(globalThis)) {
   try {
-    const res = await fetchFn("/admin/memories", { method: "GET", headers: { accept: "application/json" } });
-    if (res.status === 401) return "ready";
-    if (res.status === 404) return "unset";
-    return "unknown";
+    const res = await fetchFn("/admin/setup", { method: "GET", headers: { accept: "application/json" } });
+    if (res.status !== 200) return { state: "unknown" };
+    const v = await res.json();
+    if (v === null || typeof v !== "object") return { state: "unknown" };
+    if (v.state === "set") return { state: "ready" };
+    if (v.state === "closed") return { state: "closed" };
+    if (v.state === "open" && typeof v.until === "number" && Number.isFinite(v.until)) return { state: "open", until: v.until };
+    return { state: "unknown" };
   } catch {
-    return "unknown";
+    return { state: "unknown" };
   }
+}
+
+/**
+ * newSecretProblem says why a secret cannot be set on the page, or
+ * undefined: "short" under minAdminSecret characters, "unsendable" when a
+ * character is not printable ASCII or is a space. The server holds the same
+ * rule (src/admin.ts, newSecretProblem), and every secret it lets through is
+ * one makeApi can send. The field takes at most maxAdminSecret characters.
+ * @param {string} secret
+ * @returns {"short" | "unsendable" | undefined}
+ */
+export function newSecretProblem(secret) {
+  if ([...secret].length < minAdminSecret) return "short";
+  if (!/^[\x21-\x7e]+$/.test(secret)) return "unsendable";
+  return undefined;
+}
+
+/**
+ * setAdminSecret sets the admin secret on the page (POST /admin/setup):
+ * "set" when it took (201), "taken" when one is set already (409), "closed"
+ * when it can no longer be set here (403 saying so). Any other answer is an
+ * ApiError. The secret goes
+ * only into the body of this one request.
+ * @param {string} secret
+ * @param {typeof fetch} [fetchFn]
+ * @returns {Promise<"set" | "taken" | "closed">}
+ */
+export async function setAdminSecret(secret, fetchFn = globalThis.fetch.bind(globalThis)) {
+  const res = await fetchFn("/admin/setup", {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify({ secret }),
+  });
+  if (res.status === 201) return "set";
+  if (res.status === 409) return "taken";
+  // A 403 says closed in its body; a refused cross-site post does not.
+  const text = await res.text();
+  if (res.status === 403) {
+    try {
+      if (JSON.parse(text).state === "closed") return "closed";
+    } catch {
+      // not the closed answer
+    }
+  }
+  throw new ApiError(res.status, await errorText(new Response(text, { status: res.status, statusText: res.statusText })));
 }
 
 // The length of a generated admin secret.

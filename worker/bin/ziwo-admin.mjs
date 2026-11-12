@@ -33,7 +33,7 @@ Usage:
 
 Environment:
   ZIWO_URL            the deployment's address, such as https://ziwo.example.workers.dev
-  ZIWO_ADMIN_SECRET   its ADMIN_SECRET
+  ZIWO_ADMIN_SECRET   its admin secret
   ZIWO_PASSPHRASE     the passphrase of an export; asked for, without echo, when unset
 
 Changing a forgetting parameter replays the whole memory from its log.

@@ -250,7 +250,10 @@ describe("the directory", () => {
     const e: Env = { ...testEnv(), DIRECTORY: ns as unknown as Env["DIRECTORY"] };
     const name = freshName();
     const made = await body(await admin(`/admin/memories/${name}`, { method: "POST", env: e }));
-    expect(calls).toEqual(["register"]);
+    // The admin call may also tell the directory, once per isolate, that the
+    // dashboard secret counts: whether it does here depends on which test
+    // ran first.
+    expect(calls.filter((c) => c !== "dashboardRules")).toEqual(["register"]);
     calls.length = 0;
     const post = (method: string, params: Record<string, unknown>, id = 1) =>
       worker.fetch(
