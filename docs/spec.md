@@ -857,7 +857,9 @@ An update keeps everything a deployment stores: the memories, the directory and 
 
 ### Making a release
 
-In `worker/`: set `version` in `package.json`, then `npm run check:npm`. It runs `npm run pack:npm`, which assembles the package in `worker/pkg/`; checks the list of files npm would publish; installs the packed tarball into a scratch directory under `/private/tmp/` and runs it there signed in to nothing (`--version`, `--help`, `deploy --dry-run`); compares its upload with the repository's (modules, their types and contents, metadata, configuration); and runs the smoke suite on the prebuilt Worker. Then `npm publish` in `worker/pkg/`.
+Set `version` in `worker/package.json`, commit, and push the tag `vX.Y.Z` of that commit. The workflow `.github/workflows/release.yml` then runs, on a GitHub runner, the type check, the tests and `npm run check:npm`, and publishes the tarball it checked. It publishes by npm's trusted publishing: no token is stored anywhere; npm is told once, in the package's settings on npmjs.com, to trust that workflow of this repository. The job that installs dependencies and runs tests holds no right to publish, and the job that publishes runs nothing but npm on the checked tarball. A tag that is not the version in `package.json` fails. Run by hand, the workflow does everything but publish.
+
+`npm run check:npm`, in `worker/`, runs `npm run pack:npm`, which assembles the package in `worker/pkg/`; checks the list of files npm would publish; installs the packed tarball into a scratch directory and runs it there signed in to nothing (`--version`, `--help`, `deploy --dry-run`); compares its upload with the repository's (modules, their types and contents, metadata, configuration); and runs the smoke suite on the prebuilt Worker. A release by hand is `npm publish` in `worker/pkg/` after it.
 
 ### Other ways
 
