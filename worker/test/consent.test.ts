@@ -1,12 +1,15 @@
-// The consent page: its headers, what it shows, that a forged or replayed
-// post is refused, its two languages, and a client that names itself with a
-// Client ID Metadata Document.
+// The consent page: its headers, what it shows, that a forged post is
+// refused, that a request changed between the page and the post is refused
+// or acted on only as that request on its own would be, its two languages,
+// and a client that names itself with a Client ID Metadata Document.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { consentPolicy } from "../src/consent";
 import { consentTexts, pickLang } from "../src/consent-texts";
 import { adminSecret, createMemory, fetchWorker, origin } from "./mcp-helpers";
-import { approve, authorizePath, codeFrom, openPage, type Page, pkce, register, resourceOf, submit } from "./oauth-helpers";
+import {
+  approve, authorizePath, codeFrom, countingEnv, exchange, openPage, type Page, pkce, redirectUri, register, resourceOf, submit,
+} from "./oauth-helpers";
 
 async function consentPage(loopback = false, headers: Record<string, string> = {}): Promise<{ page: Page; name: string; token: string }> {
   const m = await createMemory();
@@ -20,7 +23,7 @@ async function consentPage(loopback = false, headers: Record<string, string> = {
 const message = (html: string) => /<p class="out error" role="alert">([^<]*)<\/p>/.exec(html)?.[1];
 
 describe("the consent page", () => {
-  it("is sent with a strict policy, cannot be framed or cached, and binds itself to the browser", async () => {
+  it("is sent with a strict policy, cannot be framed or cached, and sets no cookie", async () => {
     const { page } = await consentPage();
     const h = page.res.headers;
     expect(h.get("content-type")).toBe("text/html; charset=utf-8");
@@ -33,9 +36,9 @@ describe("the consent page", () => {
     expect(h.get("referrer-policy")).toBe("same-origin");
     expect(h.get("cross-origin-opener-policy")).toBe("same-origin");
     expect(h.get("cache-control")).toBe("no-store");
-    const cookies = h.getSetCookie();
-    expect(cookies).toHaveLength(1);
-    expect(cookies[0]).toMatch(/^__Host-oauth-consent-[0-9a-f]{16}=[0-9a-f]{64}; Path=\/; Secure; HttpOnly; SameSite=Lax; Max-Age=600$/);
+    expect(h.getSetCookie()).toEqual([]);
+    // The form carries the request as it came, and no handle.
+    expect(Object.keys(page.fields).sort()).toEqual(["hl", "memory", "q"]);
     // No script of any kind, no inline style, and only the admin page's style sheet.
     expect(page.html).not.toMatch(/<script|\son[a-z]+=|style=|javascript:/i);
     expect([...page.html.matchAll(/\b(?:src|href)="([^"]*)"/g)].map((m) => m[1]).filter((u) => !u!.startsWith("/oauth/authorize?"))).toEqual(["/_page/style.css"]);
@@ -60,37 +63,34 @@ describe("the consent page", () => {
     expect(page.res.headers.get("content-security-policy")).toContain("form-action 'self' http://127.0.0.1:53682;");
   });
 
-  it("refuses a post from another origin, one without the browser's cookie, and a replay", async () => {
-    const { page, token } = await consentPage();
+  it("refuses a post from another origin, and takes one from this origin in any browser", async () => {
+    const { page, name, token } = await consentPage();
     for (const opts of [{ origin: "https://evil.example" }, { origin: null }, { origin: "null" }, { origin: null, fetchSite: "cross-site" },
       { origin: `${origin}.evil.example` }]) {
       const res = await submit(page, { decision: "approve", credential: token }, opts);
       expect(res.status, JSON.stringify(opts)).toBe(403);
       expect(message(await res.text())).toBe("This approval was not sent from this page, so it was not accepted. Start again from the client.");
     }
-    // Same origin but another browser: the library's binding cookie is missing.
-    const stranger = await submit(page, { decision: "approve", credential: token }, { cookie: null });
-    expect(stranger.status).toBe(400);
-    expect(message(await stranger.text())).toBe("This page has expired, was already used, or was opened in another browser. Start again from the client.");
-    // A handle that is not this page's.
-    const other = await submit(page, { decision: "approve", credential: token, handle: "x".repeat(43) });
-    expect(other.status).toBe(400);
-    // Where Origin is withheld, Sec-Fetch-Site vouches for the page.
-    const ok = await submit(page, { decision: "approve", credential: token }, { origin: null, fetchSite: "same-origin" });
+    // Where Origin is withheld, Sec-Fetch-Site vouches for the page. There
+    // is no cookie to bind the post to the browser that opened the page.
+    const ok = await submit(page, { decision: "approve", credential: token }, { origin: null, fetchSite: "same-origin", cookie: null });
     expect(codeFrom(ok).get("code")).not.toBeNull();
-    // The handle works once.
-    const replay = await approve(page, token);
-    expect(replay.status).toBe(400);
-    expect(replay.headers.get("location")).toBeNull();
+    // The same form again is a new approval: a new grant, and the client's
+    // earlier one for this memory is revoked by the library.
+    expect(codeFrom(await approve(page, token)).get("code")).not.toBeNull();
+    const grants = await fetchWorker(`/admin/memories/${name}/grants`, { headers: { authorization: `Bearer ${adminSecret}` } });
+    expect(((await grants.json()) as { grants: unknown[] }).grants).toHaveLength(1);
   });
 
-  it("refuses a form whose memory is not the one the request asked for, after taking the handle", async () => {
+  it("refuses a form whose memory is not the one the request names, writing nothing", async () => {
     const { page } = await consentPage();
     const other = await createMemory();
-    const res = await submit(page, { decision: "approve", credential: other.token, memory: other.name });
+    const { env: e, writes } = countingEnv();
+    const res = await submit(page, { decision: "approve", credential: other.token, memory: other.name }, { env: e });
     expect(res.status).toBe(400);
     expect(res.headers.get("location")).toBeNull();
     expect(message(await res.text())).toBe("This request cannot go on. Start again from the client.");
+    expect(writes).toEqual([]);
     // Not a form at all.
     const bad = await fetchWorker("/oauth/authorize", { method: "POST", headers: { origin, "content-type": "application/json" }, body: "{}" });
     expect(bad.status).toBe(400);
@@ -122,6 +122,127 @@ describe("the consent page", () => {
       expect(consentTexts.en[k].trim(), k).not.toBe("");
       expect(consentTexts.zh[k].trim(), k).not.toBe("");
     }
+  });
+});
+
+describe("a request changed between the page and the post", () => {
+  async function setUp() {
+    const m = await createMemory();
+    const clientId = await register("Asked client");
+    const p = await pkce();
+    const page = await openPage(authorizePath({ clientId, challenge: p.challenge, resource: resourceOf(m.name), state: "st-t" }));
+    expect(page.res.status).toBe(200);
+    return { m, clientId, p, page };
+  }
+
+  // withQ is the page's form with its request changed.
+  function withQ(page: Page, change: (q: URLSearchParams) => void): Page {
+    const q = new URLSearchParams(page.fields.q);
+    change(q);
+    return { ...page, fields: { ...page.fields, q: q.toString() } };
+  }
+
+  const grantsOf = async (name: string): Promise<string[]> => {
+    const res = await fetchWorker(`/admin/memories/${name}/grants`, { headers: { authorization: `Bearer ${adminSecret}` } });
+    return ((await res.json()) as { grants: { client: string }[] }).grants.map((g) => g.client);
+  };
+
+  it("to another client is that client's own request: approved for it, and only its code exchange works", async () => {
+    const { m, clientId, p, page } = await setUp();
+    const other = await register("Other client");
+    const code = codeFrom(await approve(withQ(page, (q) => q.set("client_id", other)), m.token)).get("code")!;
+    expect(await grantsOf(m.name)).toEqual(["Other client"]);
+    expect((await exchange(code, clientId, p.verifier, resourceOf(m.name))).status).toBe(400);
+    expect((await exchange(code, other, p.verifier, resourceOf(m.name))).status).toBe(200);
+    // A client that is not there is refused here, approved or denied, and nothing is written.
+    const { env: e, writes } = countingEnv();
+    const nobody = withQ(page, (q) => q.set("client_id", "AAAAAAAAAAAAAAAA"));
+    for (const values of [{ decision: "approve", credential: m.token }, { decision: "deny" }] as Record<string, string>[]) {
+      const res = await submit(nobody, values, { env: e });
+      expect(res.status, values.decision).toBe(400);
+      expect(res.headers.get("location")).toBeNull();
+      expect(message(await res.text())).toBe("This request cannot go on. Start again from the client.");
+    }
+    expect(writes).toEqual([]);
+  });
+
+  it("to another redirect URI is refused here, approved or denied, unless the client registered it: then it is sent there", async () => {
+    const m = await createMemory();
+    const second = "https://client.example/second";
+    const reg = await fetchWorker("/oauth/register", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ client_name: "Two doors", redirect_uris: [redirectUri, second], token_endpoint_auth_method: "none" }),
+    });
+    const clientId = ((await reg.json()) as { client_id: string }).client_id;
+    const p = await pkce();
+    const page = await openPage(authorizePath({ clientId, challenge: p.challenge, resource: resourceOf(m.name) }));
+    const { env: e, writes } = countingEnv();
+    const evil = withQ(page, (q) => q.set("redirect_uri", "https://evil.example/cb"));
+    for (const values of [{ decision: "approve", credential: m.token }, { decision: "deny" }] as Record<string, string>[]) {
+      const res = await submit(evil, values, { env: e });
+      expect(res.status, values.decision).toBe(400);
+      expect(res.headers.get("location")).toBeNull();
+    }
+    expect(writes).toEqual([]);
+    const code = codeFrom(await approve(withQ(page, (q) => q.set("redirect_uri", second)), m.token), second).get("code")!;
+    expect((await exchange(code, clientId, p.verifier, resourceOf(m.name), undefined, second)).status).toBe(200);
+  });
+
+  it("to another memory is refused unless the credential is right for that memory, as on its own page", async () => {
+    const { m, page } = await setUp();
+    const other = await createMemory();
+    const { env: e, writes } = countingEnv();
+    // The request names the other memory, the form this one: refused.
+    const toOther = withQ(page, (q) => q.set("resource", resourceOf(other.name)));
+    const res = await approve(toOther, m.token, e);
+    expect(res.status).toBe(400);
+    expect(message(await res.text())).toBe("This request cannot go on. Start again from the client.");
+    // Both name the other memory: this memory's token is not its credential.
+    const both: Page = { ...toOther, fields: { ...toOther.fields, memory: other.name } };
+    const wrong = await approve(both, m.token, e);
+    expect(wrong.status).toBe(403);
+    expect(message(await wrong.text())).toBe("Not accepted. Check what you typed and try again.");
+    // The memory parameter in place of the resource is read as the page
+    // reads it, trimmed.
+    const byParam = withQ(page, (q) => {
+      q.delete("resource");
+      q.set("memory", other.name);
+    });
+    expect((await approve(byParam, m.token, e)).status).toBe(400);
+    expect(writes).toEqual([]);
+
+    // Its own token, or the admin secret, approves it for that memory.
+    for (const credential of [other.token, adminSecret]) {
+      const code = codeFrom(await approve(both, credential)).get("code")!;
+      expect(code.startsWith(`${other.name}:`)).toBe(true);
+    }
+    expect(await grantsOf(m.name)).toEqual([]);
+    const spaced = withQ(page, (q) => {
+      q.delete("resource");
+      q.set("memory", ` ${m.name} `);
+    });
+    expect(codeFrom(await approve(spaced, m.token)).get("code")!.startsWith(`${m.name}:`)).toBe(true);
+  });
+
+  it("without PKCE is sent back with invalid_request, as the page would be, and a changed challenge binds the code to it", async () => {
+    const { m, clientId, p, page } = await setUp();
+    const { env: e, writes } = countingEnv();
+    const noPkce = withQ(page, (q) => {
+      q.delete("code_challenge");
+      q.delete("code_challenge_method");
+    });
+    const back = codeFrom(await approve(noPkce, m.token, e));
+    expect(back.get("error")).toBe("invalid_request");
+    expect(back.get("state")).toBe("st-t");
+    expect(back.get("code")).toBeNull();
+    // Denied, the library refuses it (a public client must use PKCE): answered here.
+    expect((await submit(noPkce, { decision: "deny" }, { env: e })).status).toBe(400);
+    expect(writes).toEqual([]);
+    expect(await grantsOf(m.name)).toEqual([]);
+    const fresh = await pkce();
+    const code = codeFrom(await approve(withQ(page, (q) => q.set("code_challenge", fresh.challenge)), m.token)).get("code")!;
+    expect((await exchange(code, clientId, p.verifier, resourceOf(m.name))).status).toBe(400);
+    expect((await exchange(code, clientId, fresh.verifier, resourceOf(m.name))).status).toBe(200);
   });
 });
 

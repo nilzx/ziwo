@@ -26,14 +26,20 @@ export interface Env extends EmbedEnv {
   MEMORY: DurableObjectNamespace<Memory>;
   // The list of memories the admin API keeps; never reached by MCP.
   DIRECTORY: DurableObjectNamespace<Directory>;
-  // The limit on guessing at the consent page and the admin API, one object
-  // per address (guard.ts); never reached by MCP.
+  // The limit on guessing at the consent page and the admin API, and the
+  // budget on client registrations, one object per address and one for all
+  // addresses (guard.ts); never reached by MCP.
   GUARD: DurableObjectNamespace<Guard>;
   // The secret of the admin API; without it the admin API is not there.
   ADMIN_SECRET?: string;
   // OAuth's clients, grants and tokens (workers-oauth-provider). Never read
   // for a request that carries a memory's fixed token.
   OAUTH_KV: KVNamespace;
+  // How many clients may register themselves in any 24 hours, from all
+  // addresses together (oauth.ts, registerPerDay): a whole number, 100 when
+  // unset, 0 to switch registration off. A number when written as one in
+  // the wrangler file's vars.
+  REGISTER_PER_DAY?: string | number;
   // Search by meaning, off without AI: see embed.ts. AI is the Workers AI
   // binding; EMBED_MODEL (set empty to switch it off), EMBED_DIMS,
   // EMBED_MIN_SIMILARITY, EMBED_QUERY_TIMEOUT_MS and EMBED_QUERY_HEDGE_MS are

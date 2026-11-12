@@ -4,12 +4,42 @@
 // for, and asks for one thing, the memory's token or the admin secret. Either
 // approves a grant for that memory alone; anything else gets one message.
 //
+// The page stores nothing. Showing it, refusing a credential and denying
+// write nothing to KV and set no cookie: KV's free plan takes 1,000 writes a
+// day, and anyone may open this page. Only an approval with a right
+// credential writes (the grant, by completeAuthorization). The form carries
+// the authorization request as it came, in its field q, and nothing in it is
+// trusted: a post reads the request again from q with the library, which
+// validates the client, its exact redirect URI, the resource and PKCE as it
+// did for the page, and the page's own checks are made again by the same
+// code (readRequest). A post can only ever approve or deny the request that
+// q is, judged as if it had just been opened.
+//
 // Against forged and framed requests: the page cannot be framed (CSP
-// frame-ancestors, X-Frame-Options); a post must come from this origin
-// (Origin, or Sec-Fetch-Site where Origin is withheld); and the library binds
-// each page's one-time handle to the browser that opened it with a __Host-
-// cookie, keeping the request itself server-side, so the form carries no
-// part of it that is trusted.
+// frame-ancestors, X-Frame-Options) and runs no script; a post must come
+// from this origin (Origin, or Sec-Fetch-Site where Origin is withheld); and
+// every approval needs the memory's token or the admin secret, typed into
+// the page, for the memory that q names.
+//
+// What the library's consent transaction (a one-time handle in the form, the
+// request kept in KV, a __Host- cookie binding the handle to the browser)
+// protected against, and why it is not needed here:
+// - a forged approval, a post made in the person's name by another site or
+//   in another browser, riding on a session they are signed in with: there
+//   is no session here, and an approval without the credential approves
+//   nothing; with it, its holder could as well open the request themselves;
+// - a request changed between the page and the post: the request approved
+//   is what q is, validated again; changing q is opening another request,
+//   which the person with the credential could do anyway, and nobody else
+//   can make a browser post a changed q from this origin (no script, CSP);
+// - a replayed post: replaying one needs its body, which holds the
+//   credential; each approval is a new grant, and the library revokes the
+//   client's earlier grants for the same memory;
+// - a page left open: there is nothing to expire; the client's own state
+//   and PKCE verifier bind the code to the attempt it began.
+// A denial needs no credential: it sends the person back to a redirect URI
+// the library validated, with access_denied, which anyone could do by
+// opening that address.
 
 import {
   type AuthRequest,
@@ -17,6 +47,7 @@ import {
   authorizationErrorRedirect,
   CimdFetchError,
   type ConsentDescription,
+  type OAuthHelpers,
 } from "@cloudflare/workers-oauth-provider";
 import type { Note } from "./admin";
 import { consentTexts, type Lang, pickLang, type TextKey } from "./consent-texts";
@@ -125,12 +156,13 @@ function redirect(location: string, headers = new Headers()): Response {
 }
 
 // failure answers what the library refused: back to the client when the
-// library says that is safe, else here. Anything else is a fault, thrown.
-function failure(err: unknown, lang: Lang, note: Note, stage: "parse" | "consume"): Response {
+// library says that is safe and back is true, else here. Anything else is a
+// fault, thrown.
+function failure(err: unknown, lang: Lang, note: Note, back = true): Response {
   if (err instanceof AuthorizationError) {
     note.outcome = word(err.code);
-    if (err.redirectTo !== undefined) return redirect(err.redirectTo);
-    return stage === "consume" ? messagePage(400, lang, "expired") : messagePage(400, lang, "invalid", {}, err.description);
+    if (back && err.redirectTo !== undefined) return redirect(err.redirectTo);
+    return messagePage(400, lang, "invalid", {}, err.description);
   }
   if (err instanceof CimdFetchError) {
     note.outcome = "client_metadata_failed";
@@ -169,7 +201,7 @@ ${badName ? `<p class="out error" role="alert">${t(lang, "askBadName")}</p>\n` :
   return htmlResponse(badName ? 400 : 200, document(lang, toggleFor(query, lang), body), securityHeaders());
 }
 
-function consentBody(lang: Lang, d: ConsentDescription, memory: string, resource: string, handle: string, query: URLSearchParams, refused: boolean): string {
+function consentBody(lang: Lang, d: ConsentDescription, memory: string, resource: string, query: URLSearchParams, refused: boolean): string {
   return `<h2 tabindex="-1">${t(lang, "heading", { client: strong(clipText(d.clientName, 200)), memory: strong(memory) })}</h2>
 ${refused ? `<p class="out error" role="alert">${t(lang, "refused")}</p>\n` : ""}${clientFacts(lang, d)}
 <dl class="figures">
@@ -178,7 +210,6 @@ ${refused ? `<p class="out error" role="alert">${t(lang, "refused")}</p>\n` : ""
 </dl>
 <p>${t(lang, "what")}</p>
 <form method="post" action="${paths.authorize}">
-${hidden("handle", handle)}
 ${hidden("memory", memory)}
 ${hidden("q", query.toString())}
 ${hidden("hl", lang)}
@@ -192,48 +223,68 @@ ${hidden("hl", lang)}
 </form>`;
 }
 
-// authorizePage answers an authorization request: the page that asks for the
-// memory's name, or the consent page. refused shows it again after a
-// credential was not accepted.
-async function authorizePage(env: Env, issuer: string, url: URL, lang: Lang, note: Note, refused: boolean): Promise<Response> {
-  const query = url.searchParams;
+// nameOf reads the memory an authorization request names: its one resource
+// indicator, or, with none, its memory parameter (the page that asks for the
+// name adds it). badName: a memory parameter that is no name.
+function nameOf(issuer: string, query: URLSearchParams): { name?: string; badName: boolean } {
   const resources = query.getAll("resource");
-  let name: string | undefined;
-  let badName = false;
   if (resources.length === 1) {
-    name = memoryOfResource(issuer, resources[0]!);
-  } else if (resources.length === 0 && query.has("memory")) {
-    const m = query.get("memory")!.trim();
-    if (validName(m)) name = m;
-    else badName = true;
+    const name = memoryOfResource(issuer, resources[0]!);
+    return name === undefined ? { badName: false } : { name, badName: false };
   }
-  // A resource that names none of the memories is the library's to refuse:
-  // against the placeholder, it fails as invalid_target.
-  const oauth = authServer(issuer, name === undefined ? [] : [name]).getOAuthApi(env);
-  let req: AuthRequest;
-  let details: ConsentDescription;
+  if (resources.length === 0 && query.has("memory")) {
+    const m = query.get("memory")!.trim();
+    return validName(m) ? { name: m, badName: false } : { badName: true };
+  }
+  return { badName: false };
+}
+
+// The library's helpers for a request that names memory, or none.
+// A resource that names none of the memories is the library's to refuse:
+// against the placeholder, it fails as invalid_target.
+const helpersOf = (env: Env, issuer: string, name: string | undefined): OAuthHelpers =>
+  authServer(issuer, name === undefined ? [] : [name]).getOAuthApi(env);
+
+// readRequest reads and checks an authorization request as the page does,
+// both to show it and, again, to approve it: the library's validation, then
+// PKCE for every client, confidential ones too (every MCP client sends it),
+// then what the page shows of the client. A Response is the refusal.
+async function readRequest(oauth: OAuthHelpers, url: URL, lang: Lang, note: Note): Promise<{ req: AuthRequest; details: ConsentDescription } | Response> {
   try {
-    req = await oauth.parseAuthRequest(new Request(url.toString()));
-    // PKCE for every client, confidential ones too: every MCP client sends it.
+    const req = await oauth.parseAuthRequest(new Request(url.toString()));
     if (req.codeChallenge === undefined) {
       note.outcome = "pkce_required";
       return redirect(authorizationErrorRedirect(req, "invalid_request", "PKCE with S256 is required"));
     }
-    details = await oauth.describeConsent(req);
+    return { req, details: await oauth.describeConsent(req) };
   } catch (err) {
-    return failure(err, lang, note, "parse");
+    return failure(err, lang, note);
   }
+}
+
+// requestURL is the authorization request a form's q carries.
+function requestURL(issuer: string, q: string): URL {
+  const url = new URL(issuer + paths.authorize);
+  url.search = q;
+  return url;
+}
+
+// authorizePage answers an authorization request: the page that asks for the
+// memory's name, or the consent page. refused shows it again after a
+// credential was not accepted. It writes nothing.
+async function authorizePage(env: Env, issuer: string, url: URL, lang: Lang, note: Note, refused: boolean): Promise<Response> {
+  const query = url.searchParams;
+  const { name, badName } = nameOf(issuer, query);
+  const read = await readRequest(helpersOf(env, issuer, name), url, lang, note);
+  if (read instanceof Response) return read;
   if (name === undefined) {
     note.outcome = badName ? "bad_name" : "asked_name";
-    return askName(lang, query, details, badName);
+    return askName(lang, query, read.details, badName);
   }
   note.memory = name;
-  const consent = await oauth.beginConsent(req);
-  const headers = securityHeaders(redirectOrigin(req.redirectUri));
-  for (const c of consent.headers.getSetCookie()) headers.append("set-cookie", c);
   note.outcome = refused ? "refused" : "shown";
-  const body = consentBody(lang, details, name, resourceOf(issuer, name), consent.handle, query, refused);
-  return htmlResponse(refused ? 403 : 200, document(lang, toggleFor(query, lang), body), headers);
+  const body = consentBody(lang, read.details, name, resourceOf(issuer, name), query, refused);
+  return htmlResponse(refused ? 403 : 200, document(lang, toggleFor(query, lang), body), securityHeaders(redirectOrigin(read.req.redirectUri)));
 }
 
 // sameOrigin says whether a post was sent from a page of this origin.
@@ -284,16 +335,17 @@ async function decide(request: Request, env: Env, issuer: string, note: Note): P
     return messagePage(400, lang, "invalid");
   }
   note.memory = memory;
-  const oauth = authServer(issuer, [memory]).getOAuthApi(env);
-  const handle = form.get("handle") ?? "";
+  const asked = requestURL(issuer, form.get("q") ?? "");
 
   if (form.get("decision") === "deny") {
+    // Back to the client the request names, once the library has validated
+    // it and its redirect URI; a request it refuses is answered here.
     try {
-      const denied = await oauth.denyConsent(request, handle);
+      const req = await helpersOf(env, issuer, nameOf(issuer, asked.searchParams).name).parseAuthRequest(new Request(asked.toString()));
       note.outcome = "denied";
-      return new Response(null, { status: 302, headers: denied.headers });
+      return redirect(authorizationErrorRedirect(req, "access_denied"));
     } catch (err) {
-      return failure(err, lang, note, "consume");
+      return failure(err, lang, note, false);
     }
   }
 
@@ -305,9 +357,9 @@ async function decide(request: Request, env: Env, issuer: string, note: Note): P
     note.outcome = "unavailable";
     return messagePage(503, lang, "unavailable");
   }
-  // The limit on guessing (guard.ts). The handle is left unused, so the
-  // person can go back to the form once the wait is over; nothing here
-  // writes to KV, however often it is asked.
+  // The limit on guessing (guard.ts). The person can go back to the form
+  // once the wait is over; nothing here writes to KV, however often it is
+  // asked.
   const wait = await waitFor(env, request, via !== undefined);
   if (wait > 0) {
     note.outcome = "too_many";
@@ -316,27 +368,31 @@ async function decide(request: Request, env: Env, issuer: string, note: Note): P
     return res;
   }
   if (via === undefined || instance === "unknown") {
-    // The handle is left unused; a fresh page is made from the request.
-    return authorizePage(env, issuer, new URL(`${issuer}${paths.authorize}?${form.get("q") ?? ""}`), lang, note, true);
+    // The page again, made from the request; nothing is written.
+    return authorizePage(env, issuer, asked, lang, note, true);
   }
 
+  // The memory the credential was weighed for must be the one the request
+  // names, read as the page reads it.
+  if (nameOf(issuer, asked.searchParams).name !== memory) {
+    note.outcome = "invalid_target";
+    return messagePage(400, lang, "invalid");
+  }
+  // The request is read and checked again, as for the page: nothing of the
+  // form is used that the library has not validated again.
+  const oauth = helpersOf(env, issuer, memory);
+  const read = await readRequest(oauth, asked, lang, note);
+  if (read instanceof Response) return read;
   try {
-    const approved = await oauth.approveConsent(request, handle);
-    // The request comes from storage, not from the form; the memory the
-    // credential was weighed for must be the one it asks for.
-    if (approved.request.resource !== resourceOf(issuer, memory)) {
-      note.outcome = "invalid_target";
-      return messagePage(400, lang, "invalid");
-    }
-    const client = clipText((await oauth.describeConsent(approved.request)).clientName, 120);
+    const client = clipText(read.details.clientName, 120);
     const metadata: GrantMetadata = { client, via, instance };
     const props: GrantProps = { memory, client, instance };
-    const { redirectTo } = await oauth.completeAuthorization({ request: approved.request, userId: memory, metadata, scope: [], props });
+    const { redirectTo } = await oauth.completeAuthorization({ request: read.req, userId: memory, metadata, scope: [], props });
     note.outcome = "approved";
     note.cred = via;
-    return redirect(redirectTo, approved.headers);
+    return redirect(redirectTo);
   } catch (err) {
-    return failure(err, lang, note, "consume");
+    return failure(err, lang, note);
   }
 }
 

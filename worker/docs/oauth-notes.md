@@ -23,6 +23,26 @@ Fetched 2026-11-12: Durable Object storage (`deleteAll`, the synchronous KV API)
 - `deleteAll()` also deletes the alarm from compatibility date 2026-02-24; `remove()` calls `deleteAlarm()` as well.
 - The limit on guessing (`src/guard.ts`) is a Durable Object per address, not the rate limiting binding: `limit()` always counts, so it cannot refuse a right credential during a lock without counting it; its counts are per location and approximate; it needs a `namespace_id` unique in the deployer's account.
 
+## What writes to KV, and what it takes
+
+A free account's KV takes 1,000 writes a day (puts and deletes together), and every client's renewal costs two, so nothing a caller sends without a credential writes to KV. Read from `dist/oauth-provider.js` of the library 1.2.4 on 2026-11-12; `test/oauth-writes.test.ts` counts the writes. Every write and delete that is left, and what the caller must hold:
+
+| Write | Caused by | The caller must hold |
+| --- | --- | --- |
+| put `client:` | `POST /oauth/register` | a registration within the budget: at most 10 an hour from one address and `REGISTER_PER_DAY` (default 100, 0 is off) in any 24 hours in all, counted in the `Guard` objects before the library sees the request; one the library then refuses still counts |
+| put `client:` | the library renewing a registered client past half its 90 days, after any token endpoint answer that is not an error (an exchange, a refresh, or a revocation, which answers 200 even for a made-up token) | the id of a client registered within the budget; at most once per client per 45 days, so at most as many writes as registrations |
+| put `grant:` | an approval on the consent page (`completeAuthorization`) | the memory's token or the admin secret, past the limit on guessing |
+| delete `grant:`, `token:` | the same approval: the library revokes the client's earlier grants for that memory | the same |
+| put `grant:`, put `token:` | exchanging a code | a code that was issued, with its PKCE verifier |
+| delete `token:`, `grant:` | a code presented a second time: the library revokes its grant | a code that was issued and used |
+| put `grant:`, put `token:` | a refresh | a refresh token that was issued (the current one or the one before it) |
+| delete `token:`, or `token:` and `grant:` | a revocation (RFC 7009) | an access or refresh token that was issued, with the id of the client it was issued to |
+| delete `token:`, `grant:` | listing a memory's grants (revokes grants left over from a deleted memory), revoking a grant, deleting a memory | the admin secret |
+
+Nothing else writes: showing the consent page, the page again after a wrong credential, a denial and a forged post write nothing (the page keeps no consent transaction: `transaction:` is never written); a client assertion is refused before the library (`client-assertion-jti:` is never written); a made-up code, refresh token or access token, at the token endpoint or at a memory, is only read; a request with a memory's fixed token never reaches KV. Metadata documents are cached by the library in the Cache API, not in KV.
+
+Not KV, but written without a credential: a wrong credential at the consent page or the admin API writes its address's `Guard` object (at most 10 a minute from one address), and an admitted registration writes two `Guard` objects. Durable Object writes are a budget of their own, and each needs a Worker request, which runs out no later.
+
 ## Steps in the page not checked against a running client
 
 None of the client steps were run against a client: every step for the Claude apps, Claude Code, ChatGPT, Codex and the ChatGPT desktop app is written from the documentation above. The flow itself was checked with curl and Chrome against `wrangler dev`.
@@ -32,5 +52,6 @@ None of the client steps were run against a client: every step for the Claude ap
 - No OpenID Connect discovery, ID tokens or userinfo (not needed: RFC 8414 metadata is served).
 - No scopes; `scopes_supported` is not advertised. A grant is the whole of one memory.
 - No `client_credentials`, token exchange, private-use redirect schemes, or pre-registered clients.
+- No `private_key_jwt`: a token request with `client_assertion` or `client_assertion_type` is refused with `invalid_client`, and the metadata does not offer it. A metadata document that offers `none` beside it works with `none` (the library prefers `none`); one that offers `private_key_jwt` alone is shown on the consent page but can never exchange its code.
 - MCP says a server must accept only tokens its authorization server issued; the fixed token is accepted beside them, by decision.
 - CORS on `/<name>/mcp` and its 401 is unchanged (none), so a browser-based MCP client cannot read the challenge.

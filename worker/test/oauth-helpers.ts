@@ -2,7 +2,7 @@
 // fetch: registration, the authorization request, the consent page in a
 // browser (its cookie and its form), and the token endpoint.
 
-import { expect } from "vitest";
+import { expect, vi } from "vitest";
 import type { Env } from "../src/index";
 import { adminSecret, fetchWorker, origin, testEnv } from "./mcp-helpers";
 
@@ -102,11 +102,11 @@ export function approve(page: Page, credential: string, e?: Env): Promise<Respon
   return submit(page, { decision: "approve", credential }, { env: e });
 }
 
-// codeFrom reads the authorization response a redirect carries.
-export function codeFrom(res: Response): URLSearchParams {
+// codeFrom reads the authorization response a redirect to back carries.
+export function codeFrom(res: Response, back = redirectUri): URLSearchParams {
   expect(res.status, "redirect").toBe(302);
   const location = res.headers.get("location") ?? "";
-  expect(location.startsWith(`${redirectUri}?`), location).toBe(true);
+  expect(location.startsWith(`${back}?`), location).toBe(true);
   return new URL(location).searchParams;
 }
 
@@ -127,11 +127,13 @@ export function tokenRequest(form: Record<string, string>, e?: Env): Promise<Res
   }, e);
 }
 
-export async function exchange(code: string, clientId: string, verifier: string | undefined, resource?: string): Promise<Response> {
-  const form: Record<string, string> = { grant_type: "authorization_code", code, client_id: clientId, redirect_uri: redirectUri };
+export async function exchange(
+  code: string, clientId: string, verifier: string | undefined, resource?: string, e?: Env, redirect = redirectUri,
+): Promise<Response> {
+  const form: Record<string, string> = { grant_type: "authorization_code", code, client_id: clientId, redirect_uri: redirect };
   if (verifier !== undefined) form.code_verifier = verifier;
   if (resource !== undefined) form.resource = resource;
-  return tokenRequest(form);
+  return tokenRequest(form, e);
 }
 
 export interface Granted {
@@ -160,4 +162,74 @@ export function envWithoutKV(touched: string[]): Env {
     },
   }) as KVNamespace;
   return { ...testEnv(), OAUTH_KV: kv };
+}
+
+// countingEnv is the test environment with OAUTH_KV wrapped: every put and
+// delete is recorded, as the kind of key it is (the part before the first
+// colon: client, grant, token, transaction, client-assertion-jti), and done.
+export function countingEnv(base: Env = testEnv()): { env: Env; writes: string[] } {
+  const writes: string[] = [];
+  const target = base.OAUTH_KV;
+  const kv = new Proxy(target, {
+    get(t, prop) {
+      const v = Reflect.get(t, prop) as unknown;
+      if (typeof v !== "function") return v;
+      const f = v as (...a: unknown[]) => unknown;
+      if (prop === "put" || prop === "delete") {
+        return (key: string, ...rest: unknown[]) => {
+          writes.push(`${prop} ${key.split(":")[0]}`);
+          return f.call(t, key, ...rest);
+        };
+      }
+      return f.bind(t);
+    },
+  });
+  return { env: { ...base, OAUTH_KV: kv }, writes };
+}
+
+// serveDocuments answers the Worker's fetch of each URL given with its
+// Client ID Metadata Document, not cached; any other fetch goes out.
+export function serveDocuments(docs: Record<string, object>): void {
+  const real = globalThis.fetch;
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = input instanceof Request ? input.url : String(input);
+    const doc = docs[url];
+    if (doc === undefined) return real(input, init);
+    return new Response(JSON.stringify(doc), { headers: { "content-type": "application/json", "cache-control": "no-store" } });
+  });
+}
+
+// A metadata document client: its id, where it is sent back, its document.
+export function cimdClient(path: string, methods: string[], jwk?: JsonWebKey): { id: string; redirect: string; doc: Record<string, unknown> } {
+  const id = `https://app.example/${path}.json`;
+  const redirect = "https://app.example/cb";
+  const doc: Record<string, unknown> = {
+    client_id: id, client_name: `App ${path}`, redirect_uris: [redirect],
+    token_endpoint_auth_method: methods[0], token_endpoint_auth_methods_supported: methods,
+  };
+  if (jwk !== undefined) {
+    doc.jwks = { keys: [{ ...jwk, kid: "k1", alg: "ES256", use: "sig" }] };
+    doc.token_endpoint_auth_signing_alg = "ES256";
+  }
+  return { id, redirect, doc };
+}
+
+export const assertionType = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
+
+// assertionSigner makes an ES256 key and signs client assertions with it, as
+// a private_key_jwt client does: valid ones, whose signature verifies.
+export async function assertionSigner(): Promise<{ jwk: JsonWebKey; sign: (clientId: string) => Promise<string> }> {
+  const pair = (await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"])) as CryptoKeyPair;
+  const full = (await crypto.subtle.exportKey("jwk", pair.publicKey)) as JsonWebKey;
+  const jwk: JsonWebKey = { kty: full.kty, crv: full.crv, x: full.x, y: full.y };
+  const part = (v: object) => b64url(new TextEncoder().encode(JSON.stringify(v)));
+  const sign = async (clientId: string): Promise<string> => {
+    const now = Math.floor(Date.now() / 1000);
+    const input = `${part({ alg: "ES256", typ: "JWT", kid: "k1" })}.${part({
+      iss: clientId, sub: clientId, aud: `${origin}/oauth/token`, jti: crypto.randomUUID(), iat: now, exp: now + 120,
+    })}`;
+    const sig = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, pair.privateKey, new TextEncoder().encode(input));
+    return `${input}.${b64url(new Uint8Array(sig))}`;
+  };
+  return { jwk, sign };
 }

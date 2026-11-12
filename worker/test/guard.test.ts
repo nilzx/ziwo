@@ -155,7 +155,7 @@ describe("the limit on guessing", () => {
     expect(html).toContain(`Too many attempts from here were not accepted. Wait ${wait} seconds, then go back to the form and try again.`);
     expect(touched).toEqual([]);
     expect((await admin(a, adminSecret)).status).toBe(429);
-    // Within a minute the same form, its handle unused, is approved.
+    // Within a minute the same form is approved.
     later(windowMs + 1000);
     expect((await postFrom(m.token)).status).toBe(302);
   });

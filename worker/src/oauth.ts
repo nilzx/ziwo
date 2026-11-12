@@ -14,16 +14,26 @@
 //
 // Nothing here is on the path of a request that carries a memory's fixed
 // token: index.ts sends those to the memory's object, as before.
+//
+// No request without a credential may write to KV, whose free plan takes
+// 1,000 writes a day that every client's renewals need (docs/oauth-notes.md
+// lists what writes, and what it takes). So a registration is counted
+// against a budget before the library sees it (guard.ts), and a client
+// assertion (private_key_jwt) is refused before the library sees it: the
+// library writes a replay marker for every assertion that verifies, and
+// anyone can make one with keys from a metadata document they host.
 
 import { OAuthAuthorizationServer, type OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import type { Note } from "./admin";
+import { admitRegistration } from "./guard";
 import { notFound, plain, validName } from "./http";
 import type { Env } from "./index";
+import { logLine } from "./log";
 
 // Lifetimes in seconds. An access token lasts an hour; a grant lasts while it
 // is used and lapses after 30 days without a refresh. The library fixes the
-// rest: an authorization code and a consent page's handle last 10 minutes, a
-// client that registered itself 90 days, renewed while it is used.
+// rest: an authorization code lasts 10 minutes, a client that registered
+// itself 90 days, renewed while it is used.
 export const accessTokenTTL = 3600;
 export const grantIdleTTL = 30 * 24 * 3600;
 
@@ -189,15 +199,74 @@ function protectedResource(request: Request, issuer: string, name: string): Resp
   });
 }
 
+export const defaultRegisterPerDay = 100;
+
+// registerPerDay reads REGISTER_PER_DAY: a whole number, the default when
+// unset or empty. Anything else is the default too, and logged when asked.
+export function registerPerDay(env: Env, log = false): number {
+  const raw = env.REGISTER_PER_DAY;
+  if (raw === undefined || String(raw).trim() === "") return defaultRegisterPerDay;
+  const s = String(raw).trim();
+  if (/^\d{1,9}$/.test(s)) return Number(s);
+  if (log) logLine({ msg: "REGISTER_PER_DAY is not a whole number; using the default", default: defaultRegisterPerDay });
+  return defaultRegisterPerDay;
+}
+
+// The client authentication this server takes no more (see the top).
+const assertionMethod = "private_key_jwt";
+
 // serverMetadata serves RFC 8414 metadata as the library writes it, without
 // protected_resources: it would list the placeholder, and listing the memories
 // would tell their names. The member is optional (RFC 9728, section 4).
+// Without private_key_jwt and its signing algorithms, which the token
+// endpoint refuses, and without registration_endpoint when registration is
+// off.
 async function serverMetadata(request: Request, env: Env, ctx: ExecutionContext | undefined, issuer: string): Promise<Response> {
   const res = await libraryFetch(authServer(issuer, []), request, env, ctx);
   if (!res.ok || request.method !== "GET") return res;
   const doc = (await res.json()) as Record<string, unknown>;
   delete doc.protected_resources;
+  const methods = doc.token_endpoint_auth_methods_supported;
+  if (Array.isArray(methods)) doc.token_endpoint_auth_methods_supported = methods.filter((m) => m !== assertionMethod);
+  delete doc.token_endpoint_auth_signing_alg_values_supported;
+  if (registerPerDay(env) === 0) delete doc.registration_endpoint;
   return new Response(JSON.stringify(doc), { status: res.status, headers: res.headers });
+}
+
+// oauthError answers as the library's own errors do: a JSON body with error
+// and error_description, not cached, readable by a browser client.
+function oauthError(request: Request, status: number, error: string, description: string, headers: Record<string, string> = {}): Response {
+  const h = new Headers({ "content-type": "application/json", "cache-control": "no-store", pragma: "no-cache", ...headers });
+  const origin = request.headers.get("origin");
+  if (origin !== null) {
+    h.set("access-control-allow-origin", origin);
+    h.set("access-control-expose-headers", "WWW-Authenticate, Retry-After");
+    h.append("vary", "Origin");
+  }
+  return new Response(JSON.stringify({ error, error_description: description }), { status, headers: h });
+}
+
+// register serves POST /oauth/register once the budget admits it; every
+// other method goes to the library, which answers it without writing.
+async function register(request: Request, env: Env, ctx: ExecutionContext | undefined, issuer: string, perDay: number, note: Note): Promise<Response> {
+  if (request.method === "POST") {
+    const a = await admitRegistration(env, request, perDay);
+    if (a === "unavailable") {
+      note.outcome = "budget_unavailable";
+      return oauthError(request, 503, "temporarily_unavailable", "Client registration is unavailable right now; try again later", { "retry-after": "60" });
+    }
+    if (a !== "admitted") {
+      note.outcome = "over_budget";
+      const where = a.by === "address" ? "from this address in the last hour" : "on this server in the last 24 hours";
+      return oauthError(request, 429, "temporarily_unavailable", `Too many client registrations ${where}; try again in ${a.wait} seconds`, {
+        "retry-after": String(a.wait),
+      });
+    }
+  }
+  // Admitted, the registration counts whatever the library makes of it.
+  const res = await libraryFetch(authServer(issuer, [], note), request, env, ctx);
+  if (res.status === 201) note.outcome = "registered";
+  return res;
 }
 
 // libraryFetch serves one of the library's own endpoints: metadata, token,
@@ -208,22 +277,64 @@ function libraryFetch(server: OAuthAuthorizationServer<Env>, request: Request, e
 }
 
 // The largest token request read twice: once here for the memory it concerns,
-// once by the library.
+// once by the library. A larger one is refused unread: it could carry a
+// client assertion this could not see.
 const maxPeek = 64 * 1024;
 
-// memoriesOfTokenRequest names the memory a token or revocation request
-// concerns, from the code or token it carries. A resource indicator that
-// names another memory is the library's to refuse: it is not on the list.
-async function memoriesOfTokenRequest(request: Request): Promise<{ names: string[]; kind: string }> {
+// readUpTo reads a body, or answers undefined once it is longer than max.
+async function readUpTo(body: ReadableStream<Uint8Array> | null, max: number): Promise<Uint8Array | undefined> {
+  if (body === null) return new Uint8Array();
+  const reader = body.getReader();
+  const parts: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > max) {
+      await reader.cancel();
+      return undefined;
+    }
+    parts.push(value);
+  }
+  const out = new Uint8Array(size);
+  let at = 0;
+  for (const p of parts) {
+    out.set(p, at);
+    at += p.byteLength;
+  }
+  return out;
+}
+
+// What the Worker reads of a token or revocation request before the library.
+interface TokenPeek {
+  // The memories it concerns, from the code or token it carries. A resource
+  // indicator that names another memory is the library's to refuse: it is
+  // not on the list.
+  names: string[];
+  kind: string;
+  // It carries client_assertion or client_assertion_type, even empty.
+  assertion: boolean;
+}
+
+// peekTokenRequest reads a token or revocation request. A request that is
+// not a POSTed form is the library's to refuse, before it reads a body;
+// "too_large" is a form longer than maxPeek.
+async function peekTokenRequest(request: Request): Promise<TokenPeek | "too_large"> {
+  const none: TokenPeek = { names: [], kind: "", assertion: false };
   const type = (request.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
-  const length = Number(request.headers.get("content-length") ?? "0");
-  if (request.method !== "POST" || type !== "application/x-www-form-urlencoded" || !(length <= maxPeek)) return { names: [], kind: "" };
+  if (request.method !== "POST" || type !== "application/x-www-form-urlencoded") return none;
+  const declared = request.headers.get("content-length");
+  if (declared !== null && !(Number(declared) <= maxPeek)) return "too_large";
   let form: URLSearchParams;
   try {
     // As bytes: the runtime warns when a form body is read as text.
-    form = new URLSearchParams(new TextDecoder().decode(await request.clone().arrayBuffer()));
+    const bytes = await readUpTo(request.clone().body, maxPeek);
+    if (bytes === undefined) return "too_large";
+    form = new URLSearchParams(new TextDecoder().decode(bytes));
   } catch {
-    return { names: [], kind: "" };
+    // A body that cannot be read is the library's to refuse; it reads the same.
+    return none;
   }
   const names: string[] = [];
   for (const k of ["code", "refresh_token", "token"]) {
@@ -232,7 +343,7 @@ async function memoriesOfTokenRequest(request: Request): Promise<{ names: string
   }
   const grant = form.get("grant_type");
   const kind = grant === "authorization_code" ? "issued" : grant === "refresh_token" ? "refreshed" : grant === null && form.has("token") ? "revoked" : "";
-  return { names, kind };
+  return { names, kind, assertion: form.has("client_assertion") || form.has("client_assertion_type") };
 }
 
 // isOAuthPath says whether a path is one of the authorization server's, or
@@ -268,16 +379,25 @@ export async function serveOAuth(
       note.oauth = "authorize";
       return authorize(issuer);
     case paths.register: {
+      // Off, it is not there, as any other path that is not.
+      const perDay = registerPerDay(env, request.method === "POST");
+      if (perDay === 0) return notFound();
       note.oauth = "register";
-      const res = await libraryFetch(authServer(issuer, [], note), request, env, ctx);
-      if (res.status === 201) note.outcome = "registered";
-      return res;
+      return register(request, env, ctx, issuer, perDay, note);
     }
     case paths.token: {
       note.oauth = "token";
-      const { names, kind } = await memoriesOfTokenRequest(request);
-      const res = await libraryFetch(authServer(issuer, names, note), request, env, ctx);
-      if (res.ok && kind !== "") note.outcome = kind;
+      const peek = await peekTokenRequest(request);
+      if (peek === "too_large") {
+        note.outcome = "too_large";
+        return oauthError(request, 413, "invalid_request", `Request payload too large, must be under ${maxPeek / 1024} KiB`);
+      }
+      if (peek.assertion) {
+        note.outcome = "assertion_refused";
+        return oauthError(request, 401, "invalid_client", "Client assertions are not accepted; use a method in token_endpoint_auth_methods_supported");
+      }
+      const res = await libraryFetch(authServer(issuer, peek.names, note), request, env, ctx);
+      if (res.ok && peek.kind !== "") note.outcome = peek.kind;
       return res;
     }
   }

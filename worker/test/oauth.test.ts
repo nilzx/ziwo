@@ -81,6 +81,9 @@ describe("discovery", () => {
     expect(m.grant_types_supported).toEqual(expect.arrayContaining(["authorization_code", "refresh_token"]));
     // Claude uses a metadata document only when the token endpoint takes "none".
     expect(m.token_endpoint_auth_methods_supported).toEqual(expect.arrayContaining(["none"]));
+    // Client assertions are refused, so not offered.
+    expect(m.token_endpoint_auth_methods_supported).not.toContain("private_key_jwt");
+    expect("token_endpoint_auth_signing_alg_values_supported" in m).toBe(false);
     expect("protected_resources" in m).toBe(false);
     expect(m.scopes_supported).toBeUndefined();
   });
@@ -105,7 +108,8 @@ describe("the flow", () => {
     expect(page.html).toContain("Flow client");
     expect(page.html).toContain("<strong>client.example</strong>");
     expect(page.html).toContain(`<strong>${m.name}</strong>`);
-    expect(page.cookie).toMatch(/^__Host-oauth-consent-[0-9a-f]{16}=[0-9a-f]{64}$/);
+    // The page stores nothing: no cookie.
+    expect(page.cookie).toBe("");
 
     const answer = codeFrom(await approve(page, adminSecret));
     expect(answer.get("state")).toBe("s-42");
@@ -180,7 +184,7 @@ describe("the flow", () => {
       expect(res.headers.get("location")).toBeNull();
       const html = await res.text();
       // A fresh form comes back, with the one message.
-      expect(html).toContain('name="handle"');
+      expect(html).toContain('name="q"');
       messages.push(/<p class="out error" role="alert">([^<]*)<\/p>/.exec(html)?.[1] ?? "none");
     }
     expect(new Set(messages)).toEqual(new Set(["Not accepted. Check what you typed and try again."]));
@@ -447,7 +451,7 @@ describe("the access log of a flow", () => {
     await tokenRequest({ grant_type: "refresh_token", refresh_token: t.refresh_token, client_id: clientId });
 
     const secrets = [code, t.access_token, t.refresh_token, m.token, adminSecret, p.verifier, p.challenge, "state-marker",
-      "credential-marker", "browser-marker", clientId, page.fields.handle!, "Logged client"];
+      "credential-marker", "browser-marker", clientId, "Logged client"];
     for (const l of lines) for (const x of secrets) expect(l, l).not.toContain(x);
     const steps = lines.map((l) => JSON.parse(l) as Record<string, unknown>).filter((l) => l.oauth !== undefined || l.cred !== undefined)
       .map((l) => [l.oauth ?? "mcp", l.outcome ?? l.auth, l.reason ?? l.cred ?? "", l.status].join(" "));
