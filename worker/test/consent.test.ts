@@ -6,7 +6,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { consentPolicy } from "../src/consent";
 import { consentTexts, pickLang } from "../src/consent-texts";
-import { adminSecret, createMemory, fetchWorker, origin } from "./mcp-helpers";
+import { exampleAdminSecret, minAdminSecret } from "../src/admin";
+import { adminSecret, createMemory, fetchWorker, origin, testEnv } from "./mcp-helpers";
 import {
   approve, authorizePath, codeFrom, countingEnv, exchange, openPage, type Page, pkce, redirectUri, register, resourceOf, submit,
 } from "./oauth-helpers";
@@ -270,6 +271,20 @@ describe("a client that names itself with a metadata document", () => {
     const res = await submit(page, { decision: "approve", credential: adminSecret });
     expect(res.status).toBe(302);
     expect(res.headers.get("location")!.startsWith("https://app.example/cb?code=")).toBe(true);
+  });
+
+  it("is not approved by an admin secret that does not count, though it is the one set", async () => {
+    const m = await createMemory();
+    for (const secret of [exampleAdminSecret, "x".repeat(minAdminSecret - 1)]) {
+      const e = testEnv(secret);
+      const clientId = await register("Test client", undefined, e);
+      const p = await pkce();
+      const page = await openPage(authorizePath({ clientId, challenge: p.challenge, resource: resourceOf(m.name) }), {}, e);
+      expect(page.res.status, page.html).toBe(200);
+      expect((await approve(page, secret, e)).status, secret).toBe(403);
+      // The memory's own token still approves.
+      expect((await approve(page, m.token, e)).status).toBe(302);
+    }
   });
 
   it("is answered here when the document cannot be fetched", async () => {

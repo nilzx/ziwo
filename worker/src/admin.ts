@@ -1,5 +1,6 @@
 // The admin API: what the owner of a deployment uses to run it. Every route
-// needs the bearer ADMIN_SECRET and is not there without one. No route but
+// needs the bearer ADMIN_SECRET and is not there without one that counts
+// (adminSecretOf). No route but
 // export returns what a memory says: figures, ids, names, settings, the check
 // report and the clients granted access only.
 
@@ -49,6 +50,21 @@ const memoryRoutes: Record<string, Record<string, Action>> = {
 // A grant's id, as the library draws it.
 const grantIdRE = /^[A-Za-z0-9_-]{16}$/;
 
+// The shortest admin secret that counts, and the value the example file
+// carries. Someone who deploys with one click types the secret into a form:
+// one left at the example's value, or a few characters long, would open
+// every memory to whoever guessed it, so it counts as no secret at all.
+export const minAdminSecret = 16;
+export const exampleAdminSecret = "change-me";
+
+// adminSecretOf is the deployment's admin secret, or undefined when there is
+// none that counts.
+export function adminSecretOf(env: { ADMIN_SECRET?: string }): string | undefined {
+  const secret = env.ADMIN_SECRET;
+  if (secret === undefined || secret === exampleAdminSecret || [...secret].length < minAdminSecret) return undefined;
+  return secret;
+}
+
 // adminAllowed compares the presented secret with ADMIN_SECRET in constant
 // time, by hashing both to the same length.
 async function adminAllowed(request: Request, secret: string): Promise<"ok" | "missing" | "rejected"> {
@@ -93,8 +109,8 @@ export async function serveAdmin(request: Request, env: Env, parts: string[], no
     }
   }
   if (action === undefined) return notFound();
-  const secret = env.ADMIN_SECRET;
-  if (secret === undefined || secret === "") return notFound();
+  const secret = adminSecretOf(env);
+  if (secret === undefined) return notFound();
   note.auth = await adminAllowed(request, secret);
   // A secret presented, right or wrong, is weighed against the limit on
   // guessing; a request without one guesses nothing.

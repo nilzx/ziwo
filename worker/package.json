@@ -9,7 +9,8 @@
     "test:node": "node --test 'test/node/*.node.mjs'",
     "smoke": "python3 scripts/smoke.py",
     "typecheck": "tsc --noEmit",
-    "build": "wrangler deploy --dry-run --outdir dist"
+    "build": "wrangler deploy --dry-run --outdir dist",
+    "deploy": "wrangler deploy"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.7.0",
@@ -23,5 +24,18 @@
     "@modelcontextprotocol/server": "^2.4.0",
     "agents": "^0.33.0",
     "zod": "^4.6.7"
+  },
+  "cloudflare": {
+    "bindings": {
+      "ADMIN_SECRET": {
+        "description": "The password of your admin page, where you create memories and connect clients. Make up a long one (**at least 16 characters**) and keep it somewhere safe: it cannot be shown again."
+      },
+      "OAUTH_KV": {
+        "description": "Keeps which clients you have approved. Created for you."
+      },
+      "AI": {
+        "description": "Workers AI, used to search memories by meaning. Nothing to set up."
+      }
+    }
   }
 }

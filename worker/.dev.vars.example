@@ -1,3 +1,5 @@
 # Local secrets for wrangler dev. Copy to .dev.vars, which git ignores.
-# The admin API (POST /admin/memories/<name>) answers 404 without it.
+# The admin secret: the password of the admin page and of the admin API.
+# At least 16 characters. Without one, or with this example value, the admin
+# API is not there (404).
 ADMIN_SECRET=change-me

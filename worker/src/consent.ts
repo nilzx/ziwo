@@ -49,7 +49,7 @@ import {
   type ConsentDescription,
   type OAuthHelpers,
 } from "@cloudflare/workers-oauth-provider";
-import type { Note } from "./admin";
+import { adminSecretOf, type Note } from "./admin";
 import { consentTexts, type Lang, pickLang, type TextKey } from "./consent-texts";
 import { waitFor } from "./guard";
 import { encoder, plain, sha256Hex, validName } from "./http";
@@ -314,8 +314,8 @@ async function weigh(env: Env, memory: string, typed: string): Promise<{ via?: "
   const stub = env.MEMORY.getByName(memory);
   const [access, instance] = await Promise.all([stub.authorize(hash), stub.instance()]);
   if (access === "ok") return { via: "token", instance };
-  const secret = env.ADMIN_SECRET;
-  if (secret === undefined || secret === "" || credential === "") return { instance };
+  const secret = adminSecretOf(env);
+  if (secret === undefined || credential === "") return { instance };
   const same = crypto.subtle.timingSafeEqual(encoder.encode(hash), encoder.encode(await sha256Hex(secret)));
   return same && access !== "unknown" ? { via: "admin", instance } : { instance };
 }

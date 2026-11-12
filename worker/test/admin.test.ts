@@ -10,6 +10,7 @@ import type { Memory as MemoryObject } from "../src/memory-object";
 import { reportText } from "../src/store/check";
 import { defaultParams } from "../src/store/decay";
 import { dump } from "./helpers";
+import { exampleAdminSecret, minAdminSecret } from "../src/admin";
 import { adminSecret, Client, createMemory, fetchWorker, freshName, idIn, modern, origin, testEnv } from "./mcp-helpers";
 
 interface Init {
@@ -79,14 +80,28 @@ describe("/healthz", () => {
 });
 
 describe("the admin routes", () => {
-  it("are not there without ADMIN_SECRET", async () => {
+  it("are not there without ADMIN_SECRET, or with one that does not count", async () => {
     const m = await createMemory();
-    for (const e of [testEnv(null), testEnv("")]) {
+    const short = "x".repeat(minAdminSecret - 1);
+    for (const secret of [null, "", exampleAdminSecret, short]) {
+      const e = testEnv(secret);
+      // Presenting the very value that is set opens nothing either.
+      if (secret !== null && secret !== "") expect((await admin("/admin/memories", { env: e, secret })).status).toBe(404);
       expect((await admin("/admin/memories", { env: e })).status).toBe(404);
       for (const [method, suffix] of memoryRoutes) {
         const res = await admin(`/admin/memories/${m.name}${suffix}`, { method, env: e, body: method === "GET" ? undefined : "{}" });
         expect(res.status, `${method} ${suffix}`).toBe(404);
       }
+    }
+  });
+
+  it("are there with a secret of 16 characters, counted as characters", async () => {
+    for (const secret of ["x".repeat(minAdminSecret), "密".repeat(minAdminSecret)]) {
+      const e = testEnv(secret);
+      const headers = { authorization: `Bearer ${encodeURIComponent(secret) === secret ? secret : "wrong"}` };
+      // A secret outside ASCII cannot be sent in a header: the API is there, and refuses.
+      const res = await fetchWorker("/admin/memories", { headers }, e);
+      expect(res.status).toBe(secret.startsWith("x") ? 200 : 401);
     }
   });
 
