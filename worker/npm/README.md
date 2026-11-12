@@ -1,9 +1,9 @@
 # ziwo
 
-ziwo (自我, "self") gives your AI assistant a memory of its own, running in your own Cloudflare account.
+ziwo (自我, "self") is a memory for an AI: one lasting memory of its own, across the platforms and settings it is used in.
 
     npx ziwo@latest deploy
 
-deploys it, and run again later, updates it. You need a Cloudflare account (the free plan will do to start) and Node.js.
+deploys ziwo to a Cloudflare account of your own and, run again later, updates it. You need a Cloudflare account (the free plan will do to start) and Node.js.
 
-What it is, how to connect an assistant, and everything else: https://github.com/nilzx/ziwo
+What it is, how to connect an AI to it, and everything else: https://github.com/nilzx/ziwo

@@ -10,7 +10,7 @@ import path from "path";
 
 const repo = "https://github.com/nilzx/ziwo";
 
-export const help = `ziwo: a memory of its own for your AI assistant, in your Cloudflare account.
+export const help = `ziwo: a memory of its own for an AI. This command runs it in your Cloudflare account.
 
   npx ziwo@latest deploy              deploy, or update, ziwo
       --name <name>                   deploy under another Worker name (default: ziwo)

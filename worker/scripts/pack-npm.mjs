@@ -40,7 +40,7 @@ export function packageJson(o) {
   return {
     name: "ziwo",
     version: o.version,
-    description: "A memory of its own for your AI assistant, in your Cloudflare account. One command deploys it, and updates it.",
+    description: "A memory of its own for an AI, across the platforms it is used on. This command deploys it to your Cloudflare account, and updates it.",
     license: "MIT",
     type: "module",
     bin: { ziwo: "bin/ziwo.mjs" },

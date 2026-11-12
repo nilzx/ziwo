@@ -91,7 +91,7 @@ describe("the command line", () => {
   });
 
   it("prints the help alone, with --help, and on --help after deploy, and runs nothing", async () => {
-    assert.equal(help.split("\n")[0], "ziwo: a memory of its own for your AI assistant, in your Cloudflare account.");
+    assert.equal(help.split("\n")[0], "ziwo: a memory of its own for an AI. This command runs it in your Cloudflare account.");
     assert.match(help, /^ {2}npx ziwo@latest deploy {14}deploy, or update, ziwo$/m);
     assert.match(help, /^ {6}--name <name> {19}deploy under another Worker name \(default: ziwo\)$/m);
     assert.match(help, /^ {6}--dry-run {23}build and check, deploy nothing$/m);
