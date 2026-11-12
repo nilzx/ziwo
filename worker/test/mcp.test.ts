@@ -53,7 +53,7 @@ const recallChanges: [string, string][] = [
 const recallFields = {
   query: {
     type: "string",
-    description: "what you are trying to remember; several things separated by commas are each searched; leave out to look by time",
+    description: "what you are trying to remember, in the words it would have been written in: a name or a particular thing finds more than its general kind; several things separated by commas are each searched; leave out to look by time",
   },
   since: {
     type: "string",
@@ -64,6 +64,25 @@ const recallFields = {
     description: "only memories up to this time, written as for since; a date alone counts to the end of that day",
   },
 };
+
+// The fields with fixed values, shown as an enum.
+const enums: Record<string, Record<string, string[]>> = {
+  remember: {
+    moment: ["start", "blocked", "corrected", "breakthrough", "finished", "emotion", "other"],
+    source: ["lived", "told", "inferred", "reconstructed"],
+  },
+  amend: { action: ["retract", "restore", "pin", "unpin", "reweigh", "correct", "prefer", "unprefer"] },
+};
+const entryKinds = ["episode", "lesson", "impression", "self", "reading"];
+
+// plainArrays turns Go's lists, which may be null, into plain arrays,
+// throughout a schema.
+function plainArrays(schema: unknown): void {
+  if (typeof schema !== "object" || schema === null) return;
+  const s = schema as Record<string, unknown>;
+  if (Array.isArray(s.type) && s.type.join() === "null,array") s.type = "array";
+  for (const v of Object.values(s)) plainArrays(v);
+}
 
 // expected is what Go showed, with the changes this port makes and no
 // others.
@@ -113,6 +132,20 @@ function expectedListing(): { instructions: string; tools: Map<string, Omit<Tool
         type: "string",
         description: "the IANA time zone of the person you are talking with, such as Asia/Shanghai, if you know it",
       };
+    }
+    // The schemas: plain arrays, enums, and the gist's limit said.
+    plainArrays(copy.inputSchema);
+    const props = (copy.inputSchema.properties ?? {}) as Record<string, Record<string, unknown>>;
+    for (const [field, values] of Object.entries(enums[t.name] ?? {})) props[field]!.enum = values;
+    if (t.name === "remember") {
+      expect(props.gist!.description).toBe("one sentence saying what happened; it outlives the details");
+      props.gist!.description = "one sentence, at most 200 characters, saying what happened; it outlives the details";
+    }
+    if (t.name === "reflect") {
+      const entry = (props.entries!.items as { properties: Record<string, Record<string, unknown>> }).properties;
+      entry.kind!.enum = entryKinds;
+      expect(entry.gist!.description).toBe("one sentence; for self, the statement itself");
+      entry.gist!.description = "one sentence, at most 200 characters; for self, the statement itself";
     }
     tools.set(t.name, copy);
   }

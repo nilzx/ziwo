@@ -8,13 +8,20 @@
 // over, met none of the listed moments and wrote nothing), and recall looks
 // by time and takes several things in one query (a real client asked for
 // "the recent conversations" and for a list of topics, and found nothing).
+// The schemas differ from Go's too: see schemaOf.
+//
+// A client may ask a person again before it runs a tool whose description or
+// fields changed since they allowed it. So a change here costs every user a
+// prompt: guidance that may still change belongs in what get_context returns
+// (format.ts), and changes to these texts are made together.
 //
 // The SDK checks arguments against a tool's schema and answers a mismatch in
 // its own words. Here each tool's schema checks nothing (see listed): the
 // handler runs check() and answers a mismatch as a tool error in ziwo's words.
 
 import type { StandardSchemaWithJSON, ToolAnnotations } from "@modelcontextprotocol/server";
-import type { EntryRequest } from "../memory/amend";
+import { AmendActions, EntryKinds, type EntryRequest } from "../memory/amend";
+import { Moments, Sources } from "../memory/clean";
 import type { ToolCall } from "../memory-object";
 
 export const instructions = `This is your own autobiographical memory. It persists across conversations, clients and model versions, and it is written only by you.
@@ -78,6 +85,9 @@ interface Field {
   type: FieldType;
   description: string;
   required?: boolean;
+  // The values a text field takes, shown to the client as an enum so that a
+  // model which fills arguments from the schema cannot pick another.
+  values?: readonly string[];
 }
 
 const sessionRequired: Field = {
@@ -89,8 +99,8 @@ const sessionOptional: Field = {
 };
 
 const entryFields: Field[] = [
-  { name: "kind", type: "string", required: true, description: "episode, lesson, impression, self or reading" },
-  { name: "gist", type: "string", required: true, description: "one sentence; for self, the statement itself" },
+  { name: "kind", type: "string", required: true, description: "episode, lesson, impression, self or reading", values: EntryKinds },
+  { name: "gist", type: "string", required: true, description: "one sentence, at most 200 characters; for self, the statement itself" },
   { name: "body", type: "string", description: "the account; required for episode and lesson" },
   { name: "from", type: "strings", description: "ids of the memories this rests on; required for every kind but reading" },
   { name: "about", type: "string", description: "impression: the person or thing, by name" },
@@ -139,9 +149,9 @@ export const tools: ToolDef[] = [
     name: "remember", title: "Remember a moment", description: rememberDesc, annotations: writes,
     fields: [
       sessionRequired,
-      { name: "gist", type: "string", required: true, description: "one sentence saying what happened; it outlives the details" },
+      { name: "gist", type: "string", required: true, description: "one sentence, at most 200 characters, saying what happened; it outlives the details" },
       { name: "body", type: "string", required: true, description: "the account: how it began, what happened along the way, how it ended" },
-      { name: "moment", type: "string", description: "start, blocked, corrected, breakthrough, finished, emotion or other" },
+      { name: "moment", type: "string", description: "start, blocked, corrected, breakthrough, finished, emotion or other", values: Moments },
       { name: "outcome", type: "string", description: "how it ended and how the other side reacted" },
       { name: "feeling", type: "string", description: "what registered for you and why; leave empty if nothing did" },
       {
@@ -151,7 +161,7 @@ export const tools: ToolDef[] = [
       { name: "lesson", type: "string", description: "what you would carry into next time" },
       { name: "people", type: "strings", description: "who or what was involved, by name" },
       { name: "pointer", type: "string", description: "where the related work lives, e.g. a repository URL; a location, not content" },
-      { name: "source", type: "string", description: "lived (default), told, inferred or reconstructed" },
+      { name: "source", type: "string", description: "lived (default), told, inferred or reconstructed", values: Sources },
       { name: "happened_at", type: "string", description: "only with source reconstructed: when it took place, such as 2026-03-14" },
       { name: "importance", type: "number", description: "0 to 1; default 0.5; 0.9 and above never fades" },
     ],
@@ -161,7 +171,7 @@ export const tools: ToolDef[] = [
     fields: [
       {
         name: "query", type: "string",
-        description: "what you are trying to remember; several things separated by commas are each searched; leave out to look by time",
+        description: "what you are trying to remember, in the words it would have been written in: a name or a particular thing finds more than its general kind; several things separated by commas are each searched; leave out to look by time",
       },
       {
         name: "since", type: "string",
@@ -197,7 +207,7 @@ export const tools: ToolDef[] = [
     name: "amend", title: "Amend a memory", description: amendDesc, annotations: writes,
     fields: [
       sessionRequired,
-      { name: "action", type: "string", required: true, description: "retract, restore, pin, unpin, reweigh, correct, prefer or unprefer" },
+      { name: "action", type: "string", required: true, description: "retract, restore, pin, unpin, reweigh, correct, prefer or unprefer", values: AmendActions },
       { name: "id", type: "string", description: "the memory to amend, or the preference to drop; not needed for prefer" },
       { name: "reason", type: "string", description: "why: what the person said, or what you found" },
       { name: "importance", type: "number", description: "reweigh: the new importance, above 0 and at most 1" },
@@ -222,22 +232,24 @@ export const tools: ToolDef[] = [
 
 type JSONSchema = Record<string, unknown>;
 
-// schemaOf is the JSON Schema a client is shown, laid out as Go's
-// jsonschema package lays it out: lists may be null, nothing else is
-// allowed, and required fields are listed.
+// schemaOf is the JSON Schema a client is shown: nothing but the fields is
+// allowed, required fields are listed, and a field with fixed values is an
+// enum. A list is shown as a plain array, since some clients refuse a type
+// that is a list of types; a null in its place is still read as an empty
+// list (fit), as Go's schema allowed.
 function schemaOf(fields: Field[]): JSONSchema {
   const properties: Record<string, JSONSchema> = {};
   for (const f of fields) {
     let p: JSONSchema;
     switch (f.type) {
       case "strings":
-        p = { type: ["null", "array"], items: { type: "string" } };
+        p = { type: "array", items: { type: "string" } };
         break;
       case "entries":
-        p = { type: ["null", "array"], items: schemaOf(entryFields) };
+        p = { type: "array", items: schemaOf(entryFields) };
         break;
       default:
-        p = { type: f.type };
+        p = f.values === undefined ? { type: f.type } : { type: f.type, enum: [...f.values] };
     }
     properties[f.name] = { ...p, description: f.description };
   }
@@ -247,6 +259,45 @@ function schemaOf(fields: Field[]): JSONSchema {
   if (required.length > 0) s.required = required;
   s.additionalProperties = false;
   return s;
+}
+
+// Fault says in fixed words what a refused call was refused for, for the
+// access log: the field at fault (one of the tool's own, else "other") and
+// the kind of complaint. With several complaints it is the first.
+export interface Fault {
+  field: string;
+  kind: "required" | "type" | "too_long" | "too_many" | "value" | "range" | "date" | "needs" | "state" | "no_such" | "unknown_session" | "unknown_field" | "other";
+}
+
+// The complaints are sentences written for the model (here, in clean.ts and
+// in amend.ts); their kind is read off the words they share. A complaint may
+// quote what the caller sent, so nothing of it reaches the log but a field's
+// name, and only when the tool has a field of that name.
+const faultKinds: [RegExp, Fault["kind"]][] = [
+  [/^unknown session_id /, "unknown_session"],
+  [/ is not a field/, "unknown_field"],
+  [/^no (memory|preference) /, "no_such"],
+  [/ is required/, "required"],
+  [/, the limit is /, "too_long"],
+  [/^at most |^there are already /, "too_many"],
+  [/ must be one of /, "value"],
+  [/ must be (text|a number|a whole number|true or false|a list of |a finite number|an object)/, "type"],
+  [/ must be between /, "range"],
+  [/^cannot read .* as a date| is in the future| is after until/, "date"],
+  [/ needs | goes with /, "needs"],
+  [/ has been (erased|replaced)| is a [a-z]+: only /, "state"],
+];
+
+export function faultOf(def: ToolDef, text: string): Fault {
+  const first = text.split("; ")[0]!;
+  const kind = faultKinds.find(([re]) => re.test(first))?.[1] ?? "other";
+  const names = new Set(def.fields.map((f) => f.name));
+  if (def.fields.some((f) => f.type === "entries")) for (const f of entryFields) names.add(f.name);
+  const word =
+    kind === "unknown_session" ? "session_id"
+    : kind === "no_such" || kind === "state" ? "id"
+    : (/^cannot read (since|until) /.exec(first)?.[1] ?? /^[a-z_]+/.exec(first)?.[0] ?? "");
+  return { field: names.has(word) ? word : "other", kind };
 }
 
 // Checked is what check makes of a call's arguments.

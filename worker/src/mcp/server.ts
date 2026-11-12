@@ -6,7 +6,7 @@ import { type CallToolResult, McpServer } from "@modelcontextprotocol/server";
 import { type QueryEmbedding, queryMaxRunes } from "../embed";
 import { clip, queryParts, trimSpace } from "../memory/clean";
 import type { Memory } from "../memory-object";
-import { check, instructions, listed, tools } from "./tools";
+import { check, type Fault, faultOf, instructions, listed, tools } from "./tools";
 import { logLine } from "../log";
 
 export const serverVersion = "dev";
@@ -73,12 +73,14 @@ export function buildServer(call: Call): McpServer {
         const start = Date.now();
         let outcome: "ok" | "invalid" | "error" = "ok";
         let failed = "";
+        let fault: Fault | undefined;
         let embedded: QueryEmbedding["took"];
         let recalled: RecallShape | undefined;
         try {
           const checked = check(def, raw, call.client);
           if ("invalid" in checked) {
             outcome = "invalid";
+            fault = faultOf(def, checked.invalid);
             return toolError(checked.invalid);
           }
           let toolCall = checked.ok;
@@ -98,6 +100,7 @@ export function buildServer(call: Call): McpServer {
           }
           if ("invalid" in answer) {
             outcome = "invalid";
+            fault = faultOf(def, answer.invalid);
             return toolError(answer.invalid);
           }
           return { content: [{ type: "text", text: answer.text }] };
@@ -110,6 +113,8 @@ export function buildServer(call: Call): McpServer {
           logLine({
             msg: "tool", memory: call.memory, tool: def.name, outcome, dur_ms: Date.now() - start,
             ...(failed === "" ? {} : { error: failed }),
+            // What a refused call was refused for, in fixed words.
+            ...(fault === undefined ? {} : { invalid_field: fault.field, invalid_kind: fault.kind }),
             // Figures and fixed words about the query's embedding, never the query.
             ...(embedded === undefined ? {} : { embed_ms: embedded.ms, embed_second: embedded.second, embed_answer: embedded.answer }),
             // What kind of recall it was, in fixed words and a figure.

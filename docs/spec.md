@@ -108,6 +108,8 @@ The server's `instructions` tell the model that the memory is its own and writte
 
 Eight tools. Every tool acts on this memory and nothing else.
 
+The tools' descriptions and fields are meant to stay as they are. The Claude apps were seen (2026-11-12, twice; not confirmed by their documentation) to ask a person again before running a tool they had set to always allow, once that tool's description or fields had changed. Guidance that may still change is therefore given in what `get_context` returns, not in a description.
+
 | Tool | Title | Annotations | What it does |
 | --- | --- | --- | --- |
 | `get_context` | Load my memory | `readOnlyHint: true`, `destructiveHint: false`, `openWorldHint: false`; `_meta: {"anthropic/alwaysLoad": true}` | Starts a session and returns what it should know first. |
@@ -170,7 +172,7 @@ Characters are counted as Unicode code points. The answer is `remembered as m_â€
 
 | Argument | Type | Meaning |
 | --- | --- | --- |
-| `query` | string | What to look for. Several things separated by commas or other list punctuation are each searched. Leave it out to list by time. Only the first 500 characters are read. |
+| `query` | string | What to look for, best in the words the item would have been written in. Several things separated by commas or other list punctuation are each searched. Leave it out to list by time. Only the first 500 characters are read. |
 | `since` | string | Only items that took place from this time on. |
 | `until` | string | Only items that took place up to this time. |
 | `limit` | integer | How many to return: default 5, at most 20. |
@@ -264,7 +266,7 @@ Each field line appears only when the field is not empty. `written <date>` appea
 
 ### Arguments that do not fit, and failures
 
-The SDK is handed a schema that lists each tool's JSON Schema (lists may be `null`, no other fields allowed) but lets every call through; the handler then checks the arguments itself and answers a mismatch as a tool error (`isError: true`) in ziwo's words, one complaint per field, joined by `; `. A missing `session_id` is answered `session_id is required: call get_context first and pass the session id it returns`. A field the tool does not have is refused (`"x" is not a field`).
+The SDK is handed a schema that lists each tool's JSON Schema (no fields but the tool's own; a field with fixed values, such as `moment`, `source`, `action` and an entry's `kind`, is an `enum`; a list is a plain array, though `null` in its place is read as an empty list) but lets every call through; the handler then checks the arguments itself and answers a mismatch as a tool error (`isError: true`) in ziwo's words, one complaint per field, joined by `; `. A missing `session_id` is answered `session_id is required: call get_context first and pass the session id it returns`. A field the tool does not have is refused (`"x" is not a field`).
 
 An input the model can fix (an unknown session, an id that names nothing, a value out of range) is answered as a tool error with a message for the model. Any other failure is answered `the memory server hit an internal error; nothing was changed`, and the log records only the error's class name. A call that reaches a memory deleted after its credential was checked, or a grant made for an earlier memory of the same name, gets the same internal-error answer.
 
@@ -756,6 +758,7 @@ One line per tool call (`msg: "tool"`):
 | `outcome` | `ok`, `invalid` (the model's input was refused) or `error` |
 | `dur_ms` | milliseconds |
 | `error` | on `error`: the error's class name, or `NoSuchMemory` |
+| `invalid_field`, `invalid_kind` | on `invalid`: the field at fault (one of the tool's own field names, else `other`) and the kind of complaint (`required`, `type`, `too_long`, `too_many`, `value`, `range`, `date`, `needs`, `state`, `no_such`, `unknown_session`, `unknown_field` or `other`); with several complaints, the first |
 | `embed_ms`, `embed_second`, `embed_answer` | a recall whose query was embedded: how long it took; whether a second call was made (`off`, `not_needed`, `after_delay`, `after_failure`); which answered (`first`, `second`, `none`) |
 | `recall_by`, `recall_parts`, `recall_span` | a recall: `subject` or `time`; how many parts were searched (0 for a listing by time); `none`, `since`, `until` or `both` |
 

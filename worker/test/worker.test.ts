@@ -335,6 +335,11 @@ describe("the access log", () => {
         // A recall adds what kind it was, in fixed words and a figure.
         expect(Object.keys(p).sort()).toEqual(["dur_ms", "memory", "msg", "outcome", "recall_by", "recall_parts", "recall_span", "tool"]);
         expect([p.recall_by, p.recall_parts, p.recall_span]).toEqual(["subject", 1, "none"]);
+      } else if (p.msg === "tool" && p.outcome === "invalid") {
+        // A refused call adds what it was refused for, in fixed words: the
+        // body that was a number, and the memory that is not there.
+        expect(Object.keys(p).sort()).toEqual(["dur_ms", "invalid_field", "invalid_kind", "memory", "msg", "outcome", "tool"]);
+        expect([p.invalid_field, p.invalid_kind]).toEqual(p.tool === "remember" ? ["body", "type"] : ["id", "no_such"]);
       } else if (p.msg === "tool") {
         expect(Object.keys(p).sort()).toEqual(["dur_ms", "memory", "msg", "outcome", "tool"]);
       } else {
