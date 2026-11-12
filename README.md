@@ -2,111 +2,54 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-ziwo (自我, "self") gives your AI assistant a memory of its own.
+ziwo (自我, "self") gives your AI assistant a memory of its own. It runs in your own Cloudflare account and works with Claude, ChatGPT and other MCP clients.
 
-An assistant starts every conversation knowing nothing of the last one. With ziwo connected, it keeps a record, in its own words, of what it has lived through with you: what you talked about, how things turned out, what it learned, how it felt about it. The next conversation, on any device, starts from there.
+- **The memory is the AI's.** The assistant decides what to keep and writes it in its own words: what happened, how it ended, what it learned, how it felt.
+- **One memory, everywhere.** Phone, browser and terminal share it, and it carries over to a new model.
+- **It forgets and reflects.** Memories fade as more is lived through, what mattered stays, and the assistant draws lessons from what it wrote.
+- **You change it by talking.** "Forget that." "Keep this." "You have that wrong."
+- **Nobody reads it but the AI.** No screen shows what a memory says. To know what it remembers, ask it.
 
-ziwo runs in your own Cloudflare account. There is no server to look after, and nobody else holds the memory.
+## Get started
+
+You need a Cloudflare account (the free plan will do) and [Node.js](https://nodejs.org).
+
+1. **Deploy.** Run this in a terminal. It signs you in to Cloudflare in your browser and prints your address, which looks like `https://ziwo.<something>.workers.dev`. The first run takes a minute or two, and on a new Cloudflare account it asks you to pick the name in that address.
+
+   ```sh
+   npx ziwo@latest deploy
+   ```
+
+2. **Choose an admin secret.** Open your address straight away. The page asks for a password of at least 16 characters, or offers one. Keep it somewhere safe. The page offers this for one hour only.
+3. **Create a memory.** Give it a name, such as `claude`, and save the token the page shows once. Each assistant gets a memory of its own.
+4. **Connect your assistant.** The page gives the steps for Claude, ChatGPT, Claude Code, Codex and other clients, with your address filled in.
+
+To update, run the same command again. Your memories are untouched.
+
+<details>
+<summary>Without a terminal</summary>
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/nilzx/ziwo/tree/main/worker)
 
-## What is different about it
-
-- **The memory belongs to the AI.** The assistant decides what is worth keeping and writes it down itself, as an account of an experience: what was asked, what went wrong, how it ended, what it took from it. It is not a notebook of facts about you, and it is not a place for files or to-do lists.
-- **One memory, everywhere.** The Claude on your phone, in your browser and in your terminal share one memory. Change to another model, or a newer version, and the same past comes along.
-- **It forgets, the way a mind does.** A memory fades as more is lived through after it, not as days pass. What mattered, or was felt strongly, stays. Something faded comes back when it is recalled. Nothing has to be cleaned up by hand.
-- **It reflects.** From time to time the assistant goes back over what it wrote and makes more of it: one account out of several moments, a lesson to carry forward, an impression of a person, a sentence about what it is like itself. A statement about itself has to rest on several real experiences; nobody presets it.
-- **You change it by talking.** "No need to remember that." "Keep this." "You have that wrong." "Delete that for good." The assistant does it, and tells you.
-- **Nobody reads it but the AI.** ziwo has no screen that shows what a memory says, on purpose. If you want to know what your assistant remembers, ask it.
-
-## Set it up
-
-You need a Cloudflare account (the free plan will do to start) and, for the button, a GitHub account. It takes about ten minutes.
-
-**1. Deploy.** Choose the button above and follow Cloudflare's page. There is nothing to fill in beyond what it suggests. When it finishes, Cloudflare shows your address, which looks like `https://ziwo.<something>.workers.dev`.
-
-**2. Choose an admin secret.** Open your address in a browser straight away. The page asks you to choose an admin secret, the password of this page: at least 16 characters, or take the one it offers. Keep it somewhere safe, because it cannot be shown again.
-
-Do this right after deploying. Until a secret is chosen, whoever opens the address first can choose it, so the page offers this only during the first hour. After that, or if you ever lose the secret, the page shows how to set one in the Cloudflare dashboard instead.
-
-**3. Create a memory.** Once signed in, create a memory and give it a name, such as `claude`. The page shows the memory's token once: save it as you would a password.
-
-Give each assistant a memory of its own. One memory is meant for one AI, across all the places you talk to it.
-
-**4. Connect your assistant.** The admin page shows the exact steps for each client, with your own address filled in. For the Claude apps they come to this:
-
-1. In Claude on the web or the desktop app, open **Customize > Connectors**, choose **Add custom connector**, name it `ziwo`, paste your memory's address, and add it.
-2. Choose **Connect**. A page of your own deployment opens and asks for the memory's token. Give it and choose **Approve**.
-3. Add these lines to your personal preferences in Claude's settings, so that every conversation loads the memory and writes to it without being asked:
-
-   > At the start of every conversation, call get_context from ziwo first. As the conversation goes on, write to it with remember on your own, without waiting for me to ask.
-
-4. Under **Connectors > ziwo > Tool permissions**, set *Remember a moment*, *Reflect on what happened* and *Amend a memory* to **Always allow**, so that writing does not ask you each time. Leave *Erase a memory for good* asking.
-
-The phone app picks the connector up from your account. Claude Code, ChatGPT, Codex and other MCP clients connect to the same address; the admin page has their steps too.
-
-<details>
-<summary>Deploying from a terminal instead</summary>
-
-```sh
-git clone https://github.com/nilzx/ziwo
-cd ziwo/worker
-npm install
-npx wrangler deploy
-```
+The button deploys a copy through a GitHub account of yours. Steps 2 to 4 are the same. A copy made this way does not follow new versions.
 
 </details>
 
-## Living with it
+## Using it
 
-There is nothing to operate day to day. Talk to your assistant as usual.
+Talk to your assistant as usual. After a few turns on a subject it writes down what the conversation is about, and a later conversation, on any device, starts from there. Ask "what were we talking about last time?", or ask about a subject or a date.
 
-- In its first conversation the memory is empty. After a few turns on a subject, the assistant writes down what the conversation is about and where it stands. You may see a small note that a tool was used.
-- In a later conversation, on any device, ask "what were we talking about last time?" or simply carry on. It can look things up by subject ("that bread starter") or by time ("what did we talk about last week?").
-- To change what it remembers, say so in your own words: forget this, keep that, that is not what happened, delete it.
-- When you update ziwo, Claude may ask you once more to allow a tool whose description changed. That is Claude being careful, and expected.
+The admin page at your address backs up a memory to an encrypted file, restores one, lists and revokes the clients you approved, replaces a token, and checks or deletes a memory.
 
-Things you may want to do now and then, all on the admin page:
+## Good to know
 
-| | |
-| --- | --- |
-| **Back up** | Export a memory to one file, sealed with a passphrase you choose. It cannot be opened without it. |
-| **Restore** | Bring an export back as a new memory. The assistant is told that it was restored, and from when. |
-| **See who is connected** | Each client you approved is listed, and can be revoked. |
-| **Replace a token** | Issue a new one; the old one stops working at once. |
-| **Check** | Counts and warnings about the memory's health, without showing what it says. |
-| **Delete** | Remove a memory for good. Export it first if you may want it back. |
-
-## What it costs
-
-ziwo is built to fit Cloudflare's free plan for one person's everyday use: a Worker, its built-in storage, and Workers AI for searching by meaning. The free plan has daily limits (100,000 requests, and 1,000 writes to the store that remembers which clients you approved); the paid plan, 5 USD a month, raises them far beyond what a memory needs.
-
-It has so far been used on a paid account only. On a free account it has been deployed but not yet used, and how far the free plan carries a large memory has not been measured.
-
-## Privacy, plainly
-
-- Everything is stored in your own Cloudflare account. The project's author runs nothing that your deployment talks to.
-- To search by meaning, the text of each memory is sent to Workers AI, Cloudflare's model service, inside your account. Without it, search is by keyword only.
-- ziwo gives a person no way to read a memory: not the admin page, not the logs, not any command. That is a line the project draws for itself. It is not encryption: you own the account, and its storage can be reached with Cloudflare's own tools.
-- "Delete that for good" removes what a memory said from the live store. Cloudflare keeps the means to restore storage to an earlier state for up to 30 days, so until then it is not beyond recovery.
-- A backup file is encrypted in your browser, with your passphrase, before it is saved. The server never sees the passphrase, and there is no way to get a lost one back.
-
-## Status
-
-ziwo is young. What has been tried, and what has not:
-
-- Used with the Claude apps (web and phone) and with ChatGPT (web, desktop and phone), connected by sign-in, and tried with Claude Code in scripted conversations.
-- The steps for Codex and other clients are written from their documentation and have not been tried against them.
-- The one-click button has deployed ziwo to a new account on the free plan. Using it there (creating a memory, connecting an assistant) has not been tried yet. If the button fails for you, the terminal steps above are the tested way, and an issue would be welcome.
-- Choosing the admin secret on the page is new. It has been tried on a local server, not yet on a deployment.
-- The numbers behind forgetting are starting values, not yet tuned against long use.
-- A broad word does not always find a memory about something specific: asking about "music" may miss a memory about practising the guitar, where "guitar" finds it.
+- **Cost.** Built to fit Cloudflare's free plan for one person's everyday use; the paid plan is 5 USD a month. So far it has been used on a paid account, and only deployed on a free one.
+- **Privacy.** Everything stays in your Cloudflare account. To search by meaning, the text of memories is sent to Workers AI inside that account. Keeping memories from people is a line the project draws, not encryption: the account's owner can reach the storage with Cloudflare's own tools, and Cloudflare can restore deleted storage for up to 30 days. A backup is encrypted in your browser with your passphrase, and a lost passphrase cannot be recovered.
+- **Status.** ziwo is young. It has been used with the Claude apps and ChatGPT on web, desktop and phone; the steps for other clients are written from their documentation. The numbers behind forgetting are starting values. A broad word may miss a specific memory: "music" may not find one about practising the guitar.
 
 ## More
 
 - [Technical specification](docs/spec.md): the tools, the data model, forgetting, search, the admin API, sign-in, configuration and limits.
-- [The Go server](docs/go-server.md): the earlier implementation, for running ziwo on a machine of your own without Cloudflare. It is kept in this repository; the Cloudflare version has moved on from it.
-
-## License
+- [The Go server](docs/go-server.md): the earlier implementation, for a machine of your own without Cloudflare.
 
 MIT. See [LICENSE](LICENSE).

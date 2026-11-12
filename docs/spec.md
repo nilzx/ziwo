@@ -837,6 +837,33 @@ A broad word in a query may not reach an item that names a specific instance of 
 - Clients other than Claude Code (headless, against `wrangler dev`, 2026-11-11), and the Claude web and mobile apps and ChatGPT on the web, desktop and mobile (against the deployed Worker through OAuth, 2026-11-12).
 - How Workers AI usage counts against a free account's allowance.
 
+## Deploying and updating
+
+### The npm package
+
+`npx ziwo@latest deploy` deploys ziwo to the Cloudflare account the person signs in to and, run again, updates it. The package `ziwo` on npm holds:
+
+- the Worker, prebuilt: the modules `wrangler deploy` uploads from `worker/wrangler.jsonc` (the bundle, and the admin page's eight files as text), taken byte for byte from a dry run when the package was made, without the source map;
+- a Wrangler configuration that uploads them without bundling again (`no_bundle`), with the same name, bindings, migrations, compatibility date and flags;
+- the command, and one dependency: wrangler, at the exact version of `worker/package-lock.json`.
+
+So a person's machine deploys what was built and tested here, and installs none of the Worker's own dependencies.
+
+The command takes `deploy`, with `--name <worker-name>` (another Worker name; the default is `ziwo`) and `--dry-run`, and `--version` and `--help`. It checks the Node.js version against what that wrangler needs; runs the package's own wrangler with the terminal handed on, so that wrangler's sign-in in the browser and its questions work; turns off wrangler's question about usage metrics unless the person set `WRANGLER_SEND_METRICS`; reads the deployed address from wrangler's output file; and prints what to do next, in English, or in Chinese when the system's locale is Chinese. It exits with wrangler's exit code. It sends nothing anywhere itself and takes no secret.
+
+On a first run wrangler opens a browser to sign in, asks which account to use when the sign-in covers several, asks to register a workers.dev subdomain on an account that has none, and creates the KV namespace without asking. This is read from wrangler 4.160.0's source and has not yet been tried on a new account.
+
+An update keeps everything a deployment stores: the memories, the directory and the approved clients. The Durable Object migrations in the configuration apply themselves.
+
+### Making a release
+
+In `worker/`: set `version` in `package.json`, then `npm run check:npm`. It runs `npm run pack:npm`, which assembles the package in `worker/pkg/`; checks the list of files npm would publish; installs the packed tarball into a scratch directory under `/private/tmp/` and runs it there signed in to nothing (`--version`, `--help`, `deploy --dry-run`); compares its upload with the repository's (modules, their types and contents, metadata, configuration); and runs the smoke suite on the prebuilt Worker. Then `npm publish` in `worker/pkg/`.
+
+### Other ways
+
+- Cloudflare's Deploy button, in the README, copies `worker/` into a new repository in the person's GitHub or GitLab account and builds from it. The copy does not follow later versions.
+- From a clone: `npm install` and `npx wrangler deploy` in `worker/`.
+
 ## Development
 
 All commands run in `worker/`. Node and npm are needed; `npm install` first.
@@ -844,12 +871,13 @@ All commands run in `worker/`. Node and npm are needed; `npm install` first.
 | Command | Does |
 | --- | --- |
 | `npm test` | `vitest run` (the tests inside the Workers runtime), then `node --test 'test/node/*.node.mjs'`. |
-| `npm run smoke` | `python3 scripts/smoke.py`: starts `wrangler dev --local` on a free port with a random admin secret and a scratch state directory, creates memories through the admin API, talks MCP as several clients, and checks the answers (260 checks). It never contacts a Cloudflare account and prints no answer, only shapes. |
+| `npm run smoke` | `python3 scripts/smoke.py`: starts `wrangler dev --local` on a free port with a random admin secret and a scratch state directory, creates memories through the admin API, talks MCP as several clients, and checks the answers (277 checks); `--config` runs another local configuration, which is how the prebuilt Worker of the npm package is checked. It never contacts a Cloudflare account and prints no answer, only shapes. |
 | `npx tsc --noEmit` | Type check (`npm run typecheck`). |
-| `npx wrangler deploy --dry-run --outdir dist` | Builds the bundle without deploying (`npm run build`). At this commit: 1,274 KiB, 291 KiB gzipped. |
+| `npx wrangler deploy --dry-run --outdir dist` | Builds the bundle without deploying (`npm run build`). On 2026-11-13: 1,301 KiB, 298 KiB gzipped. |
+| `npm run pack:npm`, `npm run check:npm` | Assemble the npm package in `pkg/`, and check it (see [Making a release](#making-a-release)). |
 | `npm run dev` | `wrangler dev --local --config wrangler.dev.jsonc`: the Worker on this machine, keyword search only. The admin secret is `ADMIN_SECRET` from `worker/.dev.vars` when that is there and counts; without it the admin page offers to choose one, for an hour after each start (locally the version's time is the time the server started). OAuth works there on `http://localhost`. |
 
-At commit `bc1a625` on 2026-11-12, 359 Vitest tests and 69 Node tests passed, and the smoke check passed.
+On 2026-11-13, 383 Vitest tests and 112 Node tests passed, and the smoke check passed.
 
 ### Layout of `worker/`
 
@@ -861,21 +889,24 @@ src/memory/            write rules and recall (service.ts), amending and reflect
                        input checks and query splitting (clean.ts), background embedding (embedding.ts)
 src/store/             schema, event log and replay, contents, forgetting (decay.ts), reflection,
                        amendment, check, export format, keyword segmentation (segment.ts), vectors
-src/admin.ts           the admin API
+src/admin.ts           the admin API, and the admin secret of either kind
 src/oauth.ts           the authorization server and metadata
 src/consent.ts         the consent page (texts in consent-texts.ts)
 src/guard.ts           the limit on guessing and the registration budget
-src/directory.ts       the list of memories
+src/directory.ts       the list of memories, and the admin secret chosen on the page
 src/embed.ts           settings for search by meaning, the Workers AI embedder, the query's embedding
 src/settings.ts        per-memory settings
 src/zone.ts            time zones
 src/page.ts            serves page/
 page/                  the admin page (plain modules; seal.mjs is the sealed export format)
 bin/ziwo-admin.mjs     the admin script
+npm/                   the npm package's own files: the command (bin/, lib/) and its README
 scripts/smoke.py       the end-to-end check
+scripts/pack-npm.mjs   assembles the npm package in pkg/ (check-npm.mjs checks it; upload-form.mjs
+                       reads what a dry run would upload)
 docs/oauth-notes.md    what OAuth rests on
 test/                  Vitest tests (in the Workers runtime)
-test/node/             Node tests: page logic, sealing, the admin script
+test/node/             Node tests: page logic, sealing, the admin script, the npm command and packing
 ```
 
 ### How the tests are organised
