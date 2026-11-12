@@ -545,7 +545,7 @@ The instance id is drawn when a memory is created or imported and is never carri
 
 ### Admin routes
 
-Every route needs `Authorization: Bearer <admin secret>`. The admin API is not there (every route answers `404`) when the deployment has no admin secret that counts: `ADMIN_SECRET` unset, equal to the example value `change-me`, or shorter than 16 characters. An unknown path or method is `404` before the secret is weighed. A missing header is `401`; a wrong secret is `401` and counts against the limit on guessing (see [Authentication](#authentication)), which answers `429` with `Retry-After`. A name that breaks the name rule is `400`; a name that holds no memory is `404`. A failure inside is `500` with no detail; the log records the error's class name.
+Every route needs `Authorization: Bearer <admin secret>`. The admin API is not there (every route answers `404`) when the deployment has no admin secret that counts: `ADMIN_SECRET` unset or empty, equal to `change-me` (the value the example file used to carry), or shorter than 16 characters. An unknown path or method is `404` before the secret is weighed. A missing header is `401`; a wrong secret is `401` and counts against the limit on guessing (see [Authentication](#authentication)), which answers `429` with `Retry-After`. A name that breaks the name rule is `400`; a name that holds no memory is `404`. A failure inside is `500` with no detail; the log records the error's class name.
 
 | Method and path | Does | Answer |
 | --- | --- | --- |
@@ -723,7 +723,7 @@ None of the vars is set in the wrangler files; set them as Worker vars to change
 
 Search by meaning is off when there is no `AI` binding, when `EMBED_MODEL` is empty, or when any `EMBED_*` var cannot be read; the last is logged once per isolate, by the var's name, without its value. A memory's forgetting parameters and default time zone are not deployment settings: they belong to each memory (see [Forgetting](#forgetting)).
 
-`package.json` carries descriptions of `ADMIN_SECRET`, `OAUTH_KV` and `AI` under `cloudflare.bindings`, which Cloudflare's Deploy to Cloudflare button shows to whoever deploys. `worker/.dev.vars.example` is the template for local secrets; its value `change-me` deliberately counts as no secret.
+`package.json` carries descriptions of `ADMIN_SECRET`, `OAUTH_KV` and `AI` under `cloudflare.bindings`, which Cloudflare's Deploy to Cloudflare button shows to whoever deploys. `worker/.dev.vars.example` names the secrets, for that button and as the template for local ones. It gives `ADMIN_SECRET` no value, because the button's form shows a value given there as if it had been filled in; the value the file used to carry, `change-me`, still counts as no secret. The form checks nothing, so a deployment can come up with no admin secret that counts. The admin page finds that out before anyone signs in (`GET /admin/memories` without a credential answers `404` then, and `401` when a secret counts) and shows how to set one in the Cloudflare dashboard, with a secret made in the browser on offer.
 
 ## The access log
 

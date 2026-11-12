@@ -6,8 +6,8 @@
 import { connectGuide } from "./connect.mjs";
 import { makeH } from "./dom.mjs";
 import {
-  ApiError, defaultParams, makeApi, SecretError, memoryHash, namesMatch, paramNames, pickLanguage, reportGroups, route, sealedFileName,
-  settingsChange,
+  adminState, ApiError, defaultParams, makeApi, makeSecret, minAdminSecret, SecretError, memoryHash, namesMatch, paramNames, pickLanguage,
+  reportGroups, route, sealedFileName, settingsChange, workerNameOf,
 } from "./logic.mjs";
 import { minPassphrase, open, seal, SealError } from "./seal.mjs";
 import { format, texts } from "./texts.mjs";
@@ -23,6 +23,10 @@ const state = {
   flash: undefined,
   /** @type {string | undefined} what a deletion reported, shown once on the list */
   notice: undefined,
+  /** @type {"ready" | "unset" | "unknown"} whether the deployment has an admin secret that counts */
+  admin: "unknown",
+  /** a secret offered on the set-up view, made once per page load; kept here only, never stored or sent */
+  offered: makeSecret(),
 };
 
 /** @param {string} key @param {Record<string, string | number>} [vars] */
@@ -175,7 +179,12 @@ function loginView() {
         try {
           await api.list();
         } catch (err) {
-          const hint = err instanceof ApiError && err.status === 401 ? t("hint401") : err instanceof ApiError && err.status === 404 ? t("hint404") : "";
+          if (err instanceof ApiError && err.status === 404) {
+            state.admin = "unset";
+            render();
+            return;
+          }
+          const hint = err instanceof ApiError && err.status === 401 ? t("hint401") : "";
           sayError(out, err, ...(hint === "" ? [] : [hint]));
           return;
         }
@@ -186,6 +195,34 @@ function loginView() {
     },
   }, secret.wrap, button);
   show(t("signInTitle"), h("p", { text: t("intro") }), form, out);
+}
+
+// ---------------------------------------------------------------- set up
+
+// Shown while the deployment has no admin secret that counts: how to set one.
+function setupView() {
+  const name = workerNameOf(location.hostname);
+  const out = outBox();
+  const again = h("button", { type: "button", text: t("setupAgain") });
+  again.addEventListener("click", () =>
+    act(/** @type {HTMLButtonElement} */ (again), out, async () => {
+      state.admin = await adminState();
+      if (state.admin === "unset") return sayError(out, t("setupStill"));
+      render();
+    }));
+  show(t("setupTitle"),
+    h("p", { text: t("setupWhy", { min: minAdminSecret }) }),
+    h("p", { text: t("setupHow") }),
+    h("ol", {},
+      h("li", { text: t("setupStep1", { named: name === "" ? "" : t("setupNamed", { name }) }) }),
+      h("li", { text: t("setupStep2") }),
+      h("li", { text: t("setupStep3", { min: minAdminSecret }) }),
+      h("li", { text: t("setupStep4") })),
+    h("p", {}, h("a", { href: "https://dash.cloudflare.com/?to=/:account/workers-and-pages", target: "_blank", rel: "noopener noreferrer", text: t("setupDash") })),
+    h("p", { text: t("setupOffer") }),
+    codeBlock(state.offered),
+    h("p", {}, again),
+    out);
 }
 
 // ---------------------------------------------------------------- the list
@@ -566,7 +603,7 @@ function deleteSection(name) {
 
 async function render() {
   drawTools();
-  if (state.api === undefined) return loginView();
+  if (state.api === undefined) return state.admin === "unset" ? setupView() : loginView();
   const r = route(location.hash);
   if (r.view === "memory") return memoryView(r.name);
   return listView();
@@ -588,4 +625,9 @@ addEventListener("hashchange", () => {
   render();
 });
 
+// Ask before the first view, but wait at most two seconds for the answer.
+state.admin = await Promise.race([
+  adminState(),
+  /** @type {Promise<"unknown">} */ (new Promise((resolve) => setTimeout(() => resolve("unknown"), 2000))),
+]);
 render();

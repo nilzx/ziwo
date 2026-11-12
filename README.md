@@ -23,7 +23,9 @@ ziwo runs in your own Cloudflare account. There is no server to look after, and 
 
 You need a Cloudflare account (the free plan will do to start) and, for the button, a GitHub account. It takes about ten minutes.
 
-**1. Deploy.** Choose the button above and follow Cloudflare's page. It asks for one thing you have to make up: `ADMIN_SECRET`, the password of your admin page. Make it at least 16 characters and keep it somewhere safe.
+**1. Deploy.** Choose the button above and follow Cloudflare's page. It asks for one thing you have to make up: `ADMIN_SECRET`, the password of your admin page. Make it **at least 16 characters** and keep it somewhere safe.
+
+Cloudflare's page does not check the length. If yours is shorter, or left empty, the deployment still succeeds but the admin page stays locked: open it, and it shows how to set a proper one.
 
 When it finishes, Cloudflare shows your address, which looks like `https://ziwo.<something>.workers.dev`.
 
@@ -80,7 +82,7 @@ Things you may want to do now and then, all on the admin page:
 
 ziwo is built to fit Cloudflare's free plan for one person's everyday use: a Worker, its built-in storage, and Workers AI for searching by meaning. The free plan has daily limits (100,000 requests, and 1,000 writes to the store that remembers which clients you approved); the paid plan, 5 USD a month, raises them far beyond what a memory needs.
 
-It has so far been run on a paid account only. How far the free plan carries a large memory has not been measured yet.
+It has so far been used on a paid account only. On a free account it has been deployed but not yet used, and how far the free plan carries a large memory has not been measured.
 
 ## Privacy, plainly
 
@@ -96,7 +98,7 @@ ziwo is young. What has been tried, and what has not:
 
 - Used with the Claude apps (web and phone) and with ChatGPT (web, desktop and phone), connected by sign-in, and tried with Claude Code in scripted conversations.
 - The steps for Codex and other clients are written from their documentation and have not been tried against them.
-- The one-click button has not yet been tried from start to finish. If it fails for you, the terminal steps above are the tested way, and an issue would be welcome.
+- The one-click button has deployed ziwo to a new account on the free plan. Using it there (creating a memory, connecting an assistant) has not been tried yet. If the button fails for you, the terminal steps above are the tested way, and an issue would be welcome.
 - The numbers behind forgetting are starting values, not yet tuned against long use.
 - A broad word does not always find a memory about something specific: asking about "music" may miss a memory about practising the guitar, where "guitar" finds it.
 

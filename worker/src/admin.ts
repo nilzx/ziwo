@@ -110,6 +110,8 @@ export async function serveAdmin(request: Request, env: Env, parts: string[], no
   }
   if (action === undefined) return notFound();
   const secret = adminSecretOf(env);
+  // The admin page tells "no secret that counts" (404) from "a secret is set"
+  // (401 without a credential) by this answer: keep these checks in this order.
   if (secret === undefined) return notFound();
   note.auth = await adminAllowed(request, secret);
   // A secret presented, right or wrong, is weighed against the limit on

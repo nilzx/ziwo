@@ -1,5 +1,11 @@
-# Local secrets for wrangler dev. Copy to .dev.vars, which git ignores.
-# The admin secret: the password of the admin page and of the admin API.
-# At least 16 characters. Without one, or with this example value, the admin
-# API is not there (404).
-ADMIN_SECRET=change-me
+# The secrets this Worker takes. Cloudflare's Deploy button reads this file
+# for their names, and a value given here turns up in its form as if it had
+# been filled in. So none is given: the field starts empty.
+#
+# For wrangler dev, copy this file to .dev.vars, which git ignores, and fill
+# it in.
+#
+# ADMIN_SECRET is the password of the admin page and of the admin API. At
+# least 16 characters. Without one that long the admin API is not there
+# (404), and the admin page says how to set one.
+ADMIN_SECRET=

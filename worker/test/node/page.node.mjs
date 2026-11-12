@@ -9,8 +9,8 @@ import { describe, it } from "node:test";
 import { codexTomlOAuth, connectGuide, hookScript, hookSettings, mcpJson, mcpJsonOAuth } from "../../page/connect.mjs";
 import { makeH } from "../../page/dom.mjs";
 import {
-  ApiError, defaultParams, errorText, makeApi, memoryHash, memoryPath, namesMatch, paramNames, pickLanguage, reportGroups, reportText, route,
-  SecretError, sealedFileName, settingsChange, utcStamp,
+  adminState, ApiError, defaultParams, errorText, generatedSecretLength, makeApi, makeSecret, memoryHash, memoryPath, minAdminSecret, namesMatch,
+  paramNames, pickLanguage, reportGroups, reportText, route, SecretError, sealedFileName, settingsChange, utcStamp, workerNameOf,
 } from "../../page/logic.mjs";
 import { format, texts } from "../../page/texts.mjs";
 import { repoRoot, workerDir } from "./go.mjs";
@@ -248,6 +248,70 @@ describe("the page's decisions", () => {
   });
 });
 
+describe("the set-up of an admin secret", () => {
+  const answering = (/** @type {number} */ status) => {
+    /** @type {RequestInit[]} */
+    const seen = [];
+    const fetchFn = /** @type {typeof fetch} */ (async (_url, init) => {
+      seen.push(init ?? {});
+      return new Response("", { status });
+    });
+    return { fetchFn, seen };
+  };
+
+  it("tells a secret that counts (401) from none (404) before anything is typed", async () => {
+    assert.equal(await adminState(answering(401).fetchFn), "ready");
+    assert.equal(await adminState(answering(404).fetchFn), "unset");
+    assert.equal(await adminState(answering(500).fetchFn), "unknown");
+    assert.equal(await adminState(async () => { throw new TypeError("offline"); }), "unknown");
+  });
+
+  it("sends no credential when asking", async () => {
+    const { fetchFn, seen } = answering(401);
+    await adminState(fetchFn);
+    assert.equal(seen.length, 1);
+    const headers = new Headers(seen[0].headers);
+    assert.equal(headers.has("authorization"), false);
+    assert.equal(seen[0].method, "GET");
+  });
+
+  it("draws a secret of the right length from letters and digits, and skips bytes from 248 up", () => {
+    const s = makeSecret();
+    assert.equal(s.length, generatedSecretLength);
+    assert.equal(generatedSecretLength, 24);
+    assert.match(s, /^[A-Za-z0-9]{24}$/);
+    assert.notEqual(makeSecret(), s);
+    /** @type {number[]} */
+    const asked = [];
+    let round = 0;
+    const random = (/** @type {number} */ n) => {
+      asked.push(n);
+      // First every byte is refused, then 0..61 once each and more.
+      return round++ === 0 ? new Uint8Array(n).fill(250) : Uint8Array.from({ length: n }, (_, i) => i);
+    };
+    const t = makeSecret(random);
+    assert.equal(t.length, 24);
+    assert.match(t, /^[A-Za-z0-9]{24}$/);
+    assert.ok(asked.length >= 2);
+    assert.equal(t.startsWith("ABC"), true); // the refused bytes left no mark
+    assert.ok(minAdminSecret <= generatedSecretLength);
+  });
+
+  it("names the Worker only from a workers.dev address", () => {
+    assert.equal(workerNameOf("ziwo.someone.workers.dev"), "ziwo");
+    assert.equal(workerNameOf("memory.example.com"), "");
+    assert.equal(workerNameOf("localhost"), "");
+    assert.equal(workerNameOf("workers.dev"), "");
+  });
+
+  it("keeps the page's minimum equal to the server's", async () => {
+    const admin = await readFile(path.join(workerDir, "src/admin.ts"), "utf8");
+    const m = /export const minAdminSecret = (\d+);/.exec(admin);
+    assert.ok(m !== null, "minAdminSecret not found in src/admin.ts");
+    assert.equal(minAdminSecret, Number(m[1]));
+  });
+});
+
 describe("the instructions for each client", () => {
   const address = "https://ziwo.example/alice/mcp";
   const token = "ziwo_TESTTOKEN0000000000000000000000000000000";
@@ -370,7 +434,8 @@ describe("the page's files", () => {
     assert.deepEqual(files.sort(), ["app.mjs", "connect.mjs", "dom.mjs", "index.html", "logic.mjs", "seal.mjs", "style.css", "texts.mjs"]);
     for (const f of files) {
       const s = await read(f);
-      assert.equal(/\bhttps?:\/\/(?!ziwo\.example\.workers\.dev)/.test(s), false, `${f} names an address`);
+      // The one link the owner may follow: the Cloudflare dashboard, on the set-up view.
+      assert.equal(/\bhttps?:\/\/(?!ziwo\.example\.workers\.dev|dash\.cloudflare\.com\/\?to=)/.test(s), false, `${f} names an address`);
       assert.equal(/["'(]\/\//.test(s), false, `${f} has a protocol-relative reference`);
       assert.equal(/@import|url\(/.test(s), false, `${f} loads something from CSS`);
       assert.equal(/\bimport\(/.test(s), false, `${f} imports at run time`);

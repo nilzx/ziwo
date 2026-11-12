@@ -230,3 +230,57 @@ export function pickLanguage(languages) {
 export function utcStamp(ms) {
   return new Date(ms).toISOString().slice(0, 16).replace("T", " ") + "Z";
 }
+
+// The fewest characters an admin secret may have to count. It mirrors
+// minAdminSecret in src/admin.ts; a test keeps the two equal.
+export const minAdminSecret = 16;
+
+/**
+ * adminState asks the deployment whether it has an admin secret that counts,
+ * without presenting one: 401 says one is set, 404 says none counts. A
+ * request without a credential is not weighed against the limit on guessing.
+ * @param {typeof fetch} [fetchFn]
+ * @returns {Promise<"ready" | "unset" | "unknown">}
+ */
+export async function adminState(fetchFn = globalThis.fetch.bind(globalThis)) {
+  try {
+    const res = await fetchFn("/admin/memories", { method: "GET", headers: { accept: "application/json" } });
+    if (res.status === 401) return "ready";
+    if (res.status === 404) return "unset";
+    return "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+// The length of a generated admin secret.
+export const generatedSecretLength = 24;
+
+const secretAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+
+/**
+ * makeSecret draws generatedSecretLength characters from A-Z a-z 0-9, each
+ * equally likely: bytes from 248 up (248 = 62 * 4) are discarded, and more
+ * bytes are asked for until enough characters are drawn.
+ * @param {(n: number) => Uint8Array} [random]
+ */
+export function makeSecret(random = (n) => crypto.getRandomValues(new Uint8Array(n))) {
+  let out = "";
+  while (out.length < generatedSecretLength) {
+    for (const b of random(generatedSecretLength - out.length + 8)) {
+      if (b >= 248 || out.length === generatedSecretLength) continue;
+      out += secretAlphabet[b % 62];
+    }
+  }
+  return out;
+}
+
+/**
+ * workerNameOf reads a Worker's name from its workers.dev address
+ * (name.account.workers.dev); a custom domain gives "".
+ * @param {string} hostname
+ */
+export function workerNameOf(hostname) {
+  const labels = hostname.split(".");
+  return hostname.endsWith(".workers.dev") && labels.length >= 3 ? labels[0] : "";
+}
