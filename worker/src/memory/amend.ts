@@ -25,7 +25,7 @@ import {
 import type { Entry } from "../store/reflect";
 import type { Store } from "../store/store";
 import type { Memory } from "../store/types";
-import { clip, cleanText, goQuote, InvalidInput, runeCount, trimSpace } from "./clean";
+import { clip, cleanText, goQuote, InvalidInput, oneLine, runeCount, trimSpace } from "./clean";
 
 // Limits on amending and reflecting.
 export const MaxReasonRunes = 300;
@@ -99,7 +99,7 @@ export function amend(st: Store, now: number, req: AmendRequest): string {
         if (tn > MaxPreferenceRunes) {
           throw invalid(`text is ${tn} characters, the limit is ${MaxPreferenceRunes}: a preference is a short rule`);
         }
-        const pid = st.addPreference(now, sessionId, text, MaxPreferences);
+        const pid = st.addPreference(now, sessionId, oneLine(text), MaxPreferences);
         return "preference saved as " + pid + "; get_context will show it from now on";
       }
       case "unprefer":
@@ -292,8 +292,8 @@ export function tidyIDs(ids: string[]): string[] {
 export function cleanEntry(req: EntryRequest): Entry {
   const kind = trimSpace(req.kind ?? "");
   let ref = trimSpace(req.ref ?? "");
-  let about = clip(trimSpace(req.about ?? ""), 80);
-  let context = trimSpace(req.context ?? "");
+  let about = clip(oneLine(trimSpace(req.about ?? "")), 80);
+  let context = oneLine(trimSpace(req.context ?? ""));
   if (!EntryKinds.includes(kind)) throw invalid(`kind must be one of ${EntryKinds.join(", ")}`);
   const c = cleanText({
     gist: req.gist, body: req.body, outcome: req.outcome, feeling: req.feeling, lesson: req.lesson,

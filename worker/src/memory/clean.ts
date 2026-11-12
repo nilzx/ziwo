@@ -75,6 +75,16 @@ export function trimSpace(s: string): string {
   return s.replace(edgeSpace, "");
 }
 
+// oneLine keeps a text that is shown on one line on one line. In what
+// get_context returns, a memory is told from what the server says by its
+// line starting with its id; a gist or a name with a line break in it could
+// pass for a line of the server's. It is applied when such a text is
+// written, and again when it is shown: records written before it was, and
+// those a restore brings, hold their text as it came.
+export function oneLine(s: string): string {
+  return s.replace(/[\n\r\v\f\u0085\u2028\u2029]+/g, " ");
+}
+
 // goQuote is Go's %q of a string (strconv.Quote).
 const printable = /^[\p{L}\p{M}\p{N}\p{P}\p{S} ]$/u;
 const shortEscapes: Record<string, string> = {
@@ -127,7 +137,7 @@ export type CleanText = Required<Omit<RememberInput, "sessionId" | "happened">>;
 
 // cleanText checks what a memory says and fills in defaults.
 export function cleanText(req: RememberRequest): CleanText {
-  const gist = trimSpace(req.gist ?? "");
+  const gist = oneLine(trimSpace(req.gist ?? ""));
   const body = trimSpace(req.body ?? "");
   const outcome = trimSpace(req.outcome ?? "");
   const feeling = trimSpace(req.feeling ?? "");
