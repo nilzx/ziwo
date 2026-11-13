@@ -882,7 +882,7 @@ All commands run in `worker/`. Node and npm are needed; `npm install` first.
 | `npm run pack:npm`, `npm run check:npm` | Assemble the npm package in `pkg/`, and check it (see [Making a release](#making-a-release)). |
 | `npm run dev` | `wrangler dev --local --config wrangler.dev.jsonc`: the Worker on this machine, keyword search only. The admin secret is `ADMIN_SECRET` from `worker/.dev.vars` when that is there and counts; without it the admin page offers to choose one, for an hour after each start (locally the version's time is the time the server started). OAuth works there on `http://localhost`. |
 
-On 2026-11-13, 391 Vitest tests and 112 Node tests passed, and the smoke check passed.
+On 2026-11-13, 392 Vitest tests and 112 Node tests passed, and the smoke check passed.
 
 ### Layout of `worker/`
 

@@ -10,7 +10,7 @@ import type { Memory as MemoryObject } from "../src/memory-object";
 import { AmendPin, AmendRetract } from "../src/store/amend";
 import { KindEpisode, KindImpression, KindLesson, KindSelf, StateSuperseded } from "../src/store/content";
 import { SupersededError } from "../src/store/errors";
-import { amend, ent, reflectOn, refused, replays, thrown } from "./amend-helpers";
+import { amend, ent, entry, reflectOn, refused, replays, thrown } from "./amend-helpers";
 import { dump, get, remember, search, session, t0, withStore } from "./helpers";
 import { adminSecret, Client, createMemory, fetchWorker, freshName, idIn, setClock } from "./mcp-helpers";
 import { isInvalid, ok, start } from "./service-helpers";
@@ -67,6 +67,9 @@ describe("replaces", () => {
       expect(payloadOf(storage, now!).replaces).toEqual([same, alias]);
       expect([get(s, alias!).stateBy, get(s, same!).stateBy]).toEqual([now, now]);
       expect(s.impressions(["小林", "林工"]).map((m) => m.id)).toEqual([now]);
+      // One that is both of its name and named is in the log once.
+      const [again] = reflectOn(s, sess, [impression("比以前更细心", "林工", [f], [now!])]);
+      expect(payloadOf(storage, again!).replaces).toEqual([now]);
       replays(s, storage);
     }));
 
@@ -173,6 +176,22 @@ describe("replaces", () => {
       expect(text(fixed)).toContain(`\ncorrects: ${l3}\n`);
       expect(text(fixed)).not.toContain("replaces:");
       expect(text(l3!)).toContain(`\nreplaces: ${l1}, ${l2}\n`);
+    }));
+
+  it("does not show a revised statement about oneself as replaced: that is what revises says", () =>
+    start((f) => {
+      const a = session(f.st, t0, "", "cli");
+      const b = session(f.st, t0, "", "cli");
+      const x = [
+        remember(f.st, t0, a, "一", "正文"), remember(f.st, t0, a, "二", "正文"), remember(f.st, t0, b, "三", "正文"),
+        remember(f.st, t0, b, "四", "正文"), remember(f.st, t0, a, "五", "正文"),
+      ];
+      const self = (gist: string, ref: string, ...from: string[]) =>
+        entry({ kind: KindSelf, gist, context: "某种场合", importance: 0.5, from, ref });
+      const [first] = reflectOn(f.st, a, [self("我是这样的", "", x[0]!, x[1]!, x[2]!)]);
+      const [second] = reflectOn(f.st, a, [self("我其实是那样的", first!, x[2]!, x[3]!, x[4]!)]);
+      expect(f.get(first!).stateBy).toBe(second);
+      expect(f.expand(second!).replaced).toEqual([]);
     }));
 
   it("is passed through the tool, and travels in an export and an import", async () => {
