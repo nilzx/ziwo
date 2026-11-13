@@ -906,7 +906,10 @@ export class Store {
   // the fragments, episodes and lessons that stand in each, in any tier, and
   // its fragments that wait for reflect, ripe or not. Read from
   // memories_by_subject and memories_pending alone.
-  subjectFigures(heads: string[]): Map<string, SubjectFigures> {
+  //
+  // waiting, when given, holds the waiting fragments of every subject that
+  // has any, and spares the second read.
+  subjectFigures(heads: string[], waiting?: Map<string, { waiting: number }>): Map<string, SubjectFigures> {
     const out = new Map<string, SubjectFigures>();
     if (heads.length === 0) return out;
     for (const h of heads) out.set(h, { fragments: 0, episodes: 0, lessons: 0, waiting: 0 });
@@ -923,7 +926,10 @@ export class Store {
       else if (text(r.kind) === KindEpisode) f.episodes = c;
       else f.lessons = c;
     }
-    for (const [subject, w] of this.waitingBySubject(heads, [])) out.get(subject)!.waiting = w.waiting;
+    for (const [subject, w] of waiting ?? this.waitingBySubject(heads, [])) {
+      const f = out.get(subject);
+      if (f !== undefined) f.waiting = w.waiting;
+    }
     return out;
   }
 

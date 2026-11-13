@@ -30,9 +30,11 @@ import {
   type EraseRequest,
   finishReflect,
   type ReflectView,
+  type SubjectLine,
 } from "./amend";
 import {
   clean,
+  cleanSubject,
   clip,
   DefaultRecall,
   goQuote,
@@ -61,6 +63,32 @@ const peopleShown = 8;
 // they would be put together by halves.
 export const ripeAfter = 30 * minute;
 
+// When a subject comes to mind (its items are in get_context's recent list,
+// or listed by a recall) and this many of its fragments are ripe, the answer
+// asks for a round on it; get_context asks for one on the unsorted at
+// unsortedHint. Starting values.
+export const subjectHint = 6;
+export const unsortedHint = 12;
+export const subjectsShown = 20; // subjects get_context lists
+export const subjectsFound = 3; // subjects a recall with a query shows at most
+
+// Prompt is a request, at the end of an answer, for a round of reflection on
+// a subject ("" for the unsorted), and how many of its fragments are ripe.
+export interface Prompt {
+  subject: string;
+  ripe: number;
+}
+
+// RecallView is what a recall shows: subjects first, then memories, then
+// perhaps a request for a round of reflection. scoped is set when the recall
+// was kept to one subject ("" for the unsorted).
+export interface RecallView {
+  results: Result[];
+  subjects: SubjectLine[];
+  scoped?: string;
+  prompt?: Prompt;
+}
+
 // relevanceFloor drops results whose relevance is below this share of the
 // best result's. Being listed restarts a memory's decay, so a memory that
 // only brushes the query must not be listed.
@@ -73,6 +101,11 @@ export interface ContextView {
   selves: Memory[]; // statements about oneself, oldest first
   prefs: Preference[]; // standing rules about what to remember
   pending: number; // fragments waiting for reflect
+  // The subjects most recently active, and any the prompt names besides;
+  // how many subjects there are; the request for a round, if any.
+  subjects: SubjectLine[];
+  subjectCount: number;
+  prompt?: Prompt;
   // Set for a while after the memory was brought back from an export.
   restored: RestoreNote | null;
   core: Memory[]; // memories that never fade, most important first
@@ -118,6 +151,15 @@ export interface MeaningHit {
   score: number;
 }
 
+// RecallMore is what a recall is kept to, and what the object found by
+// meaning for it besides the whole query's matches.
+export interface RecallMore {
+  span?: Span;
+  partsByMeaning?: (MeaningHit[] | undefined)[];
+  subject?: string; // the head of the subject it is kept to, or "" for the unsorted
+  subjectsByMeaning?: MeaningHit[]; // subject heads found by meaning
+}
+
 // within says whether an instant falls within span, both ends included.
 export function within(at: number, span: Span): boolean {
   return (span.since === undefined || at >= span.since) && (span.until === undefined || at <= span.until);
@@ -149,7 +191,6 @@ export class Service {
     const clock = this.st.clock();
     const selves = this.st.selves();
     const prefs = this.st.preferences();
-    const pending = this.st.pendingCount();
     const last = this.st.lastRestore();
     const restored = last !== undefined && now - last.at < restoreNotice ? last : null;
     const core = this.st.core(coreLimit);
@@ -160,7 +201,61 @@ export class Service {
     }
     const counts = this.st.tierCounts(clock);
     const others = this.st.activeSessions(now - parallelWindow, session.id, 3);
-    return { session, carrier: note, selves, prefs, pending, restored, core, recent, others, counts, clock, now };
+    // What waits, by subject, and how much of it is ripe: one read.
+    const waiting = this.st.ripeness(this.st.hotSessions(now - ripeAfter, session.id));
+    let pending = 0;
+    for (const w of waiting.values()) pending += w.waiting;
+    let prompt = this.promptFor(session.id, now, recent.map((m) => m.subject), waiting);
+    const unsorted = waiting.get("")?.ripe ?? 0;
+    if (prompt === undefined && unsorted >= unsortedHint && this.mayPrompt(session.id, now)) prompt = { subject: "", ripe: unsorted };
+    if (prompt !== undefined) this.st.notePrompted(session.id);
+    const active = this.st.subjectsRecent(subjectsShown);
+    const subjectCount = active.length < subjectsShown ? active.length : this.st.subjectCount();
+    const heads = active.map((s) => s.id);
+    if (prompt !== undefined && prompt.subject !== "" && !heads.includes(prompt.subject)) heads.push(prompt.subject);
+    const subjects = this.subjectLines(heads, waiting);
+    return {
+      session, carrier: note, selves, prefs, pending, restored, core, recent, others, counts, clock, now, subjects, subjectCount,
+      ...(prompt === undefined ? {} : { prompt }),
+    };
+  }
+
+  // mayPrompt says whether the session may be asked for a round: not when it
+  // was asked already or opened one, and not while a round is held.
+  private mayPrompt(session: string, now: number): boolean {
+    if (session === "" || this.st.prompted().includes(session)) return false;
+    const held = this.st.heldRound();
+    return held === undefined || held.until <= now;
+  }
+
+  // promptFor picks the subject to ask a round on among those that came to
+  // mind, in the order they did: the one with the most ripe fragments, at
+  // least subjectHint, the first on a tie. It does not record the prompt.
+  private promptFor(session: string, now: number, subjects: string[], waiting: Map<string, { ripe: number }>): Prompt | undefined {
+    let best: Prompt | undefined;
+    for (const s of subjects) {
+      if (s === "") continue;
+      const ripe = waiting.get(s)?.ripe ?? 0;
+      if (ripe >= subjectHint && (best === undefined || ripe > best.ripe)) best = { subject: s, ripe };
+    }
+    return best !== undefined && this.mayPrompt(session, now) ? best : undefined;
+  }
+
+  // subjectLines reads the lines of the subjects with the given heads, in
+  // that order, their waiting fragments from waiting when it has them.
+  private subjectLines(heads: string[], waiting?: Map<string, { waiting: number }>): SubjectLine[] {
+    const figures = this.st.subjectFigures(heads, waiting);
+    return this.st.subjects(heads).map((subject) => ({ subject, figures: figures.get(subject.id)! }));
+  }
+
+  // recallSubject resolves the subject a recall is kept to: its head, or ""
+  // for the unsorted.
+  recallSubject(value: string): string {
+    const v = cleanSubject(value);
+    const r = this.st.resolveSubject(v);
+    if ("none" in r) return "";
+    if ("head" in r) return r.head;
+    throw new InvalidInput(`subject ${goQuote(v)} names none of your subjects: recall with a query finds them by what they are about`);
   }
 
   // check looks the memory over and reports what it finds, without quoting
@@ -204,12 +299,95 @@ export class Service {
   // session is the caller's session id and may be empty.
   recall(
     query: string, limit: number, deep: boolean, session: string, byMeaning?: MeaningHit[],
-    more: { span?: Span; partsByMeaning?: (MeaningHit[] | undefined)[] } = {},
+    more: RecallMore = {},
+  ): Result[] {
+    return this.recallView(query, limit, deep, session, byMeaning, more).results;
+  }
+
+  // recallView recalls as recall does, and adds what a recall shows besides
+  // the memories. With a query and no subject, subjects are searched too,
+  // by keyword and by the matches by meaning of their heads handed in, and
+  // the best few are shown first. Kept to a subject (more.subject: its head,
+  // or "" for the unsorted), only its memories are searched or listed, and
+  // its own line comes first. When a subject the memories listed belong to
+  // has enough ripe fragments waiting, the answer asks for a round on it,
+  // once per session; a session that names none is never asked.
+  recallView(
+    query: string, limit: number, deep: boolean, session: string, byMeaning?: MeaningHit[],
+    more: RecallMore = {},
+  ): RecallView {
+    const results = this.items(query, limit, deep, session, byMeaning, more);
+    const view: RecallView = { results, subjects: [] };
+    if (more.subject !== undefined) view.scoped = more.subject;
+    const heads: string[] = [];
+    if (more.subject !== undefined) {
+      if (more.subject !== "") heads.push(more.subject);
+    } else if (trimSpace(query) !== "") {
+      heads.push(...this.findSubjects(clip(trimSpace(query), 500), byMeaning === undefined ? undefined : (more.subjectsByMeaning ?? [])));
+    }
+    // What came to mind: the subjects of the memories listed, in order.
+    const came: string[] = [];
+    for (const r of results) if (r.subject !== "" && !came.includes(r.subject)) came.push(r.subject);
+    const now = this.now();
+    const asking = this.knownSession(session);
+    let waiting = new Map<string, { waiting: number; ripe: number }>();
+    if (came.length > 0 || heads.length > 0) {
+      const hot = asking === "" ? [] : this.st.hotSessions(now - ripeAfter, asking);
+      waiting = this.st.waitingBySubject([...new Set([...heads, ...came])], hot);
+    }
+    if (asking !== "" && came.length > 0) {
+      view.prompt = this.promptFor(asking, now, came, waiting);
+      if (view.prompt !== undefined) {
+        this.st.notePrompted(asking);
+        if (!heads.includes(view.prompt.subject)) heads.push(view.prompt.subject);
+      }
+    }
+    view.subjects = this.subjectLines(heads, waiting);
+    return view;
+  }
+
+  // findSubjects searches the subjects as a recall searches memories: by
+  // keyword in their names and descriptions, and by the matches by meaning
+  // given (undefined when there was no search by meaning), scored alike, and
+  // returns the heads of the best few that reach the floor.
+  private findSubjects(query: string, byMeaning?: MeaningHit[]): string[] {
+    const terms = searchTerms(query);
+    const keyword = new Map<string, number>();
+    const byKeyword = this.st.searchSubjects(query, recallDepth(subjectsFound));
+    const best = byKeyword[0]?.score ?? 0;
+    for (const h of byKeyword) keyword.set(h.head, best > 0 ? h.score / best : 1);
+    const meaning = new Map<string, number>();
+    const found = this.st.byN((byMeaning ?? []).map((h) => h.n));
+    for (const h of byMeaning ?? []) {
+      const m = found.get(h.n);
+      if (m !== undefined && m.kind === KindSubject && m.state === "" && !meaning.has(m.id)) meaning.set(m.id, h.score);
+    }
+    const ways = (byKeyword.length > 0 ? 1 : 0) + (meaning.size > 0 ? 1 : 0);
+    if (ways === 0) return [];
+    const subjects = new Map(this.st.subjects([...new Set([...keyword.keys(), ...meaning.keys()])]).map((s) => [s.id, s]));
+    const scored: { head: string; relevance: number }[] = [];
+    for (const [head, s] of subjects) {
+      const k = keyword.get(head);
+      const share = terms.length === 0 ? 1 : Math.max(covered(terms, s.name + "\n" + s.description), 1) / terms.length;
+      scored.push({ head, relevance: ((k === undefined ? 0 : k * share) + (meaning.get(head) ?? 0)) / ways });
+    }
+    const top = Math.max(0, ...scored.map((x) => x.relevance));
+    return scored
+      .filter((x) => x.relevance >= relevanceFloor * top)
+      .sort((a, b) => b.relevance - a.relevance)
+      .slice(0, subjectsFound)
+      .map((x) => x.head);
+  }
+
+  // items finds or lists the memories of a recall: see recall.
+  private items(
+    query: string, limit: number, deep: boolean, session: string, byMeaning?: MeaningHit[],
+    more: RecallMore = {},
   ): Result[] {
     query = trimSpace(query);
     if (limit <= 0) limit = DefaultRecall;
     else if (limit > MaxRecall) limit = MaxRecall;
-    if (query === "") return this.list(more.span, limit, deep);
+    if (query === "") return this.list(more.span, limit, deep, more.subject);
     query = clip(query, 500);
     const depth = recallDepth(limit);
     const clock = this.st.clock();
@@ -231,7 +409,7 @@ export class Service {
     const texts = parts.length >= 2 ? [query, ...parts] : [query];
     const searches: Search[] = texts.map((text, i) => {
       const s: Search = { terms: searchTerms(text), keyword: new Map(), meaning: new Map(), ways: 0 };
-      const byKeyword = this.st.searchText(text, clock, deep, depth, more.span);
+      const byKeyword = this.st.searchText(text, clock, deep, depth, more.span, more.subject);
       if (byKeyword.length > 0) {
         s.ways++;
         const best = byKeyword[0]!.score;
@@ -264,6 +442,8 @@ export class Service {
       // replaced or put into an episode is still reached by a deep search.
       if (m.retracted || m.state === StateErased || (!isLive(m) && !deep)) continue;
       if (more.span !== undefined && !within(m.createdAt, more.span)) continue;
+      // A subject is shown in a line of its own, never among memories.
+      if (m.kind === KindSubject || (more.subject !== undefined && m.subject !== more.subject)) continue;
       const by = searches.map((s, i) => {
         const k = s.keyword.get(n);
         const mean = s.meaning.get(n);
@@ -315,9 +495,14 @@ export class Service {
   // session may show, and with deep the archived ones too. Like that list, it
   // counts as nothing coming to mind: nothing is logged and no decay
   // restarts. limit is already within bounds.
-  private list(span: Span | undefined, limit: number, deep: boolean): Result[] {
+  // Kept to a subject (its head, or "" for the unsorted), it lists that
+  // subject's memories alone.
+  private list(span: Span | undefined, limit: number, deep: boolean, subject?: string): Result[] {
     const clock = this.st.clock();
-    return this.st.inSpanList(clock, span ?? {}, deep, limit).map((m) => ({
+    const ms = subject === undefined
+      ? this.st.inSpanList(clock, span ?? {}, deep, limit)
+      : this.st.inSubjectList(subject, clock, span ?? {}, deep, limit);
+    return ms.map((m) => ({
       ...m, tier: tierOf(m, clock), score: 0, byKeyword: false, byMeaning: false, sources: [], readings: [], replaced: [],
     }));
   }

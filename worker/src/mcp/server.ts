@@ -5,7 +5,7 @@
 import { type CallToolResult, McpServer } from "@modelcontextprotocol/server";
 import { type QueryEmbedding, queryMaxRunes } from "../embed";
 import { clip, queryParts, trimSpace } from "../memory/clean";
-import type { Memory } from "../memory-object";
+import type { AnswerNote, Memory } from "../memory-object";
 import { check, type Fault, faultOf, instructions, listed, tools } from "./tools";
 import { logLine } from "../log";
 
@@ -52,6 +52,18 @@ function recallShape(c: { query: string; since?: string; until?: string }): Reca
   };
 }
 
+// noteFields copies what an answer's note says, field by field, so that
+// nothing but its fixed words reaches the log.
+function noteFields(n: AnswerNote): Record<string, string> {
+  const out: Record<string, string> = {};
+  const words = new Set(["subject", "unsorted"]);
+  for (const k of ["recall_in", "reflect_asked", "reflect_on"] as const) {
+    const v = n[k];
+    if (v !== undefined && words.has(v)) out[k] = v;
+  }
+  return out;
+}
+
 function toolError(text: string): CallToolResult {
   return { content: [{ type: "text", text }], isError: true };
 }
@@ -76,6 +88,7 @@ export function buildServer(call: Call): McpServer {
         let fault: Fault | undefined;
         let embedded: QueryEmbedding["took"];
         let recalled: RecallShape | undefined;
+        let note: AnswerNote = {};
         try {
           const checked = check(def, raw, call.client);
           if ("invalid" in checked) {
@@ -103,6 +116,7 @@ export function buildServer(call: Call): McpServer {
             fault = faultOf(def, answer.invalid);
             return toolError(answer.invalid);
           }
+          if (answer.note !== undefined) note = answer.note;
           return { content: [{ type: "text", text: answer.text }] };
         } catch (err) {
           outcome = "error";
@@ -119,6 +133,8 @@ export function buildServer(call: Call): McpServer {
             ...(embedded === undefined ? {} : { embed_ms: embedded.ms, embed_second: embedded.second, embed_answer: embedded.answer }),
             // What kind of recall it was, in fixed words and a figure.
             ...(recalled === undefined ? {} : { recall_by: recalled.by, recall_parts: recalled.parts, recall_span: recalled.span }),
+            // Where a call met subjects, in fixed words: never a name or an id.
+            ...noteFields(note),
           });
         }
       },

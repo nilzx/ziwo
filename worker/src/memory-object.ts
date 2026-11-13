@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { clip, InvalidInput, parseSpan, parseWhen, queryParts, type RememberRequest, trimSpace } from "./memory/clean";
 import type { AmendRequest, EntryRequest, EraseRequest, ReflectView } from "./memory/amend";
-import { type ContextView, type MeaningHit, recallDepth, type Result, Service } from "./memory/service";
+import { type ContextView, type MeaningHit, recallDepth, type RecallView, type Result, Service } from "./memory/service";
 import { embedSettings, prepare, type QueryVector, queryMaxRunes, WorkersAI } from "./embed";
 import { type EmbedRun, Embedding } from "./memory/embedding";
 import { logLine } from "./log";
@@ -43,6 +43,7 @@ export interface RecallArgs {
   since?: string;
   until?: string;
   meaning?: QueryVector;
+  subject?: string; // only the memories of this subject, by name or id, or unsorted
 }
 
 // ToolCall is one tool call, its arguments already checked against the
@@ -74,8 +75,15 @@ export interface Gone {
 }
 
 // Answer is the text of a tool's answer, what was wrong with the call, or
-// that the memory is gone.
-export type Answer = { text: string } | Invalid | Gone;
+// that the memory is gone. note is what the access log may say of it, in
+// fixed words: never a name, a description or an id.
+export type Answer = { text: string; note?: AnswerNote } | Invalid | Gone;
+
+export interface AnswerNote {
+  recall_in?: "subject" | "unsorted"; // a recall kept to a subject, or to the unsorted
+  reflect_asked?: "subject" | "unsorted"; // the answer asked for a round of reflection
+  reflect_on?: "subject" | "unsorted"; // a first call of reflect handed out a batch
+}
 
 // Access is what a token presented for this memory comes to: the memory's
 // own, another, or a memory that was never created.
@@ -215,15 +223,18 @@ export class Memory extends DurableObject<Env> {
   // vector, or with one of another label, recall reads keywords alone; parts
   // whose vectors do not fit the parts of the query are read by keyword. The
   // object never calls the model for a query. among keeps the search to the
-  // memories of a span.
+  // memories of a span or of a subject. Subject items are left out of the
+  // search of memories; unless scoped, the subjects' heads are searched apart,
+  // in a second pass over the same vectors, with the whole query.
   private meaningFor(
-    query: string, v: QueryVector | undefined, limit: number, among?: ReadonlySet<number>,
-  ): { whole?: MeaningHit[]; parts?: (MeaningHit[] | undefined)[] } {
+    query: string, v: QueryVector | undefined, limit: number, among?: ReadonlySet<number>, scoped = false,
+  ): { whole?: MeaningHit[]; parts?: (MeaningHit[] | undefined)[]; subjects?: MeaningHit[] } {
     const emb = this.emb;
     if (emb === null || v === undefined || trimSpace(query) === "") return {};
     const s = emb.settings;
     if (v.model !== s.model || v.dims !== s.dims) return {};
-    const search = (values: Float32Array): MeaningHit[] | undefined => {
+    const { all, heads } = this.store.subjectNs();
+    const search = (values: Float32Array, only?: ReadonlySet<number>): MeaningHit[] | undefined => {
       if (values.length !== s.dims) return undefined;
       let q: Float32Array;
       try {
@@ -231,32 +242,45 @@ export class Memory extends DurableObject<Env> {
       } catch {
         return undefined;
       }
-      return this.store.searchVectors(emb.label, q, recallDepth(limit), s.minSimilarity, among);
+      return only === undefined
+        ? this.store.searchVectors(emb.label, q, recallDepth(limit), s.minSimilarity, among, all)
+        : this.store.searchVectors(emb.label, q, recallDepth(limit), s.minSimilarity, only);
     };
     const whole = search(v.values);
     if (whole === undefined) return {};
+    const subjects = scoped || heads.size === 0 ? undefined : search(v.values, heads);
+    const withSubjects = subjects === undefined ? {} : { subjects };
     // The Worker split the query as recall splits it, from the same text.
     const parts = queryParts(clip(trimSpace(query), queryMaxRunes));
-    if (parts.length < 2 || v.parts === undefined || v.parts.length !== parts.length) return { whole };
-    return { whole, parts: v.parts.map(search) };
+    if (parts.length < 2 || v.parts === undefined || v.parts.length !== parts.length) return { whole, ...withSubjects };
+    return { whole, parts: v.parts.map((p) => search(p)), ...withSubjects };
   }
 
-  private recallWith(args: RecallArgs): Result[] {
+  private recallWith(args: RecallArgs): RecallView {
     const query = args.query ?? "";
     const limit = args.limit ?? 0;
     const deep = args.deep ?? false;
     const span = parseSpan(args.since, args.until, this.zoneFor(args.sessionId));
-    const among = span !== undefined && trimSpace(query) !== "" && args.meaning !== undefined && this.emb !== null
-      ? this.store.inSpanNs(span) : undefined;
-    const meaning = this.meaningFor(query, args.meaning, limit, among);
-    const results = this.service.recall(query, limit, deep, args.sessionId ?? "", meaning.whole, {
+    const subject = trimSpace(args.subject ?? "") === "" ? undefined : this.service.recallSubject(args.subject ?? "");
+    let among: Set<number> | undefined;
+    if (trimSpace(query) !== "" && args.meaning !== undefined && this.emb !== null) {
+      if (span !== undefined) among = this.store.inSpanNs(span);
+      if (subject !== undefined) {
+        const mine = this.store.subjectMembersNs(subject);
+        among = among === undefined ? mine : new Set([...among].filter((n) => mine.has(n)));
+      }
+    }
+    const meaning = this.meaningFor(query, args.meaning, limit, among, subject !== undefined);
+    const view = this.service.recallView(query, limit, deep, args.sessionId ?? "", meaning.whole, {
       ...(span === undefined ? {} : { span }),
       ...(meaning.parts === undefined ? {} : { partsByMeaning: meaning.parts }),
+      ...(subject === undefined ? {} : { subject }),
+      ...(meaning.subjects === undefined ? {} : { subjectsByMeaning: meaning.subjects }),
     });
     // Listed by a search, an archived memory comes back, and needs its vector
     // again. A listing by time brings nothing back.
-    if (trimSpace(query) !== "" && results.some((r) => r.tier === "archived")) this.askFull();
-    return results;
+    if (trimSpace(query) !== "" && view.results.some((r) => r.tier === "archived")) this.askFull();
+    return view;
   }
 
   private expandWith(ids: string[], sessionId: string): Result[] {
@@ -417,7 +441,7 @@ export class Memory extends DurableObject<Env> {
   }
 
   recall(args: RecallArgs): Result[] | Invalid {
-    return outcome(() => this.recallWith(args));
+    return outcome(() => this.recallWith(args).results);
   }
 
   expand(args: { ids: string[]; sessionId?: string }): Result[] | Invalid {
@@ -465,7 +489,8 @@ export class Memory extends DurableObject<Env> {
       switch (call.tool) {
         case "get_context": {
           const { view, zone, unknownZone } = this.startContext(call);
-          return { text: formatContext(view, zone, unknownZone) };
+          const note: AnswerNote = view.prompt === undefined ? {} : { reflect_asked: view.prompt.subject === "" ? "unsorted" : "subject" };
+          return { text: formatContext(view, zone, unknownZone), note };
         }
         case "remember": {
           const r = this.remember(call.args);
@@ -473,10 +498,13 @@ export class Memory extends DurableObject<Env> {
           return { text: rememberedText(r) };
         }
         case "recall": {
-          const results = this.recallWith(call);
+          const view = this.recallWith(call);
           const listed = trimSpace(call.query ?? "") === "";
           const span = trimSpace(call.since ?? "") !== "" || trimSpace(call.until ?? "") !== "";
-          return { text: formatRecall(results, call.deep ?? false, this.zoneFor(call.sessionId), listed ? { span } : undefined) };
+          const note: AnswerNote = {};
+          if (view.scoped !== undefined) note.recall_in = view.scoped === "" ? "unsorted" : "subject";
+          if (view.prompt !== undefined) note.reflect_asked = "subject";
+          return { text: formatRecall(view, call.deep ?? false, this.zoneFor(call.sessionId), listed ? { span } : undefined), note };
         }
         case "expand": {
           const results = this.expandWith(call.ids, call.sessionId ?? "");
@@ -492,7 +520,8 @@ export class Memory extends DurableObject<Env> {
               );
             }
             const view = this.service.beginReflect(call.sessionId, call.limit ?? 0, call.subject);
-            return { text: formatBatch(view, this.zoneFor(call.sessionId)) };
+            const note: AnswerNote = view.batch === "" ? {} : { reflect_on: view.subject === undefined ? "unsorted" : "subject" };
+            return { text: formatBatch(view, this.zoneFor(call.sessionId)), note };
           }
           const started: string[] = [];
           const ids = this.finishReflectWith(call.sessionId, call.batch ?? "", entries, pass, started);

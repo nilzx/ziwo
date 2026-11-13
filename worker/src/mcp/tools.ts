@@ -197,6 +197,10 @@ export const tools: ToolDef[] = [
         name: "deep", type: "boolean",
         description: "also search the details of faded memories and memories that have left ordinary recall; use when an ordinary recall finds nothing and you believe you lived through it",
       },
+      {
+        name: "subject", type: "string",
+        description: "only the memories of this subject, by name or id, or unsorted for those of none; without a query, its newest are listed",
+      },
       sessionOptional,
     ],
   },
@@ -449,7 +453,7 @@ function callOf(tool: ToolName, a: Args, client: string): ToolCall {
     case "recall":
       return {
         tool, query: text(a, "query") ?? "", limit: num(a, "limit"), deep: flag(a, "deep"), sessionId: text(a, "session_id"),
-        since: text(a, "since"), until: text(a, "until"),
+        since: text(a, "since"), until: text(a, "until"), subject: text(a, "subject"),
       };
     case "expand":
       return { tool, ids: list(a, "ids") ?? [], sessionId: text(a, "session_id") };

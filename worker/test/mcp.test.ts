@@ -56,6 +56,10 @@ const recallChanges: [string, string][] = [
   ["A memory that is listed stays within reach.", "A memory that a search lists stays within reach."],
 ];
 const recallFields = {
+  subject: {
+    type: "string",
+    description: "only the memories of this subject, by name or id, or unsorted for those of none; without a query, its newest are listed",
+  },
   query: {
     type: "string",
     description: "what you are trying to remember, in the words it would have been written in: a name or a particular thing finds more than its general kind; several things separated by commas are each searched; leave out to look by time",

@@ -7,17 +7,13 @@
 import { goG } from "../memory/amend";
 import { goQuote, oneLine } from "../memory/clean";
 import type { ReflectView, SubjectLine } from "../memory/amend";
-import type { ContextView, Result } from "../memory/service";
+import { type ContextView, type Prompt, type RecallView, type Result, subjectsShown } from "../memory/service";
 import { KindFragment, KindImpression, KindReading, KindSelf, KindSubject, StateAbsorbed, StateErased, StateSuperseded } from "../store/content";
 import { type Tier, tierOf } from "../store/decay";
 import type { Memory } from "../store/types";
 import { formatDate, formatDateTime } from "../zone";
 
 const minute = 60 * 1000;
-
-// reflectHint is how many fragments must wait before get_context suggests a
-// round of reflection.
-export const reflectHint = 8;
 
 // serverSpeaks ends the memories in get_context and says how its lines are
 // told apart: one that starts with an id in brackets is the model's own from
@@ -81,12 +77,26 @@ export function formatContext(v: ContextView, zone: string, unknownZone?: string
     b += "recent:\n";
     for (const m of v.recent) b += writeGist(m, tierOf(m, v.clock), zone);
   }
+  if (v.subjects.length > 0) {
+    // Each line starts with the head's id: what follows it is the AI's.
+    b += v.subjectCount > subjectsShown
+      ? `subjects, the ${subjectsShown} most recently active of ${v.subjectCount}:\n`
+      : "subjects, most recently active first:\n";
+    for (const l of v.subjects) b += writeSubjectLine(l, zone, false);
+  }
   b += serverSpeaks;
   if (c.archived > 0) b += "Archived memories are reached with recall deep=true.\n";
-  if (v.pending >= reflectHint) {
-    b += `${v.pending} moments have not been reflected on. Call reflect when this conversation leaves room for it.\n`;
-  }
+  if (v.prompt !== undefined) b += promptLine(v.prompt);
   return b + writeUnasked;
+}
+
+// promptLine asks for a round of reflection before the answer. It is the
+// server's, so it names the subject by its id alone: a name is the AI's text.
+export function promptLine(p: Prompt): string {
+  if (p.subject === "") {
+    return `${p.ripe} moments you wrote belong to no subject and have not been reflected on. Before you answer, do one round on them: call reflect with your session id and subject unsorted, read what it hands you, give what you make of it a subject, and write it back. If reflect says another conversation is at it, go on without.\n`;
+  }
+  return `${p.ripe} moments under subject ${p.subject} have not been reflected on. Before you answer, do one round on them: call reflect with your session id and subject ${p.subject}, read what it hands you, and write back what you make of it. If reflect says another conversation is at it, go on without.\n`;
 }
 
 function labelled(label: string, value: string): string {
@@ -108,16 +118,32 @@ export const nothingInSpan = "no memories took place in that time";
 export const nothingListed = "no memories to list";
 const deepLists = "; recall with deep=true also lists those that have left ordinary recall";
 
+// The sentences of a recall kept to one subject that finds or lists nothing.
+const nothingOfSubject = "no memories of that subject to list";
+const nothingOfSubjectInSpan = "no memories of that subject took place in that time";
+const nothingMatchingOfSubject = "no matching memories of that subject";
+const deepSearches = "; recall with deep=true also searches what has faded";
+
 // formatRecall lays out what a recall found, or, given listed, what a recall
-// without a query listed; span says whether it was kept to a time.
-export function formatRecall(results: Result[], deep: boolean, zone: string, listed?: { span: boolean }): string {
-  if (results.length === 0) {
+// without a query listed; span says whether it was kept to a time. Subjects
+// come first, the memories after them, and a request for a round of
+// reflection, if any, last.
+export function formatRecall(found: Result[] | RecallView, deep: boolean, zone: string, listed?: { span: boolean }): string {
+  const v: RecallView = Array.isArray(found) ? { results: found, subjects: [] } : found;
+  if (v.results.length === 0 && v.scoped !== undefined) {
+    if (listed !== undefined) return (listed.span ? nothingOfSubjectInSpan : nothingOfSubject) + (deep ? "" : deepLists);
+    return nothingMatchingOfSubject + (deep ? "" : deepSearches);
+  }
+  if (v.results.length === 0 && v.subjects.length === 0) {
     if (listed !== undefined) return (listed.span ? nothingInSpan : nothingListed) + (deep ? "" : deepLists);
     return deep ? nothingFound : nothingFoundShallow;
   }
   let b = "";
-  for (const r of results) b += writeGist(r, r.tier, zone);
-  return b + zoneLine(zone);
+  for (const l of v.subjects) b += writeSubjectLine(l, zone, true);
+  for (const r of v.results) b += writeGist(r, r.tier, zone);
+  b += zoneLine(zone);
+  if (v.prompt !== undefined) b += promptLine(v.prompt);
+  return b;
 }
 
 // formatExpand lays out memories read in full.
