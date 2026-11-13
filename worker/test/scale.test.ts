@@ -192,8 +192,8 @@ describe("scale", () => {
         })).id);
       }
       let view: ReflectView | undefined;
-      // The round is held by another conversation, half an hour on: one never
-      // reflects on its own moments.
+      // The round is held by another conversation, half an hour on, once the
+      // writing conversation's burst is over.
       let other = "";
       const measure = (fn: () => unknown) => {
         obj.usage(true);

@@ -196,7 +196,7 @@ export function writeSubjectLine(l: SubjectLine, zone: string, word: boolean): s
 export function formatBatch(v: ReflectView, zone: string): string {
   if (v.batch === "") {
     if (v.waiting === 0) return "nothing waits to be reflected on";
-    return `${v.waiting} moments wait, but they were written in this conversation or in one that wrote in the last 30 minutes; reflect on them later`;
+    return `${v.waiting} moments wait, but each was written in a stretch of a conversation that is still going on; reflect on them later`;
   }
   let b = `batch: ${v.batch}\n`;
   if (v.subject !== undefined) {

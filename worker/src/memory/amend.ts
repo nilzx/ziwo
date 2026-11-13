@@ -259,8 +259,9 @@ export interface ReflectView {
 // batch of ripe fragments of one subject: the one asked for by name or id
 // ("unsorted" for those of none), else the one with the most ripe fragments
 // waiting, the unsorted counting as one. Only one round is open at a time.
-// A fragment is ripe once its session has written nothing for ripeAfter
-// milliseconds, and never for the session that asks.
+// A fragment is ripe once the burst it was written in is over: its session
+// has written nothing for ripeAfter milliseconds, or has started a new burst
+// since. The session that asks is no exception.
 export function beginReflect(
   st: Store, now: number, session: string, limit: number, subject: string | undefined, ripeAfter: number,
 ): ReflectView {
@@ -276,7 +277,7 @@ export function beginReflect(
     else if ("head" in r) scope = r.head;
     else throw invalid(`subject ${goQuote(asked)} names none of your subjects: recall with a query finds them by what they are about`);
   }
-  const hot = st.hotSessions(now - ripeAfter, session);
+  const hot = st.hotSessions(now - ripeAfter);
   // One read of what waits, for the choice and the figures of the batch.
   const counts: Map<string, Waiting> = scope === undefined ? st.ripeness(hot) : st.waitingBySubject([scope], hot);
   if (scope === undefined) scope = ripest(counts as ReturnType<Store["ripeness"]>)?.subject;

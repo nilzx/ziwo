@@ -11,6 +11,7 @@ import { retentionOf, type Tier, type TierCounts, tierOf } from "../store/decay"
 import { covered, searchTerms } from "../store/segment";
 import { NoSessionError, type Store } from "../store/store";
 import { SubjectError } from "../store/errors";
+import { ripeAfter } from "../store/subjects";
 import {
   type CarrierNote,
   isLive,
@@ -58,10 +59,9 @@ const restoreNotice = 7 * 24 * 60 * minute;
 // peopleShown is how many names expand shows for a subject.
 const peopleShown = 8;
 
-// ripeAfter is how long a session must have written no fragment before its
-// fragments are ripe: put together while the conversation is still going on,
-// they would be put together by halves.
-export const ripeAfter = 30 * minute;
+// ripeAfter is how long a session must have written no fragment before the
+// fragments of its last burst are ripe (see subjects.ts).
+export { ripeAfter };
 
 // When a subject comes to mind (its items are in get_context's recent list,
 // or listed by a recall) and this many of its fragments are ripe, the answer
@@ -202,7 +202,7 @@ export class Service {
     const counts = this.st.tierCounts(clock);
     const others = this.st.activeSessions(now - parallelWindow, session.id, 3);
     // What waits, by subject, and how much of it is ripe: one read.
-    const waiting = this.st.ripeness(this.st.hotSessions(now - ripeAfter, session.id));
+    const waiting = this.st.ripeness(this.st.hotSessions(now - ripeAfter));
     let pending = 0;
     for (const w of waiting.values()) pending += w.waiting;
     let prompt = this.promptFor(session.id, now, recent.map((m) => m.subject), waiting);
@@ -332,7 +332,7 @@ export class Service {
     const asking = this.knownSession(session);
     let waiting = new Map<string, { waiting: number; ripe: number }>();
     if (came.length > 0 || heads.length > 0) {
-      const hot = asking === "" ? [] : this.st.hotSessions(now - ripeAfter, asking);
+      const hot = this.st.hotSessions(now - ripeAfter);
       waiting = this.st.waitingBySubject([...new Set([...heads, ...came])], hot);
     }
     if (asking !== "" && came.length > 0) {

@@ -19,6 +19,13 @@ export function subjectKey(name: string): string {
   return name.normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{M}\p{N}]+/gu, "");
 }
 
+// ripeAfter is how long a session must have written no fragment before the
+// fragments of its last burst are ripe, and the gap between two fragments
+// of a session that starts a new burst. A fragment of an earlier burst is
+// ripe: that stretch of the conversation is over. Put together while it is
+// still going on, it would be put together by halves.
+export const ripeAfter = 30 * 60 * 1000;
+
 // unsortedKey is the key of the word that, given as a subject, means no
 // subject.
 export const unsortedKey = "unsorted";

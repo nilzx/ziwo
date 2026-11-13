@@ -52,7 +52,7 @@ const lesson = (gist: string, from: string[], subject?: string): EntryRequest =>
 const subjectEntry = (name: string, gist: string, more: Partial<EntryRequest> = {}): EntryRequest => ({ kind: "subject", subject: name, gist, ...more });
 
 describe("ripeness", () => {
-  it("hands out what another conversation wrote once it has written nothing for half an hour", () =>
+  it("hands out a moment once the stretch of conversation it was written in is over, to any conversation", () =>
     start((f) => {
       const a = under(f, "一", "garden");
       under(f, "二", "garden");
@@ -61,16 +61,54 @@ describe("ripeness", () => {
       // 29 minutes after the last write is too soon; 30 is not.
       f.clock = last + ripeAfter - minute;
       expect(text(f.obj.answer({ tool: "reflect", sessionId: other }))).toBe(
-        "2 moments wait, but they were written in this conversation or in one that wrote in the last 30 minutes; reflect on them later",
+        "2 moments wait, but each was written in a stretch of a conversation that is still going on; reflect on them later",
       );
       f.clock = last + ripeAfter;
-      const batch = /^batch: (b_[a-z2-9]{8})/.exec(text(f.obj.answer({ tool: "reflect", sessionId: other })))![1]!;
-      f.st.abandonReflect(other, batch);
-      expect(text(f.obj.answer({ tool: "reflect", sessionId: f.sess() }))).toMatch(/^2 moments wait, but/);
-      // A later fragment of that conversation unripens its earlier ones.
-      under(f, "三", "garden");
-      expect(text(f.obj.answer({ tool: "reflect", sessionId: other, subject: a.head }))).toMatch(/^3 moments wait, but/);
+      const batchOf = (t: string) => /^batch: (b_[a-z2-9]{8})/.exec(t)![1]!;
+      f.st.abandonReflect(other, batchOf(text(f.obj.answer({ tool: "reflect", sessionId: other }))));
+      // The conversation that wrote them is no exception.
+      const own = ok(f.obj.beginReflect({ sessionId: f.sess() }));
+      expect(own.fragments).toHaveLength(2);
+      f.st.abandonReflect(f.sess(), own.batch);
       expect(text(f.obj.answer({ tool: "reflect", sessionId: other, subject: "unsorted" }))).toBe("nothing waits to be reflected on");
+      expect(a.head).not.toBe("");
+    }));
+
+  it("splits a conversation into bursts: an earlier burst is ripe while the latest goes on", () =>
+    start((f) => {
+      const six = [1, 2, 3, 4, 5, 6].map((i) => under(f, `练${i}`, "guitar").id);
+      f.advance(40 * minute);
+      const seventh = under(f, "又练了", "guitar").id;
+      const other = f.begin("model-a", "other").session.id;
+      for (const asking of [f.sess(), other]) {
+        const v = ok(f.obj.beginReflect({ sessionId: asking, subject: "guitar", limit: 20 }));
+        expect(v.fragments.map((m) => m.id), asking).toEqual(six);
+        expect(v.subject?.figures.waiting).toBe(7);
+        f.st.abandonReflect(asking, v.batch);
+      }
+      // A moment within half an hour of the last keeps the burst going.
+      f.advance(20 * minute);
+      const eighth = under(f, "接着练", "guitar").id;
+      f.clock = f.get(eighth).writtenAt + ripeAfter - minute;
+      const soon = ok(f.obj.beginReflect({ sessionId: other, subject: "guitar", limit: 20 }));
+      expect(soon.fragments.map((m) => m.id)).toEqual(six);
+      f.st.abandonReflect(other, soon.batch);
+      // Half an hour after its last moment, the latest burst is ripe too.
+      f.clock = f.get(eighth).writtenAt + ripeAfter;
+      const all = ok(f.obj.beginReflect({ sessionId: other, subject: "guitar", limit: 20 }));
+      expect(all.fragments.map((m) => m.id)).toEqual([...six, seventh, eighth]);
+      // The first moment of a session starts a burst, and a replay gives the
+      // same bursts.
+      const bursts = () => f.storage.sql.exec<{ id: string; burst_n: number }>(`SELECT id, burst_n FROM sessions ORDER BY id`).toArray();
+      const b = bursts().find((r) => r.id === f.sess())!;
+      expect(b.burst_n).toBe(f.get(seventh).n);
+      expect(bursts().find((r) => r.id === other)!.burst_n).toBe(0);
+      const fresh = f.begin("model-a", "fresh").session.id;
+      const first = ok(f.obj.remember({ sessionId: fresh, gist: "第一件", body: "正文" })).id;
+      const before = bursts();
+      expect(before.find((r) => r.id === fresh)!.burst_n).toBe(f.get(first).n);
+      f.st.rebuild();
+      expect(bursts()).toEqual(before);
     }));
 });
 

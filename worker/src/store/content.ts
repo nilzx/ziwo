@@ -7,7 +7,7 @@ import { encodeRemember, kindRemember, type RememberEvent } from "./events";
 import { contentHash, sha256Hex } from "./ids";
 import { goJSON, parseObject, str, strs } from "./json";
 import { indexText } from "./segment";
-import { subjectKey } from "./subjects";
+import { ripeAfter, subjectKey } from "./subjects";
 
 // Kinds of memory.
 export const KindFragment = "fragment"; // a moment, written as it happened; waits to be reflected on
@@ -244,10 +244,14 @@ export function applyRemember(db: Db, p: Params, seq: number, at: number, e: Rem
   }
   if (kind === KindFragment && e.session !== "") {
     // Writing a moment is what keeps a conversation going on, as far as
-    // ripeness goes (see wrote_at).
+    // ripeness goes (see wrote_at). A moment written ripeAfter or more after
+    // the session's last one, or its first, starts a new burst. The times
+    // compared are the events', so a replay gives the same bursts.
     db.run(
-      `UPDATE sessions SET last_active_at = MAX(last_active_at, ?), wrote_at = MAX(wrote_at, ?) WHERE id = ?`,
-      at, at, e.session,
+      `UPDATE sessions SET last_active_at = MAX(last_active_at, ?),
+         burst_n = CASE WHEN wrote_at = 0 OR ? - wrote_at >= ? THEN ? ELSE burst_n END,
+         wrote_at = MAX(wrote_at, ?) WHERE id = ?`,
+      at, at, ripeAfter, seq, at, e.session,
     );
   } else {
     db.sessionActive(e.session, at);

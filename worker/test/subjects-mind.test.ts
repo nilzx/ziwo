@@ -141,14 +141,16 @@ describe("the prompt", () => {
       expect(promptOf(context(f).text)?.[1]).toBe("6");
     }));
 
-  it("never counts the asking conversation's own, and asks a recall that lists the subject's items", () =>
+  it("asks a recall that lists the subject's items, the conversation that wrote them included", () =>
     start((f) => {
       const b = f.begin("m", "b").session.id;
       for (let i = 0; i < 6; i++) write(f, b, `练${i} strings`, "guitar");
       // Started before they were ripe, so that its get_context asked nothing.
       const c = f.begin("m", "c").session.id;
-      f.advance(ripeAfter + 30 * minute);
-      expect(promptOf(recall(f, { query: "strings", session: b }))).toBeNull();
+      f.advance(ripeAfter);
+      // The conversation that wrote them, once it has gone quiet for half an
+      // hour, is asked by its own recall of the subject.
+      expect(promptOf(recall(f, { query: "", subject: "guitar", session: b }))?.[1]).toBe("6");
       const t = recall(f, { query: "strings", session: c });
       expect(promptOf(t)?.[1], t).toBe("6");
       expect(t.endsWith("time zone: UTC\n" + t.slice(t.indexOf("6 moments")))).toBe(true);

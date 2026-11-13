@@ -192,14 +192,30 @@ function spanCond(span: Span): { cond: string; args: number[] } {
   return { cond, args };
 }
 
-// notAmong is the condition that column holds none of values, with its
-// arguments. A short list is written as one comparison each: SQLite looks a
-// longer NOT IN up in a table of its own, a row read for every row it is
-// asked of.
-function notAmong(column: string, values: string[]): { cond: string; args: string[] } {
-  if (values.length === 0) return { cond: "1", args: [] };
-  if (values.length > 20) return { cond: `${column} NOT IN ${inList}`, args: [JSON.stringify(values)] };
-  return { cond: "(" + values.map(() => `${column} <> ?`).join(" AND ") + ")", args: values };
+// Hot is a session that wrote a fragment within ripeAfter, with the row
+// number of the first fragment of its current burst: its fragments from
+// there on are not ripe.
+export interface Hot {
+  id: string;
+  burst: number;
+}
+
+// ripeCond is the condition that a waiting fragment m is ripe, with its
+// arguments: of no hot session, or of an earlier burst of one. A short list
+// is written as one comparison each: SQLite looks a list up in a table of its
+// own, a row read for every row it is asked of.
+function ripeCond(hot: Hot[]): { cond: string; args: Binding[] } {
+  if (hot.length === 0) return { cond: "1", args: [] };
+  if (hot.length > 20) {
+    return {
+      cond: `NOT EXISTS (SELECT 1 FROM json_each(?) h WHERE json_extract(h.value, '$[0]') = m.session_id AND m.n >= json_extract(h.value, '$[1]'))`,
+      args: [JSON.stringify(hot.map((h) => [h.id, h.burst]))],
+    };
+  }
+  return {
+    cond: "(" + hot.map(() => `(m.session_id <> ? OR m.n < ?)`).join(" AND ") + ")",
+    args: hot.flatMap((h) => [h.id, h.burst]),
+  };
 }
 
 function paramsJSON(p: Params): string {
@@ -379,7 +395,7 @@ export class Store {
       case kindSession: {
         const e = decodeSession(payload);
         this.db.run(
-          `INSERT INTO sessions(id, started_at, last_active_at, model, client, tz, wrote_at) VALUES(?, ?, ?, ?, ?, ?, 0)`,
+          `INSERT INTO sessions(id, started_at, last_active_at, model, client, tz, wrote_at, burst_n) VALUES(?, ?, ?, ?, ?, ?, 0, 0)`,
           e.id, at, at, e.model, e.client, e.tz ?? "",
         );
         const carrier = carrierKey(e.model);
@@ -933,24 +949,23 @@ export class Store {
     return out;
   }
 
-  // hotSessions returns the sessions whose fragments are not ripe: those
-  // that wrote a fragment after since, and asking, the session that asks.
-  hotSessions(since: number, asking: string): string[] {
-    const hot = this.db
-      .all(`SELECT id FROM sessions INDEXED BY sessions_by_wrote WHERE wrote_at > ?`, since)
-      .map((r) => text(r.id));
-    if (asking !== "" && !hot.includes(asking)) hot.push(asking);
-    return hot;
+  // hotSessions returns the sessions that wrote a fragment after since, each
+  // with the first fragment of its current burst: the fragments of that
+  // burst are not ripe.
+  hotSessions(since: number): Hot[] {
+    return this.db
+      .all(`SELECT id, burst_n FROM sessions INDEXED BY sessions_by_wrote WHERE wrote_at > ?`, since)
+      .map((r) => ({ id: text(r.id), burst: num(r.burst_n) }));
   }
 
   // waitingBySubject counts, for each of the given subjects ("" for the
   // unsorted), the fragments that wait for reflect and how many of them are
-  // ripe: written in none of the hot sessions. One read of memories_pending.
-  // A subject with none waiting is left out.
-  waitingBySubject(subjects: string[], hot: string[]): Map<string, Waiting> {
+  // ripe: not of the current burst of a hot session. One read of
+  // memories_pending. A subject with none waiting is left out.
+  waitingBySubject(subjects: string[], hot: Hot[]): Map<string, Waiting> {
     const out = new Map<string, Waiting>();
     if (subjects.length === 0) return out;
-    const cold = notAmong("m.session_id", hot);
+    const cold = ripeCond(hot);
     for (const r of this.db.all(
       `SELECT m.subject, count(*) AS waiting, count(*) FILTER (WHERE ${cold.cond}) AS ripe
          FROM memories m INDEXED BY memories_pending WHERE ${isPending} AND m.subject IN ${inList} GROUP BY m.subject`,
@@ -965,8 +980,8 @@ export class Store {
   // fragments waiting for reflect, how many wait and how many of those are
   // ripe, and the row number of its oldest ripe one (0 when none is). One
   // read of memories_pending, whole.
-  ripeness(hot: string[]): Map<string, Waiting & { first: number }> {
-    const cold = notAmong("m.session_id", hot);
+  ripeness(hot: Hot[]): Map<string, Waiting & { first: number }> {
+    const cold = ripeCond(hot);
     const out = new Map<string, Waiting & { first: number }>();
     for (const r of this.db.all(
       `SELECT m.subject, count(*) AS waiting, count(*) FILTER (WHERE ${cold.cond}) AS ripe,
@@ -982,14 +997,14 @@ export class Store {
   // ripestSubject returns the subject ("" for the unsorted) with the most
   // ripe fragments waiting, and how many; ties go to the one whose oldest
   // ripe fragment was written first. Undefined when none is ripe.
-  ripestSubject(hot: string[]): { subject: string; ripe: number } | undefined {
+  ripestSubject(hot: Hot[]): { subject: string; ripe: number } | undefined {
     return ripest(this.ripeness(hot));
   }
 
   // pendingOf returns up to limit ripe fragments of the subject ("" for the
   // unsorted) that wait for reflect, those nearest to fading first.
-  pendingOf(subject: string, hot: string[], limit: number): Memory[] {
-    const cold = notAmong("m.session_id", hot);
+  pendingOf(subject: string, hot: Hot[], limit: number): Memory[] {
+    const cold = ripeCond(hot);
     return this.memoriesBy(
       "memories_pending",
       `WHERE ${isPending} AND m.subject = ? AND ${cold.cond} ORDER BY m.core, m.fade_at, m.n LIMIT ?`,

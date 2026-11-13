@@ -82,8 +82,8 @@ export class Fixture {
   }
 
   // ripen lets what was written so far ripen for reflection: half an hour
-  // passes, and another conversation is started, since a conversation never
-  // reflects on its own moments. It returns that conversation's session id.
+  // passes, so that every burst is over, and another conversation is
+  // started to hold the round. It returns that conversation's session id.
   ripen(): string {
     this.advance(ripeAfter);
     return this.begin("model-a", "reflect").session.id;
