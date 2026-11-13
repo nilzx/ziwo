@@ -7,7 +7,7 @@ import { expect } from "vitest";
 import { clip } from "../src/memory/clean";
 import type { QueryVector } from "../src/embed";
 import { Embedding } from "../src/memory/embedding";
-import type { ContextView, MeaningHit, Result } from "../src/memory/service";
+import { type ContextView, type MeaningHit, type Result, ripeAfter } from "../src/memory/service";
 import type { Invalid, Memory as MemoryObject, RememberArgs } from "../src/memory-object";
 import { type Tier, type TierCounts, tierOf } from "../src/store/decay";
 import type { Store } from "../src/store/store";
@@ -79,6 +79,14 @@ export class Fixture {
 
   advance(ms: number): void {
     this.clock += ms;
+  }
+
+  // ripen lets what was written so far ripen for reflection: half an hour
+  // passes, and another conversation is started, since a conversation never
+  // reflects on its own moments. It returns that conversation's session id.
+  ripen(): string {
+    this.advance(ripeAfter);
+    return this.begin("model-a", "reflect").session.id;
   }
 
   begin(model: string, client: string): ContextView {

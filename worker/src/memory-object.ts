@@ -57,6 +57,7 @@ export type ToolCall =
       sessionId: string;
       batch?: string;
       limit?: number;
+      subject?: string; // first call: the subject to reflect on
       // As the call wrote them: the confirmation repeats each kind untrimmed
       // and counts pass as given, as Go's does.
       entries?: EntryRequest[];
@@ -275,8 +276,8 @@ export class Memory extends DurableObject<Env> {
     return msg;
   }
 
-  private finishReflectWith(sessionId: string, batch: string, entries: EntryRequest[], pass: string[]): string[] {
-    const ids = this.service.finishReflect(sessionId, batch, entries, pass);
+  private finishReflectWith(sessionId: string, batch: string, entries: EntryRequest[], pass: string[], started: string[] = []): string[] {
+    const ids = this.service.finishReflect(sessionId, batch, entries, pass, started);
     this.askFull();
     return ids;
   }
@@ -436,8 +437,8 @@ export class Memory extends DurableObject<Env> {
 
   // beginReflect opens a round of reflection and hands it a batch of
   // fragments; the batch is empty when nothing waits.
-  beginReflect(args: { sessionId?: string; limit?: number }): ReflectView | Invalid {
-    return outcome(() => this.service.beginReflect(args.sessionId ?? "", args.limit ?? 0));
+  beginReflect(args: { sessionId?: string; limit?: number; subject?: string }): ReflectView | Invalid {
+    return outcome(() => this.service.beginReflect(args.sessionId ?? "", args.limit ?? 0, args.subject));
   }
 
   // finishReflect writes a round back and returns the ids of the memories it
@@ -490,11 +491,12 @@ export class Memory extends DurableObject<Env> {
                 "batch is required to write back: call reflect with your session id alone first, and pass the batch id it returns",
               );
             }
-            const view = this.service.beginReflect(call.sessionId, call.limit ?? 0);
+            const view = this.service.beginReflect(call.sessionId, call.limit ?? 0, call.subject);
             return { text: formatBatch(view, this.zoneFor(call.sessionId)) };
           }
-          const ids = this.finishReflectWith(call.sessionId, call.batch ?? "", entries, pass);
-          return { text: formatWritten(ids, entries.map((e) => e.kind ?? ""), pass.length) };
+          const started: string[] = [];
+          const ids = this.finishReflectWith(call.sessionId, call.batch ?? "", entries, pass, started);
+          return { text: formatWritten(ids, entries.map((e) => e.kind ?? ""), pass.length, started) };
         }
         case "amend":
           return { text: this.amendWith(call.args) };

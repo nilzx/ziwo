@@ -77,10 +77,13 @@ describe("time zones through the tools", () => {
     const full = await c.ok("expand", { ids: [late], session_id: s });
     expect(full.startsWith(`[${late}] 2026-11-12 04:00 +08:00 · other · lived`)).toBe(true);
     expect(full.endsWith("time zone: Asia/Shanghai\n")).toBe(true);
-    // A later reading is dated in the zone too.
-    const batch = idIn(await c.ok("reflect", { session_id: s }), "b_");
+    // A later reading is dated in the zone too. It is written by another
+    // conversation, once this one has gone quiet for half an hour.
+    await setClock(m.name, at("2026-11-11T20:30:00Z"));
+    const by = idIn(await c.ok("get_context", { timezone: "Asia/Shanghai" }), "s_");
+    const batch = idIn(await c.ok("reflect", { session_id: by }), "b_");
     const rd = idIn(await c.ok("reflect", {
-      session_id: s, batch, entries: [{ kind: "reading", ref: late, gist: "read again" }], pass: [id, late],
+      session_id: by, batch, entries: [{ kind: "reading", ref: late, gist: "read again" }], pass: [id, late],
     }));
     expect(await c.ok("expand", { ids: [late], session_id: s })).toContain(`\nlater reading [${rd}] 2026-11-12: read again\n`);
     // Without a session the memory's default, UTC, is used.
@@ -92,7 +95,8 @@ describe("time zones through the tools", () => {
 
     // The zone is in the session event and survives a replay.
     await runInDurableObject(env.MEMORY.getByName(m.name), (obj: MemoryObject, state) => {
-      const payload = state.storage.sql.exec<{ payload: string }>(`SELECT payload FROM events WHERE kind = 'session'`).one().payload;
+      const payload = state.storage.sql
+        .exec<{ payload: string }>(`SELECT payload FROM events WHERE kind = 'session' AND json_extract(payload, '$.id') = ?`, s).one().payload;
       expect(JSON.parse(payload)).toEqual({ id: s, client: "test-client", tz: "Asia/Shanghai" });
       obj.store.rebuild();
       expect(obj.store.session(s)?.tz).toBe("Asia/Shanghai");

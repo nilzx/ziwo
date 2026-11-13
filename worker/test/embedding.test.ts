@@ -198,8 +198,9 @@ describe("the alarm", () => {
       await sets("reweigh", true, () => ok(f.obj.amend({ sessionId: f.sess(), action: "reweigh", id: cat, importance: 0.6 })));
       await sets("remember", false, () => f.remember("第一次部署", "上线了。"));
       await sets("reflect", true, () => {
-        const view = ok(f.obj.beginReflect({ sessionId: f.sess() }));
-        ok(f.obj.finishReflect({ sessionId: f.sess(), batch: view.batch, pass: view.fragments.map((m) => m.id) }));
+        const r = f.ripen();
+        const view = ok(f.obj.beginReflect({ sessionId: r }));
+        ok(f.obj.finishReflect({ sessionId: r, batch: view.batch, pass: view.fragments.map((m) => m.id) }));
       });
       // A preference is not a memory: no full run, and no alarm.
       await fresh();
@@ -378,9 +379,10 @@ describe("leaving search by meaning", () => {
       const a = f.remember("用户给我看了他的猫", "一只橘猫。");
       const b = f.remember("The kitten knocked over my notes", "Nothing else happened.");
       await f.sync();
-      const view = ok(f.obj.beginReflect({ sessionId: f.sess() }));
+      const r = f.ripen();
+      const view = ok(f.obj.beginReflect({ sessionId: r }));
       const made = ok(f.obj.finishReflect({
-        sessionId: f.sess(), batch: view.batch,
+        sessionId: r, batch: view.batch,
         entries: [{ kind: KindEpisode, gist: "和猫的一个下午", body: "看了照片。", from: [a, b] }],
       }));
       expect(ids(f.recall("feline"))).toEqual([]);

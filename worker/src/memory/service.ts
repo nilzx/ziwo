@@ -56,6 +56,11 @@ const restoreNotice = 7 * 24 * 60 * minute;
 // peopleShown is how many names expand shows for a subject.
 const peopleShown = 8;
 
+// ripeAfter is how long a session must have written no fragment before its
+// fragments are ripe: put together while the conversation is still going on,
+// they would be put together by halves.
+export const ripeAfter = 30 * minute;
+
 // relevanceFloor drops results whose relevance is below this share of the
 // best result's. Being listed restarts a memory's decay, so a memory that
 // only brushes the query must not be listed.
@@ -399,15 +404,17 @@ export class Service {
   }
 
   // beginReflect opens a round of reflection for the session and hands it a
-  // batch of fragments.
-  beginReflect(session: string, limit: number): ReflectView {
-    return beginReflect(this.st, this.now(), session, limit);
+  // batch of ripe fragments of one subject: see beginReflect in amend.ts.
+  beginReflect(session: string, limit: number, subject?: string): ReflectView {
+    return beginReflect(this.st, this.now(), session, limit, subject, ripeAfter);
   }
 
   // finishReflect writes a round of reflection back and returns the ids of
-  // the memories it made, in the order of the entries.
-  finishReflect(session: string, batch: string, entries: EntryRequest[], pass: string[]): string[] {
-    return finishReflect(this.st, this.now(), session, batch, entries, pass);
+  // the memories it made, in the order of the entries. The subjects it
+  // started for names that episodes and lessons gave are pushed onto
+  // started.
+  finishReflect(session: string, batch: string, entries: EntryRequest[], pass: string[], started: string[] = []): string[] {
+    return finishReflect(this.st, this.now(), session, batch, entries, pass, started);
   }
 
   // knownSession returns id if it names a session and "" otherwise. A read

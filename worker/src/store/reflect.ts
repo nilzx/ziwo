@@ -11,6 +11,7 @@ import {
   KindLesson,
   KindReading,
   KindSelf,
+  KindSubject,
   SourceReconstructed,
   StateErased,
   StateSuperseded,
@@ -20,12 +21,14 @@ import { type Db, flag, inList, num, text } from "./db";
 import type { Params } from "./decay";
 import { EntryError, NoBatchError, ReflectBusyError } from "./errors";
 import { encodeReflect, kindReflect, type ReflectEvent } from "./events";
+import { newID } from "./ids";
 import { goJSON, int, parseObject, str } from "./json";
-import { metaReflect } from "./schema";
+import { metaPrompted, metaReflect } from "./schema";
+import { idForm, resolveSubject, subjectKey, writeSubjectItem } from "./subjects";
 
 // Entry is one memory that a round of reflection writes back.
 export interface Entry {
-  kind: string; // KindEpisode, KindLesson, KindImpression, KindSelf or KindReading
+  kind: string; // KindEpisode, KindLesson, KindImpression, KindSelf, KindReading or KindSubject
   gist: string;
   body: string;
   outcome: string;
@@ -40,9 +43,13 @@ export interface Entry {
   from: string[]; // ids of the memories it is built on
   ref: string; // self: the statement it revises; reading: the memory it reads
   milestone: boolean; // episode: a milestone, kept for good
-  // lesson, impression: ids of earlier ones of the same kind this takes the
-  // place of. Each is marked replaced by it, as a corrected memory is.
+  // lesson, impression, subject: ids of earlier ones of the same kind this
+  // takes the place of. Each is marked replaced by it, as a corrected memory
+  // is.
   replaces: string[];
+  // episode, lesson: its subject, by name or id, when not the round's;
+  // subject: its name, or the id of the subject it revises. Already cleaned.
+  subject?: string;
 }
 
 // maxFrom is how many ids an entry may rest on: the limit on from, which
@@ -56,72 +63,240 @@ export const selfMinNew = 2; // experiences a revision must add to those the rev
 
 // Lease is the open round of reflection. It is working state, not memory, so
 // it lives in meta and not in the log.
-interface Lease {
+export interface Lease {
   batch: string;
   session: string;
   until: number; // unix milliseconds
+  subject: string; // the head of the round's subject; "" for the unsorted
 }
 
-function readLease(db: Db): Lease | undefined {
+export function readLease(db: Db): Lease | undefined {
   const v = db.getMeta(metaReflect);
   if (v === undefined) return undefined;
   const o = parseObject(v, "reflect lease");
-  return { batch: str(o, "batch"), session: str(o, "session"), until: int(o, "until") };
+  return { batch: str(o, "batch"), session: str(o, "session"), until: int(o, "until"), subject: str(o, "subject") };
+}
+
+// promptedKept is how many sessions are remembered as asked to reflect.
+export const promptedKept = 64;
+
+// prompted reads the sessions already asked to reflect, oldest first.
+export function prompted(db: Db): string[] {
+  const v = db.getMeta(metaPrompted);
+  if (v === undefined) return [];
+  const o: unknown = JSON.parse(v);
+  return Array.isArray(o) ? o.filter((x): x is string => typeof x === "string") : [];
+}
+
+// notePrompted records that the session was asked to reflect, or opened a
+// round: it is not asked again. The newest promptedKept are kept.
+export function notePrompted(db: Db, session: string): void {
+  const was = prompted(db).filter((s) => s !== session);
+  was.push(session);
+  db.setMeta(metaPrompted, JSON.stringify(was.slice(-promptedKept)));
 }
 
 // beginReflect opens a round of reflection for the session under the given
-// batch id. Only one round is open at a time: while another session's round
-// has not run out, it throws ReflectBusyError, which says when that round ends.
-export function beginReflect(db: Db, at: number, session: string, hold: number, batch: string): void {
+// batch id, on the subject with the given head ("" for the unsorted). Only
+// one round is open at a time: while another session's round has not run
+// out, it throws ReflectBusyError, which says when that round ends. A
+// session that opened a round is not asked to reflect again.
+export function beginReflect(db: Db, at: number, session: string, hold: number, batch: string, subject = ""): void {
   needSession(db, session);
   const cur = readLease(db);
   if (cur !== undefined && cur.session !== session && cur.until > at) throw new ReflectBusyError(cur.until);
-  db.setMeta(metaReflect, goJSON({ batch, session, until: at + hold }));
+  db.setMeta(metaReflect, goJSON({ batch, session, until: at + hold, subject: subject === "" ? undefined : subject }));
+  notePrompted(db, session);
 }
 
 // finishReflect writes a round of reflection back: the entries become
 // memories with the given ids, the passed fragments are marked as looked at,
 // and the round is closed. It throws before writing anything if any of it
 // cannot be written; the caller's transaction makes that all or nothing.
+//
+// Subject items come first: one for each new name an episode or a lesson
+// gives (implicit, not among the entries), then the subject entries; then
+// the other entries, then the reflect event. The ids of the implicit subject
+// items are pushed onto started.
 export function finishReflect(
   db: Db, append: Append, at: number, session: string, batch: string, entries: Entry[], passed: string[], ids: string[],
+  started: string[] = [],
 ): void {
   needSession(db, session);
   const cur = readLease(db);
   if (cur === undefined || cur.batch !== batch || cur.session !== session) throw new NoBatchError();
   // Check everything against the memory as it stands before any of it is
   // written.
-  const named = new Set<string>();
-  const checked = entries.map((e, i) => {
+  const at1 = (i: number, fn: () => void): void => {
     try {
+      fn();
+    } catch (err) {
+      if (err instanceof EntryError && err.prefixed) throw new EntryError(err.msg, i);
+      throw err;
+    }
+  };
+  const named = new Set<string>();
+  entries.forEach((e, i) =>
+    at1(i, () => {
       // An item can take the place of another once: two entries of one
       // round may not both name it.
       for (const id of e.replaces) {
         if (named.has(id)) throw new EntryError(`${id} is named in replaces by an earlier entry of this round`);
         named.add(id);
       }
-      return checkEntry(db, e);
-    } catch (err) {
-      if (err instanceof EntryError) throw new EntryError(err.msg, i);
-      throw err;
-    }
+    }),
+  );
+  const plan = planSubjects(db, entries, ids, cur.subject, at1);
+  const checked = entries.map((e, i) => {
+    let c: Checked | undefined;
+    at1(i, () => {
+      c = e.kind === KindSubject ? checkSubjectEntry(db, e) : checkEntry(db, e);
+    });
+    return c!;
   });
-  entries.forEach((e, i) => {
+  // The implicit subject items, then the subject entries, then the rest.
+  for (const s of plan.implicit) {
+    writeSubjectItem(db, append, at, session, s.id, { name: s.name, description: "", replaces: [], from: [] });
+    started.push(s.id);
+  }
+  const order = [...entries.keys()].sort((a, b) => Number(entries[b]!.kind === KindSubject) - Number(entries[a]!.kind === KindSubject));
+  for (const i of order) {
+    const e = entries[i]!;
+    if (e.kind === KindSubject) {
+      const s = plan.subjects.get(i)!;
+      writeSubjectItem(db, append, at, session, ids[i]!, { name: s.name, description: e.gist, replaces: s.replaces, from: checked[i]!.from });
+      continue;
+    }
     writeMemory(
       db, append, at,
       {
         id: ids[i]!, session, kind: e.kind, moment: "", source: checked[i]!.source, importance: e.importance,
         intensity: e.intensity, hash: "", corrects: "", happened: 0, from: checked[i]!.from, ref: e.ref, milestone: e.milestone,
-        replaces: e.replaces,
+        replaces: e.replaces, subject: plan.filed.get(i) ?? "",
       },
       {
         gist: e.gist, body: e.body, outcome: e.outcome, feeling: e.feeling, lesson: e.lesson,
         people: e.people, pointer: e.pointer, about: e.about, context: e.context,
       },
     );
-  });
+  }
   append(at, kindReflect, encodeReflect({ session, batch, passed, wrote: ids.slice(0, entries.length) }));
   db.run(`DELETE FROM meta WHERE key = ?`, metaReflect);
+}
+
+// Plan is where a round's entries put things under subjects, worked out
+// before anything is written.
+interface Plan {
+  // Subject entries, by index: the name the item is written with, and the
+  // heads it takes the place of.
+  subjects: Map<number, { name: string; replaces: string[] }>;
+  // Episodes and lessons, by index: the subject item their event names.
+  filed: Map<number, string>;
+  // Subject items for new names that episodes and lessons give.
+  implicit: { id: string; name: string }[];
+}
+
+// planSubjects resolves the subjects a round's entries name, and refuses
+// what cannot be written. lease is the head of the round's subject, as it
+// was when the round opened.
+function planSubjects(
+  db: Db, entries: Entry[], ids: string[], lease: string, at1: (i: number, fn: () => void) => void,
+): Plan {
+  const plan: Plan = { subjects: new Map(), filed: new Map(), implicit: [] };
+  // What each subject entry is about: an existing head, or a new name's key.
+  const about = new Map<string, number>(); // head or "key:" + key -> the first entry about it
+  const fresh = new Map<string, number>(); // key of a new name -> the entry that introduces it
+  const after = new Map<string, string>(); // head -> the subject entry that takes its place
+  const same = (i: number, what: string): void => {
+    const j = about.get(what);
+    if (j !== undefined && j !== i) {
+      throw new EntryError(`entry ${i + 1} is about the same subject as entry ${j + 1}: say it in one entry`, i, false);
+    }
+    about.set(what, i);
+  };
+  entries.forEach((e, i) => {
+    if (e.kind !== KindSubject) return;
+    at1(i, () => {
+      const value = e.subject ?? "";
+      const r = resolveSubject(db, value);
+      if ("refused" in r) throw new EntryError(subjectWords(value, r.refused));
+      if ("none" in r) throw new EntryError("unsorted is not a name for a subject: it means the moments that belong to none");
+      const replaces: string[] = [];
+      let name = value;
+      if ("head" in r) {
+        same(i, r.head);
+        replaces.push(r.head);
+        // Given by name, the subject takes the spelling given; by id, it
+        // keeps its current name.
+        if (idForm.test(value)) name = text(db.first(`SELECT about FROM memories WHERE id = ?`, r.head)?.about);
+      } else {
+        same(i, "key:" + r.key);
+        fresh.set(r.key, i);
+      }
+      for (const id of e.replaces) {
+        same(i, id);
+        if (!replaces.includes(id)) replaces.push(id);
+      }
+      for (const h of replaces) after.set(h, ids[i]!);
+      plan.subjects.set(i, { name, replaces });
+    });
+  });
+  // Episodes and lessons: the subject given, else the round's.
+  const implicit = new Map<string, string>(); // key -> id
+  entries.forEach((e, i) => {
+    if (e.kind !== KindEpisode && e.kind !== KindLesson) return;
+    at1(i, () => {
+      const value = e.subject ?? "";
+      let head = "";
+      if (value === "") {
+        if (lease !== "") head = text(db.first(`SELECT subject FROM memories WHERE id = ? AND kind = ?`, lease, KindSubject)?.subject ?? "");
+      } else {
+        const key = subjectKey(value);
+        const j = fresh.get(key);
+        if (j !== undefined && !idForm.test(value)) {
+          plan.filed.set(i, ids[j]!);
+          return;
+        }
+        const r = resolveSubject(db, value);
+        if ("refused" in r) throw new EntryError(subjectWords(value, r.refused));
+        if ("head" in r) head = r.head;
+        if ("fresh" in r) {
+          let id = implicit.get(r.key);
+          if (id === undefined) {
+            id = newID("m_");
+            implicit.set(r.key, id);
+            plan.implicit.push({ id, name: value });
+          }
+          plan.filed.set(i, id);
+          return;
+        }
+      }
+      if (head !== "") plan.filed.set(i, after.get(head) ?? head);
+    });
+  });
+  return plan;
+}
+
+// subjectWords says why a subject given by name or id cannot be used, in
+// the words remember uses.
+export function subjectWords(value: string, why: "no-letter" | "no-subject"): string {
+  return why === "no-letter"
+    ? `subject ${JSON.stringify(value)} has no letter or digit: give the subject a name`
+    : `subject ${JSON.stringify(value)} names no subject: give a subject's name, or an id that get_context or recall shows for one`;
+}
+
+// checkSubjectEntry checks a subject entry's replaces and from against the
+// memory as it stands: the subjects it takes the place of stand, and what it
+// puts under itself are fragments, episodes and lessons that stand.
+function checkSubjectEntry(db: Db, e: Entry): Checked {
+  checkReplaces(db, e);
+  for (const id of new Set(e.from)) {
+    const b = loadBasis(db, id);
+    if (b.state !== "" || (b.kind !== KindFragment && b.kind !== KindEpisode && b.kind !== KindLesson)) {
+      throw new EntryError(`${id} cannot be put under a subject: only fragments, episodes and lessons that stand can`);
+    }
+  }
+  return { source: "lived", from: [...new Set(e.from)] };
 }
 
 // abandonReflect closes a round without writing anything back, if it is

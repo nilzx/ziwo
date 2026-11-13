@@ -79,8 +79,10 @@ export class EntryError extends Error {
   constructor(
     readonly msg: string,
     readonly index = 0,
+    // False when msg names its entries itself.
+    readonly prefixed = true,
   ) {
-    super(`entry ${index + 1}: ${msg}`);
+    super(prefixed ? `entry ${index + 1}: ${msg}` : msg);
   }
 }
 

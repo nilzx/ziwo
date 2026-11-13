@@ -11,7 +11,7 @@ import { AmendPin, AmendRetract } from "../src/store/amend";
 import { KindEpisode, KindImpression, KindLesson, KindSelf, StateSuperseded } from "../src/store/content";
 import { SupersededError } from "../src/store/errors";
 import { amend, ent, entry, reflectOn, refused, replays, thrown } from "./amend-helpers";
-import { dump, get, remember, search, session, t0, withStore } from "./helpers";
+import { dump, get, minute, remember, search, session, t0, withStore } from "./helpers";
 import { adminSecret, Client, createMemory, fetchWorker, freshName, idIn, setClock } from "./mcp-helpers";
 import { isInvalid, ok, start } from "./service-helpers";
 
@@ -106,9 +106,10 @@ describe("replaces", () => {
   it("refuses an id named twice, a statement about oneself, other kinds and too many ids, before the memory is read", () =>
     start((f) => {
       const x = f.remember("一件事", "正文");
-      const v = ok(f.obj.beginReflect({ sessionId: f.sess() }));
+      const by = f.ripen();
+      const v = ok(f.obj.beginReflect({ sessionId: by }));
       const finish = (e: EntryRequest) => {
-        const r = f.obj.finishReflect({ sessionId: f.sess(), batch: v.batch, entries: [e] });
+        const r = f.obj.finishReflect({ sessionId: by, batch: v.batch, entries: [e] });
         return isInvalid(r) ? r.invalid : "written";
       };
       expect(finish({ kind: KindLesson, gist: "g", body: "b", from: [x], replaces: ["m_a", " m_a "] })).toBe(
@@ -119,7 +120,7 @@ describe("replaces", () => {
       );
       for (const kind of [KindEpisode, "reading"]) {
         expect(finish({ kind, gist: "g", body: "b", from: [x], ref: x, replaces: ["m_a"] }), kind).toBe(
-          "replaces goes with a lesson or an impression only (entry 1)",
+          "replaces goes with a lesson, an impression or a subject only (entry 1)",
         );
       }
       const many = Array.from({ length: MaxReplaces + 1 }, (_, i) => `m_${i}`);
@@ -156,8 +157,9 @@ describe("replaces", () => {
     start((f) => {
       const x = f.remember("一件事", "正文");
       const write = (entries: EntryRequest[]): string[] => {
-        const v = ok(f.obj.beginReflect({ sessionId: f.sess() }));
-        return ok(f.obj.finishReflect({ sessionId: f.sess(), batch: v.batch, entries }));
+        const by = f.ripen();
+        const v = ok(f.obj.beginReflect({ sessionId: by }));
+        return ok(f.obj.finishReflect({ sessionId: by, batch: v.batch, entries }));
       };
       const [l1, l2] = write([
         { kind: KindLesson, gist: "经验一", body: "正文", from: [x] }, { kind: KindLesson, gist: "经验二", body: "正文", from: [x] },
@@ -200,14 +202,18 @@ describe("replaces", () => {
     const c = new Client("new", m);
     const s = idIn(await c.ok("get_context", {}), "s_");
     const x = idIn(await c.ok("remember", { session_id: s, gist: "一件事", body: "正文" }));
-    let batch = idIn(await c.ok("reflect", { session_id: s }), "b_");
+    // Another conversation reflects, once this one has gone quiet for half an hour.
+    await setClock(m.name, t0 + 30 * minute);
+    const by = idIn(await c.ok("get_context", {}), "s_");
+    let batch = idIn(await c.ok("reflect", { session_id: by }), "b_");
     const [old] = [...(await c.ok("reflect", {
-      session_id: s, batch, entries: [{ kind: "lesson", gist: "旧的经验", body: "正文", from: [x] }],
+      session_id: by, batch, entries: [{ kind: "lesson", gist: "旧的经验", body: "正文", from: [x] }],
     })).matchAll(/m_[a-z0-9]+/g)].map((r) => r[0]);
     await c.ok("remember", { session_id: s, gist: "又一件事", body: "正文" });
-    batch = idIn(await c.ok("reflect", { session_id: s }), "b_");
+    await setClock(m.name, t0 + 60 * minute);
+    batch = idIn(await c.ok("reflect", { session_id: by }), "b_");
     const [now] = [...(await c.ok("reflect", {
-      session_id: s, batch, entries: [{ kind: "lesson", gist: "新的经验", body: "正文", replaces: [old] }],
+      session_id: by, batch, entries: [{ kind: "lesson", gist: "新的经验", body: "正文", replaces: [old] }],
     })).matchAll(/m_[a-z0-9]+/g)].map((r) => r[0]);
     expect(await c.ok("expand", { ids: [now] })).toContain(`replaces: ${old}\n`);
 

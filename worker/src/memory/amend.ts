@@ -25,9 +25,10 @@ import {
   TooManyPreferencesError,
 } from "../store/errors";
 import { type Entry, maxFrom } from "../store/reflect";
-import type { Store } from "../store/store";
-import type { Memory } from "../store/types";
-import { clip, cleanText, goQuote, InvalidInput, oneLine, runeCount, trimSpace } from "./clean";
+import { ripest, type Store } from "../store/store";
+import { subjectKey, unsortedKey } from "../store/subjects";
+import type { Memory, Subject, SubjectFigures, Waiting } from "../store/types";
+import { clip, cleanSubject, cleanText, goQuote, InvalidInput, oneLine, runeCount, trimSpace } from "./clean";
 
 // Limits on amending and reflecting.
 export const MaxReasonRunes = 300;
@@ -41,6 +42,10 @@ export const MaxReplaces = 10;
 export const DefaultReflect = 12;
 export const MaxReflect = 20;
 
+// heldShown is how many standing episodes and lessons of its subject a batch
+// shows.
+export const heldShown = 8;
+
 // reflectHold is how long a round of reflection keeps other sessions from
 // starting one: Go's default of Config.ReflectHold. Not settable yet.
 export const reflectHold = 15 * 60 * 1000;
@@ -50,7 +55,7 @@ export const reflectHold = 15 * 60 * 1000;
 export const AmendActions = ["retract", "restore", "pin", "unpin", "reweigh", "correct", "prefer", "unprefer"];
 
 // EntryKinds are the kinds of memory a round of reflection can write back.
-export const EntryKinds = [KindEpisode, KindLesson, KindImpression, KindSelf, KindReading];
+export const EntryKinds = [KindEpisode, KindLesson, KindImpression, KindSelf, KindReading, KindSubject];
 
 function invalid(message: string): InvalidInput {
   return new InvalidInput(message);
@@ -220,29 +225,73 @@ function amendError(err: unknown, req: Asked): unknown {
   return err;
 }
 
+// SubjectLine is a subject as a line of an answer shows it: its head, and
+// its figures.
+export interface SubjectLine {
+  subject: Subject;
+  figures: SubjectFigures;
+}
+
+// subjectLines reads the lines of the subjects with the given heads, in that
+// order.
+export function subjectLines(st: Store, heads: string[]): SubjectLine[] {
+  const figures = st.subjectFigures(heads);
+  return st.subjects(heads).map((subject) => ({ subject, figures: figures.get(subject.id)! }));
+}
+
 // ReflectView is what a round of reflection is given to work on.
 export interface ReflectView {
   batch: string; // empty when there is nothing to reflect on
   fragments: Memory[]; // in full, those nearest to fading first
   selves: Memory[]; // the statements about oneself that stand
   impressions: Memory[]; // current impressions of the people in the fragments
-  remaining: number; // fragments still waiting beyond this batch
+  remaining: number; // ripe fragments of the batch's subject beyond this batch
+  // The batch's subject; absent for the unsorted, and when nothing is
+  // handed out.
+  subject?: SubjectLine;
+  held: Memory[]; // the subject's standing episodes and lessons, newest first
+  // When nothing is handed out: how many fragments wait in the scope asked
+  // about, none of them ripe.
+  waiting: number;
 }
 
 // beginReflect opens a round of reflection for the session and hands it a
-// batch of fragments. Only one round is open at a time.
-export function beginReflect(st: Store, now: number, session: string, limit: number): ReflectView {
+// batch of ripe fragments of one subject: the one asked for by name or id
+// ("unsorted" for those of none), else the one with the most ripe fragments
+// waiting, the unsorted counting as one. Only one round is open at a time.
+// A fragment is ripe once its session has written nothing for ripeAfter
+// milliseconds, and never for the session that asks.
+export function beginReflect(
+  st: Store, now: number, session: string, limit: number, subject: string | undefined, ripeAfter: number,
+): ReflectView {
   session = trimSpace(session);
   if (session === "") throw invalid("session_id is required: call get_context first and pass the session id it returns");
   if (limit <= 0) limit = DefaultReflect;
   else if (limit > MaxReflect) limit = MaxReflect;
-  const view: ReflectView = { batch: "", fragments: st.pending(limit), selves: [], impressions: [], remaining: 0 };
+  let scope: string | undefined; // the subject's head; "" for the unsorted
+  const asked = cleanSubject(subject);
+  if (asked !== "") {
+    const r = st.resolveSubject(asked);
+    if ("none" in r) scope = "";
+    else if ("head" in r) scope = r.head;
+    else throw invalid(`subject ${goQuote(asked)} names none of your subjects: recall with a query finds them by what they are about`);
+  }
+  const hot = st.hotSessions(now - ripeAfter, session);
+  // One read of what waits, for the choice and the figures of the batch.
+  const counts: Map<string, Waiting> = scope === undefined ? st.ripeness(hot) : st.waitingBySubject([scope], hot);
+  if (scope === undefined) scope = ripest(counts as ReturnType<Store["ripeness"]>)?.subject;
+  const view: ReflectView = {
+    batch: "", fragments: scope === undefined ? [] : st.pendingOf(scope, hot, limit), selves: [], impressions: [], remaining: 0,
+    held: [], waiting: 0,
+  };
   if (view.fragments.length === 0) {
     if (st.session(session) === undefined) throw amendError(new NoSessionError(session), { sessionId: session, id: "" });
+    for (const [s, w] of counts) if (scope === undefined || s === scope) view.waiting += w.waiting;
     return view;
   }
+  const on = scope!;
   try {
-    view.batch = st.beginReflect(now, session, reflectHold);
+    view.batch = st.beginReflect(now, session, reflectHold, on);
   } catch (err) {
     if (err instanceof ReflectBusyError) {
       throw invalid(
@@ -256,7 +305,10 @@ export function beginReflect(st: Store, now: number, session: string, limit: num
   const names: string[] = [];
   for (const f of view.fragments) for (const p of f.people) if (!names.includes(p)) names.push(p);
   view.impressions = st.impressions(names);
-  view.remaining = st.pendingCount() - view.fragments.length;
+  view.remaining = (counts.get(on)?.ripe ?? 0) - view.fragments.length;
+  if (on !== "") view.subject = subjectLines(st, [on])[0];
+  // Shown as gists, not listed: nothing is logged and nothing restarts.
+  view.held = st.heldOn(on, st.clock(), heldShown);
   return view;
 }
 
@@ -268,7 +320,7 @@ export type EntryRequest = Partial<Entry>;
 // memories it made, in the order of the entries. pass names fragments that
 // were looked at and left as they are.
 export function finishReflect(
-  st: Store, now: number, session: string, batch: string, entries: EntryRequest[], pass: string[],
+  st: Store, now: number, session: string, batch: string, entries: EntryRequest[], pass: string[], started: string[] = [],
 ): string[] {
   session = trimSpace(session);
   batch = trimSpace(batch);
@@ -286,7 +338,7 @@ export function finishReflect(
     }
   });
   try {
-    return st.finishReflect(now, session, batch, clean, tidyIDs(pass));
+    return st.finishReflect(now, session, batch, clean, tidyIDs(pass), started);
   } catch (err) {
     if (err instanceof EntryError) throw invalid(`${err.message}. Nothing was written`);
     if (err instanceof NoBatchError) {
@@ -317,6 +369,11 @@ export function cleanEntry(req: EntryRequest): Entry {
   let about = clip(oneLine(trimSpace(req.about ?? "")), 80);
   let context = oneLine(trimSpace(req.context ?? ""));
   if (!EntryKinds.includes(kind)) throw invalid(`kind must be one of ${EntryKinds.join(", ")}`);
+  const subject = cleanSubject(req.subject);
+  if (kind === KindSubject) return cleanSubjectEntry(req, subject);
+  if (subject !== "" && kind !== KindEpisode && kind !== KindLesson) {
+    throw invalid("subject goes with episode, lesson and subject entries only");
+  }
   const c = cleanText({
     gist: req.gist, body: req.body, outcome: req.outcome, feeling: req.feeling, lesson: req.lesson,
     people: req.people, pointer: req.pointer, importance: req.importance, intensity: req.intensity,
@@ -339,6 +396,26 @@ export function cleanEntry(req: EntryRequest): Entry {
     kind, gist: c.gist, body: c.body, outcome: c.outcome, feeling: c.feeling, intensity: c.intensity,
     lesson: c.lesson, people: c.people, pointer: c.pointer, importance: c.importance,
     about, context, from, ref, milestone: kind === KindEpisode && (req.milestone ?? false), replaces,
+    ...(subject === "" ? {} : { subject }),
+  };
+}
+
+// cleanSubjectEntry checks a subject entry: its name in subject, what it is
+// about in gist. What an entry says of an experience (body, outcome,
+// feeling, lesson, people, pointer, importance, milestone, about, context,
+// ref) is dropped.
+function cleanSubjectEntry(req: EntryRequest, subject: string): Entry {
+  if (subject === "") throw invalid("subject is required for a subject entry: its name");
+  if (subjectKey(subject) === unsortedKey) {
+    throw invalid("unsorted is not a name for a subject: it means the moments that belong to none");
+  }
+  const c = cleanText({ gist: req.gist });
+  const from = tidyIDs(req.from ?? []);
+  if (from.length > MaxFrom) throw invalid(`at most ${MaxFrom} ids in from`);
+  const replaces = cleanReplaces(KindSubject, req.replaces ?? []);
+  return {
+    kind: KindSubject, gist: c.gist, body: "", outcome: "", feeling: "", intensity: 0, lesson: "", people: [], pointer: "",
+    importance: 0.5, about: "", context: "", from, ref: "", milestone: false, replaces, subject,
   };
 }
 
@@ -357,7 +434,9 @@ function cleanReplaces(kind: string, ids: string[]): string[] {
   if (kind === KindSelf) {
     throw invalid("replaces is not for a statement about yourself: to revise one, name it in ref");
   }
-  if (kind !== KindLesson && kind !== KindImpression) throw invalid("replaces goes with a lesson or an impression only");
+  if (kind !== KindLesson && kind !== KindImpression && kind !== KindSubject) {
+    throw invalid("replaces goes with a lesson, an impression or a subject only");
+  }
   if (out.length > MaxReplaces) throw invalid(`at most ${MaxReplaces} ids in replaces`);
   return out;
 }

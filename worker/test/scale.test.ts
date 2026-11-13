@@ -166,6 +166,9 @@ describe("scale", () => {
         })).id);
       }
       let view: ReflectView | undefined;
+      // The round is held by another conversation, half an hour on: one never
+      // reflects on its own moments.
+      let other = "";
       const measure = (fn: () => unknown) => {
         obj.usage(true);
         fn();
@@ -173,7 +176,10 @@ describe("scale", () => {
       };
       return {
         remember: measure(() => ok(obj.remember({ sessionId: sess, gist: "w1x w2x one more", body: "padding" }))),
-        getContext: measure(() => ok(obj.getContext({ model: "model-a", client: "cli" }))),
+        getContext: measure(() => {
+          now += 30 * minute;
+          other = ok(obj.getContext({ model: "model-a", client: "cli" })).session.id;
+        }),
         recall: measure(() => expect(ok(obj.recall({ query: "w3x", sessionId: sess })).length).toBeGreaterThan(0)),
         recallDeep: measure(() => expect(ok(obj.recall({ query: "w3x", deep: true, sessionId: sess })).length).toBeGreaterThan(0)),
         expand: measure(() => expect(ok(obj.expand({ ids: [ids[1990]!], sessionId: sess }))).toHaveLength(1)),
@@ -181,11 +187,15 @@ describe("scale", () => {
         amendPin: measure(() => ok(obj.amend({ sessionId: sess, action: "pin", id: ids[1500]! }))),
         amendCorrect: measure(() => ok(obj.amend({ sessionId: sess, action: "correct", id: ids[1501]!, gist: "w5x corrected" }))),
         erase: measure(() => ok(obj.erase({ sessionId: sess, id: ids[1502]! }))),
-        beginReflect: measure(() => (view = ok(obj.beginReflect({ sessionId: sess })))),
+        // The correction above was a write: half an hour more.
+        beginReflect: measure(() => {
+          now += 30 * minute;
+          view = ok(obj.beginReflect({ sessionId: other }));
+        }),
         finishReflect: measure(() => {
           const f = view!.fragments.map((m) => m.id);
           expect(ok(obj.finishReflect({
-            sessionId: sess, batch: view!.batch, pass: f.slice(6),
+            sessionId: other, batch: view!.batch, pass: f.slice(6),
             entries: [
               { kind: "episode", gist: "w6x episode", body: "b", from: f.slice(0, 3) },
               { kind: "impression", gist: "w7x impression", about: "someone", from: [f[3]!] },

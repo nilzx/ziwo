@@ -78,7 +78,7 @@ import {
 import { NoSessionError, SubjectError } from "./errors";
 import type { ParsedExport } from "./export";
 import { contentHash, newID } from "./ids";
-import { abandonReflect, applyReflect, beginReflect, type Entry, finishReflect } from "./reflect";
+import { abandonReflect, applyReflect, beginReflect, type Entry, finishReflect, notePrompted, prompted, readLease } from "./reflect";
 import { matchQuery } from "./segment";
 import { resolveSubject, type Resolved, writeSubjectItem } from "./subjects";
 import {
@@ -190,6 +190,16 @@ function spanCond(span: Span): { cond: string; args: number[] } {
     args.push(span.until);
   }
   return { cond, args };
+}
+
+// notAmong is the condition that column holds none of values, with its
+// arguments. A short list is written as one comparison each: SQLite looks a
+// longer NOT IN up in a table of its own, a row read for every row it is
+// asked of.
+function notAmong(column: string, values: string[]): { cond: string; args: string[] } {
+  if (values.length === 0) return { cond: "1", args: [] };
+  if (values.length > 20) return { cond: `${column} NOT IN ${inList}`, args: [JSON.stringify(values)] };
+  return { cond: "(" + values.map(() => `${column} <> ?`).join(" AND ") + ")", args: values };
 }
 
 function paramsJSON(p: Params): string {
@@ -635,23 +645,44 @@ export class Store {
   }
 
   // beginReflect opens a round of reflection for the session, held for hold
-  // milliseconds, and returns its batch id. While another session's round has
-  // not run out it throws ReflectBusyError.
-  beginReflect(at: number, session: string, hold: number): string {
+  // milliseconds, on the subject with the given head ("" for the unsorted),
+  // and returns its batch id. While another session's round has not run out
+  // it throws ReflectBusyError. The session is not asked to reflect again.
+  beginReflect(at: number, session: string, hold: number, subject = ""): string {
     const batch = newID("b_");
-    this.tx(() => beginReflect(this.db, at, session, hold, batch));
+    this.tx(() => beginReflect(this.db, at, session, hold, batch, subject));
     return batch;
   }
 
   // finishReflect writes a round of reflection back and returns the ids of
   // the new memories, in the order of the entries. Nothing is written unless
-  // everything can be.
-  finishReflect(at: number, session: string, batch: string, entries: Entry[], passed: string[]): string[] {
+  // everything can be. The ids of the subjects it started for names that
+  // episodes and lessons gave are pushed onto started.
+  finishReflect(at: number, session: string, batch: string, entries: Entry[], passed: string[], started: string[] = []): string[] {
     return this.retry(() => {
       const ids = entries.map(() => newID("m_"));
-      finishReflect(this.db, this.append, at, session, batch, entries, passed, ids);
+      const made: string[] = [];
+      finishReflect(this.db, this.append, at, session, batch, entries, passed, ids, made);
+      started.push(...made);
       return ids;
     });
+  }
+
+  // held reports the round of reflection that is open, if any: until when,
+  // and in which session.
+  heldRound(): { session: string; until: number; subject: string } | undefined {
+    const l = readLease(this.db);
+    return l === undefined ? undefined : { session: l.session, until: l.until, subject: l.subject };
+  }
+
+  // prompted reads the sessions already asked to reflect.
+  prompted(): string[] {
+    return prompted(this.db);
+  }
+
+  // notePrompted records that the session was asked to reflect.
+  notePrompted(session: string): void {
+    this.tx(() => notePrompted(this.db, session));
   }
 
   // abandonReflect closes a round without writing anything back, if it is
@@ -913,12 +944,31 @@ export class Store {
   waitingBySubject(subjects: string[], hot: string[]): Map<string, Waiting> {
     const out = new Map<string, Waiting>();
     if (subjects.length === 0) return out;
+    const cold = notAmong("m.session_id", hot);
     for (const r of this.db.all(
-      `SELECT m.subject, count(*) AS waiting, count(*) FILTER (WHERE m.session_id NOT IN ${inList}) AS ripe
+      `SELECT m.subject, count(*) AS waiting, count(*) FILTER (WHERE ${cold.cond}) AS ripe
          FROM memories m INDEXED BY memories_pending WHERE ${isPending} AND m.subject IN ${inList} GROUP BY m.subject`,
-      JSON.stringify(hot), JSON.stringify(subjects),
+      ...cold.args, JSON.stringify(subjects),
     )) {
       out.set(text(r.subject), { waiting: num(r.waiting), ripe: num(r.ripe) });
+    }
+    return out;
+  }
+
+  // ripeness counts, for every subject ("" for the unsorted) that has
+  // fragments waiting for reflect, how many wait and how many of those are
+  // ripe, and the row number of its oldest ripe one (0 when none is). One
+  // read of memories_pending, whole.
+  ripeness(hot: string[]): Map<string, Waiting & { first: number }> {
+    const cold = notAmong("m.session_id", hot);
+    const out = new Map<string, Waiting & { first: number }>();
+    for (const r of this.db.all(
+      `SELECT m.subject, count(*) AS waiting, count(*) FILTER (WHERE ${cold.cond}) AS ripe,
+              COALESCE(MIN(m.n) FILTER (WHERE ${cold.cond}), 0) AS first
+         FROM memories m INDEXED BY memories_pending WHERE ${isPending} GROUP BY m.subject`,
+      ...cold.args, ...cold.args,
+    )) {
+      out.set(text(r.subject), { waiting: num(r.waiting), ripe: num(r.ripe), first: num(r.first) });
     }
     return out;
   }
@@ -927,25 +977,17 @@ export class Store {
   // ripe fragments waiting, and how many; ties go to the one whose oldest
   // ripe fragment was written first. Undefined when none is ripe.
   ripestSubject(hot: string[]): { subject: string; ripe: number } | undefined {
-    let best: { subject: string; ripe: number; first: number } | undefined;
-    for (const r of this.db.all(
-      `SELECT m.subject, count(*) AS ripe, MIN(m.n) AS first FROM memories m INDEXED BY memories_pending
-        WHERE ${isPending} AND m.session_id NOT IN ${inList} GROUP BY m.subject`,
-      JSON.stringify(hot),
-    )) {
-      const x = { subject: text(r.subject), ripe: num(r.ripe), first: num(r.first) };
-      if (best === undefined || x.ripe > best.ripe || (x.ripe === best.ripe && x.first < best.first)) best = x;
-    }
-    return best === undefined ? undefined : { subject: best.subject, ripe: best.ripe };
+    return ripest(this.ripeness(hot));
   }
 
   // pendingOf returns up to limit ripe fragments of the subject ("" for the
   // unsorted) that wait for reflect, those nearest to fading first.
   pendingOf(subject: string, hot: string[], limit: number): Memory[] {
+    const cold = notAmong("m.session_id", hot);
     return this.memoriesBy(
       "memories_pending",
-      `WHERE ${isPending} AND m.subject = ? AND m.session_id NOT IN ${inList} ORDER BY m.core, m.fade_at, m.n LIMIT ?`,
-      subject, JSON.stringify(hot), limit,
+      `WHERE ${isPending} AND m.subject = ? AND ${cold.cond} ORDER BY m.core, m.fade_at, m.n LIMIT ?`,
+      subject, ...cold.args, limit,
     );
   }
 
@@ -1411,6 +1453,18 @@ function toMemory(r: Row): Memory {
   };
   m.pending = flag(r.unreviewed) && m.kind === KindFragment && m.state === "" && !m.retracted;
   return m;
+}
+
+// ripest picks, from the figures ripeness reads, the subject with the most
+// ripe fragments; ties go to the one whose oldest ripe fragment was written
+// first.
+export function ripest(by: Map<string, Waiting & { first: number }>): { subject: string; ripe: number } | undefined {
+  let best: { subject: string; ripe: number; first: number } | undefined;
+  for (const [subject, x] of by) {
+    if (x.ripe === 0) continue;
+    if (best === undefined || x.ripe > best.ripe || (x.ripe === best.ripe && x.first < best.first)) best = { subject, ...x };
+  }
+  return best === undefined ? undefined : { subject: best.subject, ripe: best.ripe };
 }
 
 function toSubject(r: Row): Subject {

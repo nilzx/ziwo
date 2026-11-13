@@ -6,7 +6,7 @@
 
 import { goG } from "../memory/amend";
 import { goQuote, oneLine } from "../memory/clean";
-import type { ReflectView } from "../memory/amend";
+import type { ReflectView, SubjectLine } from "../memory/amend";
 import type { ContextView, Result } from "../memory/service";
 import { KindFragment, KindImpression, KindReading, KindSelf, KindSubject, StateAbsorbed, StateErased, StateSuperseded } from "../store/content";
 import { type Tier, tierOf } from "../store/decay";
@@ -151,13 +151,41 @@ export function writeSubject(r: Result, zone: string): string {
   return b;
 }
 
-// formatBatch lays out a batch of fragments to reflect on.
+// writeSubjectLine writes the one-line form of a subject: its head's id,
+// its name and description, and its figures. In a recall and a batch the
+// word subject follows the id, where an item's line has its date.
+export function writeSubjectLine(l: SubjectLine, zone: string, word: boolean): string {
+  const s = l.subject;
+  const f = l.figures;
+  let b = `[${s.id}] ${word ? "subject " : ""}${oneLine(s.name)}`;
+  if (s.description !== "") b += `: ${oneLine(s.description)}`;
+  const n = f.fragments + f.episodes + f.lessons;
+  b += ` (${n} ${n === 1 ? "memory" : "memories"}`;
+  if (f.waiting > 0) b += `, ${f.waiting} waiting`;
+  return b + `, last ${formatDate(s.activeAt, zone)})\n`;
+}
+
+// formatBatch lays out a batch of fragments to reflect on: those of one
+// subject, or of none.
 export function formatBatch(v: ReflectView, zone: string): string {
-  if (v.batch === "") return "nothing waits to be reflected on";
-  let b = `batch: ${v.batch}\n${v.fragments.length} fragments to reflect on`;
+  if (v.batch === "") {
+    if (v.waiting === 0) return "nothing waits to be reflected on";
+    return `${v.waiting} moments wait, but they were written in this conversation or in one that wrote in the last 30 minutes; reflect on them later`;
+  }
+  let b = `batch: ${v.batch}\n`;
+  if (v.subject !== undefined) {
+    b += "subject of this batch:\n" + writeSubjectLine(v.subject, zone, true);
+    b += `${v.fragments.length} fragments to reflect on`;
+  } else {
+    b += `${v.fragments.length} fragments to reflect on, none of them under a subject yet`;
+  }
   if (v.remaining > 0) b += ` (${v.remaining} more wait)`;
   b += ":\n\n";
   for (const f of v.fragments) b += writeFull(f, "active", [], [], zone) + "\n";
+  if (v.held.length > 0) {
+    b += `what you already hold ${v.subject !== undefined ? "on this subject" : "under no subject"} (expand reads them in full):\n`;
+    for (const m of v.held) b += writeGist(m, "active", zone);
+  }
   if (v.selves.length > 0) {
     b += "your statements about yourself:\n";
     for (const m of v.selves) b += writeSelf(m);
@@ -166,15 +194,20 @@ export function formatBatch(v: ReflectView, zone: string): string {
     b += "your impressions of those involved:\n";
     for (const m of v.impressions) b += writeGist(m, "active", zone);
   }
-  b += "Write back with reflect: session_id, this batch, entries, pass.\n";
+  b += "Write back with reflect: session_id, this batch, entries, pass. ";
+  b += v.subject !== undefined
+    ? "Episodes and lessons go under this subject unless you give another.\n"
+    : "Give each episode and lesson a subject, and put the fragments you pass under one with a subject entry.\n";
   return b + zoneLine(zone);
 }
 
 // formatWritten confirms a round of reflection written back. kinds are the
 // entries' kinds as the call gave them, and passed is how many ids the call
-// put in pass, both as Go counts them.
-export function formatWritten(ids: string[], kinds: string[], passed: number): string {
+// put in pass, both as Go counts them. started are the subjects the round
+// started for names that episodes and lessons gave.
+export function formatWritten(ids: string[], kinds: string[], passed: number, started: string[] = []): string {
   let b = ids.length === 0 ? "nothing new written" : "wrote " + ids.map((id, i) => `${id} (${kinds[i] ?? ""})`).join(", ");
+  if (started.length > 0) b += `; new subject${started.length > 1 ? "s" : ""} ${started.join(", ")}`;
   if (passed > 0) b += `; ${passed} left as they are`;
   return b;
 }

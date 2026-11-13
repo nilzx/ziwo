@@ -109,6 +109,10 @@ const entryFields: Field[] = [
   { name: "context", type: "string", description: "self: the situation it holds in, such as: in technical discussions" },
   { name: "ref", type: "string", description: "self: id of the statement this revises; reading: id of the memory it is about" },
   { name: "replaces", type: "strings", description: "lesson, impression: ids of earlier ones this takes the place of" },
+  {
+    name: "subject", type: "string",
+    description: "episode, lesson: its subject, by name or id, if not the batch's; subject: the name, at most 80 characters",
+  },
   { name: "milestone", type: "boolean", description: "episode: among the important things you have done; never fades" },
   { name: "outcome", type: "string", description: "episode: how it ended and how the other side reacted" },
   { name: "feeling", type: "string", description: "only what the fragments already hold" },
@@ -206,6 +210,10 @@ export const tools: ToolDef[] = [
       sessionRequired,
       { name: "batch", type: "string", description: "the batch id the first call returned; leave out to get a batch" },
       { name: "limit", type: "integer", description: "first call: how many fragments to take; default 12, at most 20" },
+      {
+        name: "subject", type: "string",
+        description: "first call: the subject to reflect on, by name or id, or unsorted for moments that belong to none; leave out for the one with the most moments waiting",
+      },
       { name: "entries", type: "entries", description: "second call: what you make of the batch" },
       { name: "pass", type: "strings", description: "second call: ids of fragments that need nothing done" },
     ],
@@ -417,7 +425,7 @@ function entryOf(e: Args): EntryRequest {
   return {
     kind: text(e, "kind"), gist: text(e, "gist"), body: text(e, "body"), from: list(e, "from"),
     about: text(e, "about"), context: text(e, "context"), ref: text(e, "ref"), milestone: flag(e, "milestone"),
-    replaces: list(e, "replaces"),
+    replaces: list(e, "replaces"), subject: text(e, "subject"),
     outcome: text(e, "outcome"), feeling: text(e, "feeling"), intensity: num(e, "feeling_intensity"),
     lesson: text(e, "lesson"), people: list(e, "people"), pointer: text(e, "pointer"), importance: num(e, "importance"),
   };
@@ -448,7 +456,7 @@ function callOf(tool: ToolName, a: Args, client: string): ToolCall {
     case "reflect":
       return {
         tool, sessionId: text(a, "session_id") ?? "", batch: text(a, "batch"), limit: num(a, "limit"),
-        entries: entries(a, "entries")?.map(entryOf), pass: list(a, "pass"),
+        subject: text(a, "subject"), entries: entries(a, "entries")?.map(entryOf), pass: list(a, "pass"),
       };
     case "amend":
       return {

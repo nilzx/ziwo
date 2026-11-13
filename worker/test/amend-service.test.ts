@@ -172,17 +172,19 @@ describe("amend through the service", () => {
       expect(amend(f, { action: "reweigh", id, importance: 0.125 })).toBe(`importance of ${id} is now 0.12`);
       expect(f.get(id).importance).toBe(0.125);
       // A statement about oneself is not corrected this way.
-      const v = ok(f.obj.beginReflect({ sessionId: f.sess() }));
+      const r = f.ripen();
+      const v = ok(f.obj.beginReflect({ sessionId: r }));
       const [imp] = ok(f.obj.finishReflect({
-        sessionId: f.sess(), batch: v.batch, entries: [{ kind: KindImpression, gist: "印象", about: "某人", from: [id] }],
+        sessionId: r, batch: v.batch, entries: [{ kind: KindImpression, gist: "印象", about: "某人", from: [id] }],
       }));
       expect(refusedAmend(f, { sessionId: f.sess(), action: "correct", id: imp!, gist: "x" })).toBe(
         `${imp} is a impression: only fragments, episodes and lessons are corrected this way`,
       );
       // A lesson is, and stays a lesson.
-      const v2 = ok(f.obj.beginReflect({ sessionId: f.sess() }));
+      const r2 = f.ripen();
+      const v2 = ok(f.obj.beginReflect({ sessionId: r2 }));
       const [lesson] = ok(f.obj.finishReflect({
-        sessionId: f.sess(), batch: v2.batch, entries: [{ kind: KindLesson, gist: "经验", body: "正文", from: [id] }],
+        sessionId: r2, batch: v2.batch, entries: [{ kind: KindLesson, gist: "经验", body: "正文", from: [id] }],
       }));
       // A field that is only blank keeps what the old memory said.
       const said = amend(f, { action: "correct", id: lesson!, gist: "  ", body: "新的正文" });
@@ -252,7 +254,10 @@ describe("reflect through the service", () => {
 
       const before = f.begin("model-a", "cli");
       expect([before.pending, before.selves.length]).toEqual([3, 0]);
-      const view = ok(f.obj.beginReflect({ sessionId: a, limit: 2 }));
+      // A conversation reflects on what others wrote, once they have gone
+      // quiet for half an hour.
+      const rr = f.ripen();
+      const view = ok(f.obj.beginReflect({ sessionId: rr, limit: 2 }));
       expect([view.batch !== "", view.fragments.length, view.remaining, view.fragments[0]!.body !== ""]).toEqual([true, 2, 1, true]);
       expect(view.fragments.map((m) => m.id)).toEqual([f1, f2]);
       // One round at a time, and the other conversation is told why and for how long.
@@ -268,7 +273,7 @@ describe("reflect through the service", () => {
         kind: KindEpisode, gist: "我和用户把记忆系统的方向定了下来", body: "先理解偏了，被纠正后改了设计。", from: [f1, f2], milestone: true,
       };
       const finish = (entries: EntryRequest[], pass: string[] = [], batch = view.batch) =>
-        f.obj.finishReflect({ sessionId: a, batch, entries, pass });
+        f.obj.finishReflect({ sessionId: rr, batch, entries, pass });
       const cases: [string, EntryRequest[], string][] = [
         ["an unknown kind", [{ kind: "dream", gist: "g" }], "kind must be one of"],
         ["an episode without a body", [{ kind: KindEpisode, gist: "g", from: [f1] }], "body is required"],
@@ -285,7 +290,7 @@ describe("reflect through the service", () => {
 
       // The texts as Go writes them.
       expect(invalidOf(finish([{ kind: "dream", gist: "g" }]))).toBe(
-        "kind must be one of episode, lesson, impression, self, reading (entry 1)",
+        "kind must be one of episode, lesson, impression, self, reading, subject (entry 1)",
       );
       expect(invalidOf(finish([episode, { kind: KindEpisode, gist: "g", from: [f1] }]))).toBe("body is required for episode (entry 2)");
       expect(invalidOf(finish([episode, { kind: KindLesson, gist: "g", body: "b", from: ["m_nothing"] }]))).toBe(
@@ -324,6 +329,7 @@ describe("reflect through the service", () => {
 
       // A later understanding is shown with the memory it reads.
       f.remember("又过了一阵", "正文");
+      f.advance(30 * minute);
       const v2 = ok(f.obj.beginReflect({ sessionId: b }));
       ok(f.obj.finishReflect({
         sessionId: b, batch: v2.batch, entries: [{ kind: KindReading, gist: "现在看，当时的误解来自我没有先问", ref: made[0] }],
@@ -337,9 +343,10 @@ describe("reflect through the service", () => {
     start((f) => {
       const x = f.remember("一件事", "正文");
       const extra = { about: " 某人 ", context: " 某种场合 ", ref: x, milestone: true };
-      const v = ok(f.obj.beginReflect({ sessionId: f.sess() }));
+      const r = f.ripen();
+      const v = ok(f.obj.beginReflect({ sessionId: r }));
       const [lesson, impression] = ok(f.obj.finishReflect({
-        sessionId: f.sess(), batch: v.batch, entries: [
+        sessionId: r, batch: v.batch, entries: [
           { kind: KindLesson, gist: "经验", body: "正文", from: [x], ...extra },
           { kind: KindImpression, gist: "印象", from: [x], ...extra },
         ],
@@ -355,13 +362,14 @@ describe("reflect through the service", () => {
   it("ABatchCarriesSelvesAndImpressions", () =>
     start((f) => {
       const x1 = f.rememberWith({ gist: "和阿明的第一次", body: "正文", people: ["阿明"] });
-      const v1 = ok(f.obj.beginReflect({ sessionId: f.sess() }));
+      const r1 = f.ripen();
+      const v1 = ok(f.obj.beginReflect({ sessionId: r1 }));
       const [imp] = ok(f.obj.finishReflect({
-        sessionId: f.sess(), batch: v1.batch, entries: [{ kind: KindImpression, gist: "阿明很细心", about: "阿明", from: [x1] }], pass: [x1],
+        sessionId: r1, batch: v1.batch, entries: [{ kind: KindImpression, gist: "阿明很细心", about: "阿明", from: [x1] }], pass: [x1],
       }));
       f.rememberWith({ gist: "和阿明的第二次", body: "正文", people: ["阿明", "小红"] });
       f.rememberWith({ gist: "和小红的一次", body: "正文", people: ["小红"] });
-      const v2 = ok(f.obj.beginReflect({ sessionId: f.sess(), limit: 50 }));
+      const v2 = ok(f.obj.beginReflect({ sessionId: f.ripen(), limit: 50 }));
       expect([v2.fragments.length, v2.remaining, v2.impressions.map((m) => m.id), v2.selves]).toEqual([2, 0, [imp], []]);
     }));
 
@@ -372,9 +380,10 @@ describe("reflect through the service", () => {
       const a = f.remember("用户给我看了他的猫", "一只橘猫。");
       const b = f.remember("The kitten knocked over my notes", "Nothing else happened.");
       await f.sync();
-      const view = ok(f.obj.beginReflect({ sessionId: f.sess() }));
+      const r = f.ripen();
+      const view = ok(f.obj.beginReflect({ sessionId: r }));
       const made = ok(f.obj.finishReflect({
-        sessionId: f.sess(), batch: view.batch,
+        sessionId: r, batch: view.batch,
         entries: [{ kind: KindEpisode, gist: "和用户的猫相处的一个下午", body: "先看了照片，后来它打翻了我的笔记。", from: [a, b] }],
       }));
       expect(f.indexed(), "the fragments' vectors are there until the sweep").toBe(2);

@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { goAnswers } from "./go-answers";
 import { goListing } from "./go-listing";
 import { serverSpeaks, writeUnasked } from "../src/mcp/format";
-import { t0 } from "./helpers";
+import { minute, t0 } from "./helpers";
 import { Client, createMemory, type Generation, idIn, legacy, modern, setClock, template } from "./mcp-helpers";
 
 const generations: Generation[] = ["old", "new"];
@@ -115,7 +115,16 @@ const enums: Record<string, Record<string, string[]>> = {
   },
   amend: { action: ["retract", "restore", "pin", "unpin", "reweigh", "correct", "prefer", "unprefer"] },
 };
-const entryKinds = ["episode", "lesson", "impression", "self", "reading"];
+const entryKinds = ["episode", "lesson", "impression", "self", "reading", "subject"];
+// The subject a round is about, and an entry's subject, new on reflect.
+const reflectSubject = {
+  type: "string",
+  description: "first call: the subject to reflect on, by name or id, or unsorted for moments that belong to none; leave out for the one with the most moments waiting",
+};
+const entrySubject = {
+  type: "string",
+  description: "episode, lesson: its subject, by name or id, if not the batch's; subject: the name, at most 80 characters",
+};
 
 // plainArrays turns Go's lists, which may be null, into plain arrays,
 // throughout a schema.
@@ -204,6 +213,9 @@ function expectedListing(): { instructions: string; tools: Map<string, Omit<Tool
       entry.lesson!.description = entryLesson[1];
       expect(entry.replaces).toBeUndefined();
       entry.replaces = entryReplaces;
+      expect([entry.subject, props.subject]).toEqual([undefined, undefined]);
+      entry.subject = entrySubject;
+      props.subject = reflectSubject;
       expect(entry.gist!.description).toBe("one sentence; for self, the statement itself");
       entry.gist!.description = "one sentence, at most 200 characters; for self, the statement itself";
     }
@@ -323,9 +335,13 @@ describe.each(generations)("%s protocol generation", (gen) => {
     await call("amend-restore", "amend", { session_id: s1, action: "restore", id: E });
     // Go erased through amend; here erase is a tool of its own.
     await call("erase-c", "erase", { session_id: s1, id: C, reason: "asked to delete it" });
-    const batch = idIn(await call("reflect-begin", "reflect", { session_id: s1 }), "b_");
+    // A conversation reflects on what others wrote, once they have gone quiet
+    // for half an hour: here a second conversation of the same client.
+    await setClock(m.name, t0 + 30 * minute);
+    const r1 = idIn(await c.ok("get_context", { model: "model-x" }), "s_");
+    const batch = idIn(await call("reflect-begin", "reflect", { session_id: r1 }), "b_");
     const wrote = await call("reflect-finish", "reflect", {
-      session_id: s1, batch,
+      session_id: r1, batch,
       entries: [
         { kind: "self", gist: "I tend to read too fast", context: "with a new brief", from: [A2, B, D] },
         { kind: "impression", about: "Ann", gist: "Ann is direct and kind", from: [A2, E] },
@@ -340,6 +356,8 @@ describe.each(generations)("%s protocol generation", (gen) => {
     });
     const W = [...wrote.matchAll(/m_[a-z0-9]+/g)].map((x) => x[0]);
     expect(W.length).toBe(5);
+    // A minute on, so that the two conversations are listed in a fixed order.
+    await setClock(m.name, t0 + 31 * minute);
     await call("expand-built", "expand", { ids: [W[3], B, W[0], W[1], C], session_id: s1 });
     await call("check", "check", {});
 
@@ -354,7 +372,7 @@ describe.each(generations)("%s protocol generation", (gen) => {
     const batch2 = idIn(got["reflect-nothing"], "b_");
     got["recall-all"] = await c2.ok("recall", { query: "Ann", session_id: s2, limit: 10, deep: true });
 
-    const ids: Record<string, string> = { s1, s2, A, A2, B, C, D, E, batch, batch2, P };
+    const ids: Record<string, string> = { s1, s2, r1, A, A2, B, C, D, E, batch, batch2, P };
     W.forEach((w, i) => (ids[`W${i}`] = w));
 
     // The only differences from Go: get_context shows the time now and ends
@@ -364,20 +382,37 @@ describe.each(generations)("%s protocol generation", (gen) => {
     const nowLine = "now: 2026-11-11 08:00Z (UTC)\n";
     const zoneLine = "time zone: UTC\n";
     const withNow = (s: string): string => s.replace(/^(session: [^\n]*\n)/, `$1${nowLine}`) + serverSpeaks + writeUnasked;
+    // A round hands out the fragments of no subject as such, shows what is
+    // already held under none, and asks for subjects; it was held half an
+    // hour later, in a conversation of its own.
+    const unsortedClose =
+      "Write back with reflect: session_id, this batch, entries, pass. Give each episode and lesson a subject, and put the fragments you pass under one with a subject entry.\n";
+    const unsorted = (s: string, held = ""): string =>
+      s.replace(/^(batch: [^\n]*\n\d+ fragments to reflect on)/, "$1, none of them under a subject yet")
+        .replace("your statements about yourself:\n", held + "your statements about yourself:\n")
+        .replace("Write back with reflect: session_id, this batch, entries, pass.\n", unsortedClose);
+    const heldNone = "what you already hold under no subject (expand reads them in full):\n" +
+      "[{W4}] 2026-11-11 lesson: Read a brief twice (reconstructed)\n[{W3}] 2026-11-11 episode: Learning to read Ann's briefs (milestone)\n";
+    const later = (s: string): string => s.replace(/\[\{W(\d)\}\] 2026-11-11 08:00Z/g, "[{W$1}] 2026-11-11 08:30Z");
     const changed: Record<string, (s: string) => string> = {
       "context-empty": withNow,
-      "context-second": withNow,
+      "context-second": (s) =>
+        withNow(s).replace(nowLine, "now: 2026-11-11 08:31Z (UTC)\n")
+          .replace(/(  \{s1\} via [^\n]*\n)/, "$1  {r1} via ref-client as model-x, last active 1 min ago\n"),
       "recall-brief": (s) => s + zoneLine,
       "expand-abc": (s) => s + zoneLine,
-      "reflect-begin": (s) => s + zoneLine,
-      "expand-built": (s) => s + zoneLine,
-      "reflect-nothing": (s) => s + zoneLine,
+      "reflect-begin": (s) => unsorted(s) + zoneLine,
+      "expand-built": (s) => later(s) + zoneLine,
+      "reflect-nothing": (s) => unsorted(s, heldNone) + zoneLine,
       "recall-all": (s) => s + zoneLine,
       "recall-none-deep": (s) => s + "; recall without a query lists your newest memories",
       "recall-none": (s) => s + ", and recall without a query lists your newest memories",
       // The check names how many subjects there are and how many memories
       // belong to none.
-      check: (s) => s.replace("\nproblems:", "\nsubjects: 0 (0 with moments waiting); 4 memories belong to no subject\nproblems:"),
+      // The round was held in a session of its own.
+      check: (s) =>
+        s.replace("22 events: 1 sessions", "23 events: 2 sessions")
+          .replace("\nproblems:", "\nsubjects: 0 (0 with moments waiting); 4 memories belong to no subject\nproblems:"),
     };
     expect(Object.keys(got).sort()).toEqual(Object.keys(goAnswers).sort());
     for (const [step, text] of Object.entries(got)) {
@@ -472,15 +507,19 @@ describe("arguments that do not fit a tool", () => {
 describe("the confirmations of reflect", () => {
   it("name each kind as the call wrote it and count pass as given, as Go does", async () => {
     const m = await createMemory();
+    await setClock(m.name, t0);
     const c = new Client("new", m);
     const s = idIn(await c.ok("get_context", {}), "s_");
     const f1 = idIn(await c.ok("remember", { session_id: s, gist: "one thing", body: "body one" }));
     const f2 = idIn(await c.ok("remember", { session_id: s, gist: "two things", body: "body two" }));
-    let batch = idIn(await c.ok("reflect", { session_id: s }), "b_");
-    expect(await c.ok("reflect", { session_id: s, batch, pass: [f1, f1, " "] })).toBe("nothing new written; 3 left as they are");
-    batch = idIn(await c.ok("reflect", { session_id: s }), "b_");
+    // Reflected on by another conversation, half an hour later.
+    await setClock(m.name, t0 + 30 * minute);
+    const by = idIn(await c.ok("get_context", {}), "s_");
+    let batch = idIn(await c.ok("reflect", { session_id: by }), "b_");
+    expect(await c.ok("reflect", { session_id: by, batch, pass: [f1, f1, " "] })).toBe("nothing new written; 3 left as they are");
+    batch = idIn(await c.ok("reflect", { session_id: by }), "b_");
     const text = await c.ok("reflect", {
-      session_id: s, batch, entries: [{ kind: " lesson ", gist: "a lesson", body: "learnt", from: [f2] }],
+      session_id: by, batch, entries: [{ kind: " lesson ", gist: "a lesson", body: "learnt", from: [f2] }],
     });
     expect(text).toMatch(/^wrote m_[a-z0-9]+ \( lesson \)$/);
   });
