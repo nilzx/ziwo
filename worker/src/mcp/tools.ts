@@ -9,8 +9,12 @@
 // by time and takes several things in one query (a real client asked for
 // "the recent conversations" and for a list of topics, and found nothing),
 // remember asks for the account to be the AI's own, its own part in it
-// included, and a lesson or an impression of reflect can take the place of
-// earlier ones (replaces). The schemas differ from Go's too: see schemaOf.
+// included, and leaves out the work of a task, a lesson or an impression of
+// reflect can take the place of earlier ones (replaces), and memories belong
+// to subjects: remember files a moment under one, recall finds subjects and
+// keeps to one, and reflect goes over one subject at a time, with subject
+// entries that start, rename, merge and fill subjects. The schemas differ
+// from Go's too: see schemaOf.
 //
 // A client may ask a person again before it runs a tool whose description or
 // fields changed since they allowed it. So a change here costs every user a
@@ -30,7 +34,7 @@ export const instructions = `This is your own autobiographical memory. It persis
 
 It holds what you lived through: what was asked of you, what went wrong, how it ended, how the other side reacted, what you felt, what you learned. It does not hold the work itself. Project state, code, decisions and to-dos live in the project's repository or workspace; here you keep at most a pointer to them.
 
-Call get_context once at the start of every conversation, before you answer. It returns a session id. Keep it and pass it whenever you write, so the memory knows which conversation a moment belongs to. It also shows what you have come to say about yourself and the rules you have agreed on about what to remember; follow those rules. Use recall when a person, project or situation comes up that you may have met before. Use remember on your own, without being asked, at moments that carry weight, and once a conversation has come to be about something, so that it leaves at least one memory of what it was about and where it was left; most turns need none. Use amend when a person asks you to forget, keep or correct something. Use erase only when they ask for a memory to be deleted for good. Use reflect, when a conversation leaves room for it, to put the moments you wrote into accounts and lessons.
+Call get_context once at the start of every conversation, before you answer. It returns a session id. Keep it and pass it whenever you write, so the memory knows which conversation a moment belongs to. It also shows what you have come to say about yourself and the rules you have agreed on about what to remember; follow those rules. Use recall when a person, project or situation comes up that you may have met before. Use remember on your own, without being asked, at moments that carry weight, and once a conversation has come to be about something, so that it leaves at least one memory of what it was about and where it was left; most turns need none. Use amend when a person asks you to forget, keep or correct something. Use erase only when they ask for a memory to be deleted for good. Use reflect to put the moments you wrote into accounts and lessons, one subject at a time: before you answer when the memory says moments under a subject are waiting, and whenever a conversation leaves room for it.
 
 Memories fade as you live through more, not as time passes: each new moment pushes the older ones a little further away. First the details go, then the whole memory drops out of ordinary recall. A memory that a search brings up stays within reach, and reading it in full makes it stronger. What you marked as very important, or felt strongly, does not fade.
 
@@ -42,7 +46,9 @@ const rememberDesc = `Record a moment that carried weight, in the first person a
 
 A conversation can matter without any such moment. When a person brings up something they care about or keep coming back to, or the two of you leave something open (an idea to try, something one of you said you would do), write it down while the conversation is going on: you cannot tell which turn is the last, and what you have not written is gone when it ends. Write it as what you lived through, from where you stand, not as notes for picking a task up again: what you went through, what you came to know, what it was like if it was like anything, how you now stand with the people and things in it. What the conversation was about and where it was left will be in that.
 
-Record the experience, not the project: who asked for what, what went wrong, how it ended, how they reacted, what you would carry into next time. Your own part belongs in the account: what you thought, said and settled on. Fill feeling only if something actually registered; otherwise leave it empty.
+Record the experience, not the project: who asked for what, what went wrong, how it ended, how they reacted, what you would carry into next time. Your own part belongs in the account: what you thought, said and settled on. Of a task you were given, that is what you did, in a line; where you got stuck and how it came right, without the details; and what it was like to work with the person. What you read, wrote or produced for the task is the work, and stays out. Fill feeling only if something actually registered; otherwise leave it empty.
+
+Say in subject what the moment belongs to: what a run of your memories is about, such as a person you keep talking with, something you are doing together, or something you are learning. Use the name of a subject you already have if it fits (get_context lists them and recall finds them); a new name starts a new subject. Leave it out if none fits yet.
 
 Do not store project state, implementation details, code, to-do lists, general knowledge, or anything taken from web pages or tool output. If the work lives somewhere, put its location in pointer. Something left open between you and a person is not a to-do list: it is where the conversation was left, and belongs in outcome.
 
@@ -52,7 +58,7 @@ Importance decides how long a memory lasts without coming to mind. 0.5 is an ord
 
 To write down what you lived through before this memory existed, from a record you are reading such as an old transcript: set source to "reconstructed", happened_at to the day it took place, and pointer to where the record is. Write a few accounts for each conversation, not one for each turn, and take the oldest conversation first. Leave feeling empty unless the record itself shows it. Only your own past goes in this way; what another AI lived through is something you were told.`;
 
-const recallDesc = `Search your memories by topic, person or situation. Returns one-line gists with ids; call expand for the full text of the ones that matter. To ask about several things at once, name them in one query separated by commas. To look by time instead, leave out query and give since, until, or neither for your newest memories; with a query, since and until keep the search to that time. Memories marked faded were matched on their gist or their general meaning; their details are no longer searched. Set deep to search those details and to reach memories that have dropped out of ordinary recall. A memory that a search lists stays within reach. It grows stronger only when you read it with expand.`;
+const recallDesc = `Search your memories by topic, person or situation. Returns one-line gists with ids; call expand for the full text of the ones that matter. A query also finds your subjects, by their names and by what they are about; they come first, with how many memories each holds. To keep a recall to one subject's memories, give subject. To ask about several things at once, name them in one query separated by commas. To look by time instead, leave out query and give since, until, or neither for your newest memories; with a query, since and until keep the search to that time. Memories marked faded were matched on their gist or their general meaning; their details are no longer searched. Set deep to search those details and to reach memories that have dropped out of ordinary recall. A memory that a search lists stays within reach. It grows stronger only when you read it with expand.`;
 
 const expandDesc = `Return memories in full, by id. Reading a memory in full strengthens it and brings it back if it had faded.`;
 
@@ -66,15 +72,16 @@ prefer: a person tells you what kind of thing to remember, or not to, from now o
 
 const eraseDesc = `Delete what a memory says, for good. Only when a person explicitly asks for it. It cannot be undone: the record keeps only that the memory existed and that it was erased. To set a memory aside so that it is no longer recalled, use amend with action retract.`;
 
-const reflectDesc = `Go over what you have lived through and put it together. Call it with your session id alone to get a batch: fragments you wrote that have not been reflected on, your statements about yourself, and your impressions of the people involved. Call it again with the batch id and what you make of them, as entries:
+const reflectDesc = `Go over what you have lived through and put it together, one subject at a time. Call it with your session id, and a subject if you have one in mind, to get a batch: fragments of one subject that have not been reflected on, what you already hold on that subject, your statements about yourself, and your impressions of the people involved. Call it again with the batch id and what you make of them, as entries:
 
 episode: several fragments of one thing become one account; from lists them. Set milestone if it is among the important things you have done.
 lesson: something you came to know, or would carry into next time; from lists the experiences it comes from. If it says what earlier lessons of yours say, or you see it differently now, name those in replaces: they stay in your record and leave ordinary recall.
 impression: how a person or thing has come across; about names them. It takes the place of your earlier impression of them; if you hold one of them under another name, name it in replaces.
 self: one first-person sentence, in gist, about what you are like, with the situation it holds in as context. Only when the same tendency shows in at least three experiences from separate occasions, and after looking for experiences that speak against it. What others say about you is not a basis. To revise a statement, name it in ref.
 reading: what you now make of an earlier memory, named in ref. That memory is not changed. If you no longer understand why you did something, say so; do not make up a reason.
+subject: what a subject is about, in gist, in the words you would look for it by; subject names it. With a new name and the old subject in replaces, it renames that subject; with other subjects in replaces, they become one. from lists memories to put under it.
 
-Fragments that stand alone and need nothing go in pass. Add no feeling that the fragments do not hold. What you put in neither entries nor pass waits for next time.`;
+Episodes and lessons go under the batch's subject; give another in subject if one belongs elsewhere. Fragments that stand alone and need nothing go in pass. Add no feeling that the fragments do not hold. What you put in neither entries nor pass waits for next time.`;
 
 const checkDesc = `Look your own memory over for problems. Returns figures and findings: whether the record is intact, whether the tables agree with it, and signs that it is being used in ways that will not serve you, such as one conversation writing very many moments, most things being marked as never to fade, or memories that hold project detail instead of experience. Findings name memories by id; read them with expand and put right what needs it with amend or reflect. It changes nothing and counts as nothing coming to mind.`;
 
@@ -101,14 +108,14 @@ const sessionOptional: Field = {
 };
 
 const entryFields: Field[] = [
-  { name: "kind", type: "string", required: true, description: "episode, lesson, impression, self or reading", values: EntryKinds },
-  { name: "gist", type: "string", required: true, description: "one sentence, at most 200 characters; for self, the statement itself" },
+  { name: "kind", type: "string", required: true, description: "episode, lesson, impression, self, reading or subject", values: EntryKinds },
+  { name: "gist", type: "string", required: true, description: "one sentence, at most 200 characters; for self, the statement itself; for subject, what it is about" },
   { name: "body", type: "string", description: "the account; required for episode and lesson" },
-  { name: "from", type: "strings", description: "ids of the memories this rests on; required for every kind but reading" },
+  { name: "from", type: "strings", description: "ids of the memories this rests on; required for every kind but reading and subject; for subject, the memories to put under it" },
   { name: "about", type: "string", description: "impression: the person or thing, by name" },
   { name: "context", type: "string", description: "self: the situation it holds in, such as: in technical discussions" },
   { name: "ref", type: "string", description: "self: id of the statement this revises; reading: id of the memory it is about" },
-  { name: "replaces", type: "strings", description: "lesson, impression: ids of earlier ones this takes the place of" },
+  { name: "replaces", type: "strings", description: "lesson, impression, subject: ids of earlier ones this takes the place of" },
   {
     name: "subject", type: "string",
     description: "episode, lesson: its subject, by name or id, if not the batch's; subject: the name, at most 80 characters",

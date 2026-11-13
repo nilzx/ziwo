@@ -39,6 +39,8 @@ describe("scale", () => {
       const written: string[] = [];
       const prefs: string[] = [];
       const people = ["年糕", "阿明", "小红"];
+      // A handful of subjects, each in two spellings.
+      const subjectNames = ["garden", "Garden!", "猫的事", "猫 的 事", "cooking", "COOKING", "吉他", "吉 他"];
       const phrase = () => `${pick(words)} ${pick(words)}`;
       let invalid = 0;
       const done: Record<string, number> = {};
@@ -48,7 +50,9 @@ describe("scale", () => {
         into[what] = (into[what] ?? 0) + 1;
         return x;
       };
-      for (let step = 0; obj.store.counts().events < 3000; step++) {
+      // Subject items are remember events too: the run is longer than it
+      // was before them, so that every other kind is as frequent.
+      for (let step = 0; obj.store.counts().events < 3400; step++) {
         now += Math.floor(r() * 20 * minute);
         const roll = r();
         if (sessions.length === 0 || roll < 0.04) {
@@ -67,6 +71,7 @@ describe("scale", () => {
             feeling: felt ? "某种感觉" : undefined,
             intensity: felt ? pick([0.3, 0.6, 0.95]) : undefined,
             people: r() < 0.3 ? [pick(people)] : undefined,
+            subject: r() < 0.6 ? pick([...subjectNames, "unsorted"]) : undefined,
           });
           if (isInvalid(res)) invalid++;
           else if (!res.dup) written.push(res.id);
@@ -92,14 +97,32 @@ describe("scale", () => {
           tally("erase", obj.erase({ sessionId: pick(sessions), id: pick(written), reason: r() < 0.5 ? "the user asked" : undefined }));
         } else {
           const sess = pick(sessions);
-          const view = tally("begin", obj.beginReflect({ sessionId: sess, limit: pick([0, 3, 8]) }));
+          const view = tally("begin", obj.beginReflect({
+            sessionId: sess, limit: pick([0, 3, 8]), subject: r() < 0.3 ? pick([...subjectNames, "unsorted"]) : undefined,
+          }));
           if (isInvalid(view) || view.batch === "") continue;
           const frags = view.fragments.map((m) => m.id).sort(() => r() - 0.5);
           const entries: EntryRequest[] = [];
           if (frags.length >= 2 && r() < 0.5) {
-            entries.push({ kind: "episode", gist: `${phrase()} 经历`, body: phrase(), from: frags.slice(0, 2 + Math.floor(r() * 2)), milestone: r() < 0.1 });
+            entries.push({
+              kind: "episode", gist: `${phrase()} 经历`, body: phrase(), from: frags.slice(0, 2 + Math.floor(r() * 2)), milestone: r() < 0.1,
+              subject: r() < 0.3 ? pick(subjectNames) : undefined,
+            });
           }
-          if (r() < 0.3) entries.push({ kind: "lesson", gist: `${phrase()} 经验`, body: phrase(), from: [pick(frags), pick(frags)] });
+          if (r() < 0.3) {
+            entries.push({
+              kind: "lesson", gist: `${phrase()} 经验`, body: phrase(), from: [pick(frags), pick(frags)],
+              subject: r() < 0.3 ? pick([...subjectNames, `${pick(words)} 新主题 ${step}`]) : undefined,
+            });
+          }
+          // Subjects renamed, merged and filled.
+          const heads = obj.store.subjectsRecent(50).map((x) => x.id);
+          if (r() < 0.3 && heads.length > 0) {
+            const op = r();
+            if (op < 0.35) entries.push({ kind: "subject", subject: `${pick(words)} 主题 ${step}`, gist: phrase(), replaces: [pick(heads)] });
+            else if (op < 0.7) entries.push({ kind: "subject", subject: pick(subjectNames), gist: phrase(), replaces: [pick(heads)] });
+            else entries.push({ kind: "subject", subject: pick([...subjectNames, pick(heads)]), gist: phrase(), from: [pick(frags), pick(written)] });
+          }
           if (r() < 0.4) entries.push({ kind: "impression", gist: `${phrase()} 印象`, about: pick(people), from: [pick(frags)] });
           if (r() < 0.15 && frags.length >= 3) {
             const ref = r() < 0.5 && view.selves.length > 0 ? pick(view.selves).id : undefined;
@@ -125,7 +148,9 @@ describe("scale", () => {
         state.storage.sql.exec<{ k: string; c: number }>(`SELECT kind || ' ' || state AS k, count(*) AS c FROM memories GROUP BY 1`).toArray().map((x) => [x.k, x.c]),
       );
       const replacing = state.storage.sql.exec<{ c: number }>(`SELECT count(*) AS c FROM events WHERE payload LIKE '%"replaces":%'`).one().c;
-      return { same: before === after, kinds, tiers, invalid, done, refused, written: written2, replacing, check: obj.check() };
+      const filed = state.storage.sql.exec<{ c: number }>(`SELECT count(*) AS c FROM events WHERE kind = 'remember' AND json_extract(payload, '$.subject') IS NOT NULL`).one().c;
+      const under = state.storage.sql.exec<{ c: number }>(`SELECT count(*) AS c FROM memories WHERE subject <> '' AND kind <> 'subject'`).one().c;
+      return { same: before === after, kinds, tiers, invalid, done, refused, written: written2, replacing, filed, under, check: obj.check() };
     });
     ctx.annotate(`events by kind ${JSON.stringify(result.kinds)}; done ${JSON.stringify(result.done)}; refused ${JSON.stringify(result.refused)}; tiers ${JSON.stringify(result.tiers)}`);
     expect(result.same).toBe(true);
@@ -135,10 +160,11 @@ describe("scale", () => {
     expect(result.kinds.erase).toBeGreaterThan(30);
     // Every kind of memory was written back, and was replaced or erased.
     for (const k of ["episode ", "lesson ", "impression ", "impression superseded", "self ", "reading ", "fragment absorbed",
-      "fragment superseded", "fragment erased", "episode erased", "impression erased"]) {
+      "fragment superseded", "fragment erased", "episode erased", "impression erased", "subject ", "subject superseded", "subject erased"]) {
       expect(result.written[k], `memories ${k}: ${JSON.stringify(result.written)}`).toBeGreaterThan(0);
     }
     expect(result.replacing).toBeGreaterThan(0);
+    expect([result.filed, result.under].every((x) => x > 100)).toBe(true);
     for (const what of ["retract", "restore", "pin", "unpin", "reweigh", "correct", "prefer", "unprefer", "erase", "finish"]) {
       expect(result.done[what], `${what} done: ${JSON.stringify(result)}`).toBeGreaterThan(5);
     }
@@ -228,6 +254,74 @@ describe("scale", () => {
     // new session does.
     expect(figures.beginReflect.rowsRead).toBeLessThan(2001 + 200);
     expect(figures.finishReflect.rowsRead).toBeLessThan(200);
+  }, 120_000);
+
+  // At 2,000 memories in 50 subjects, written by five conversations: what
+  // the calls that meet subjects cost. Bounds from section 4 of the design,
+  // brought down to the measured figures with a margin.
+  it("one call at 2,000 memories in 50 subjects reads and writes few rows", async (ctx) => {
+    const stub = freshObject();
+    const figures = await runInDurableObject(stub, (obj: MemoryObject) => {
+      const r = rng(50);
+      const pick = <T>(xs: T[]): T => xs[Math.floor(r() * xs.length)]!;
+      let now = t0;
+      obj.now = () => now;
+      const sessions = Array.from({ length: 5 }, () => ok(obj.getContext({ model: "model-a", client: "cli" })).session.id);
+      const vocab = Array.from({ length: 40 }, (_, i) => `w${i}x`);
+      for (let i = 0; i < 2000; i++) {
+        now += minute;
+        ok(obj.remember({
+          sessionId: sessions[i % 5]!, gist: `${pick(vocab)} ${pick(vocab)} ${i}`, body: `${pick(vocab)} padding`,
+          subject: `subject ${i % 50}`, importance: pick([0.3, 0.5, 0.5, 0.7, 0.95]),
+        }));
+      }
+      now += 31 * minute;
+      const sess = ok(obj.getContext({ model: "model-a", client: "cli" })).session.id;
+      const measure = (fn: () => unknown) => {
+        obj.usage(true);
+        fn();
+        return obj.usage(true);
+      };
+      let view: ReflectView | undefined;
+      const heads = (name: string) => (obj.store.resolveSubject(name) as { head: string }).head;
+      return {
+        rememberExisting: measure(() => expect(ok(obj.remember({ sessionId: sess, gist: "w1x one more", body: "padding", subject: "subject 7" })).subject?.started).toBe(false)),
+        rememberNew: measure(() => expect(ok(obj.remember({ sessionId: sess, gist: "w2x one more", body: "padding", subject: "a new one" })).subject?.started).toBe(true)),
+        getContext: measure(() => ok(obj.getContext({ model: "model-a", client: "cli" }))),
+        recall: measure(() => expect(ok(obj.recall({ query: "w3x", sessionId: sess })).length).toBeGreaterThan(0)),
+        recallSubject: measure(() => expect(ok(obj.recall({ query: "", subject: "subject 9", sessionId: sess })).length).toBe(5)),
+        beginReflect: measure(() => (view = ok(obj.beginReflect({ sessionId: sess })))),
+        finishReflect: measure(() => {
+          const f = view!.fragments.map((m) => m.id);
+          expect(ok(obj.finishReflect({
+            sessionId: sess, batch: view!.batch, pass: f.slice(2),
+            entries: [
+              { kind: "subject", subject: "subject 1", gist: "w9x merged", replaces: [heads("subject 2")] },
+              { kind: "episode", gist: "w6x episode", body: "b", from: f.slice(0, 2) },
+            ],
+          }))).toHaveLength(2);
+        }),
+        subjects: obj.store.subjectCount(),
+      };
+    });
+    ctx.annotate(`rows at 2,000 memories in 50 subjects: ${JSON.stringify(figures)}`);
+    expect(figures.subjects).toBe(50);
+    // Measured 2026-11-13: remember 15 and 18 read, 19 and 36 written;
+    // get_context 5,139; recall 790, by subject 167; a round 2,127 to open
+    // and 361 read, 330 written to write back with a merge of two subjects
+    // of 40 memories each.
+    expect(figures.rememberExisting.rowsRead).toBeLessThan(25);
+    expect(figures.rememberExisting.rowsWritten).toBeLessThan(25);
+    expect(figures.rememberNew.rowsRead).toBeLessThan(30);
+    expect(figures.rememberNew.rowsWritten).toBeLessThan(45);
+    // The tiers and what waits, one index entry per memory each, and the
+    // figures of the twenty subjects shown, from their own index.
+    expect(figures.getContext.rowsRead).toBeLessThan(5600);
+    expect(figures.recall.rowsRead).toBeLessThan(1000);
+    expect(figures.recallSubject.rowsRead).toBeLessThan(250);
+    expect(figures.beginReflect.rowsRead).toBeLessThan(2001 + 300);
+    expect(figures.finishReflect.rowsRead).toBeLessThan(400);
+    expect(figures.finishReflect.rowsWritten).toBeLessThan(400);
   }, 120_000);
 
   // At 2,000 memories with vectors of 512 dimensions: what a write, the

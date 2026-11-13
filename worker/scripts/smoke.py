@@ -30,7 +30,9 @@ one conversation continued by a second client with the same session id, under
 both protocol generations; time zones; token replacement; restart on the same
 persist directory (twice); writing and its validation messages; recall and
 expand; amending (each action); erasing (a tool of its own here); reflecting
-(both steps, and a lesson that takes the place of an earlier one);
+(both steps, and a lesson that takes the place of an earlier one); subjects
+(a remember under one, the get_context line, a recall kept to one, a round on
+one that renames it);
 reconstructed memories; the check tool.
 
 New here: the admin secret set on the admin page. A second Worker, on a
@@ -55,6 +57,7 @@ Left out:
 import argparse
 import atexit
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -321,6 +324,38 @@ def admin(base, path, secret, method="POST"):
 
 TOKEN_RE = r"^ziwo_[\w-]{43}$"
 
+EVENT_LINE = re.compile(
+    r'^\{"seq":(\d+),"at":(\d+),"kind":("(?:[^"\\]|\\.)*"),"payload":(.*?)(?:,"content":("(?:[^"\\]|\\.)*"))?,"chain":"[0-9a-f]+"\}$')
+
+
+def relive(base, secret, name, ms):
+    """Moves a memory's whole log ms into the past, so that the smoke, which
+    runs in real time, can reflect: a round takes only moments whose
+    conversation has written nothing for half an hour. The memory is exported,
+    every event's time moved back and the chain made again, then deleted and
+    imported under the same name, with its token. It leaves one restore."""
+    auth = {"Authorization": f"Bearer {secret}"}
+    st, _, raw = http("GET", f"{base}/admin/memories/{name}/export", auth)
+    check(f"{name} is exported to be moved back in time", st == 200, st)
+    lines, prev = [], ""
+    for line in raw.split("\n"):
+        m = EVENT_LINE.match(line)
+        if m is None:
+            lines.append(line)
+            continue
+        seq, at, kind, payload, content = m.group(1), int(m.group(2)) - ms, m.group(3), m.group(4), m.group(5)
+        h = hashlib.sha256(f"{prev}\n{seq}\n{at}\n{json.loads(kind)}\n".encode() + payload.encode())
+        if content is not None:
+            h.update(("\n" + json.loads(content)).encode())
+        prev = h.hexdigest()
+        lines.append(f'{{"seq":{seq},"at":{at},"kind":{kind},"payload":{payload}' +
+                     (f',"content":{content}' if content is not None else "") + f',"chain":"{prev}"}}')
+    text = re.sub(r'("end":true,"events":\d+,"head":")[0-9a-f]+"', lambda m: m.group(1) + prev + '"', "\n".join(lines))
+    st, _, _ = http("DELETE", f"{base}/admin/memories/{name}?confirm={name}", auth)
+    check(f"{name} is deleted to be brought back", st == 200, st)
+    st, _, out = http("POST", f"{base}/admin/memories/{name}/import", auth, text.encode())
+    check(f"{name} is brought back, an hour earlier", st == 201, out[:200])
+
 
 def scan(directory):
     """Everything under directory, as bytes."""
@@ -475,7 +510,7 @@ def run(w):
     has("an old one is still recalled by its details", desktop.tool("recall", query="年糕"), cat)
     has("get_context shows only the latest eight", ctx, "recent:")
     count_is("eight of them", ctx[ctx.index("recent:"):], "\n[m_", 8)
-    has("and says that moments wait for reflect", ctx, "moments have not been reflected on")
+    lacks("and asks for no round while their conversation goes on", ctx, "have not been reflected on")
 
     print("== token replacement")
     st, body = admin(base, "/admin/memories/claude/token", secret)
@@ -700,7 +735,14 @@ def run(w):
     lacks("the erased gist is not shown at the start of a conversation", b.tool("get_context"), "用户告诉我一件私事")
 
     print("== reflecting")
-    out = a.tool("reflect", session_id=sa)
+    # A round takes what other conversations wrote once they have gone quiet
+    # for half an hour: the memory is moved an hour back, and the round is
+    # held by a conversation of its own.
+    relive(base, secret, "life", 3600 * 1000)
+    a = Client(base, "life", life_token, "cli-agent")
+    b = Client(base, "life", life_token, "desktop-app")
+    sr = a.begin("model-a")
+    out = a.tool("reflect", session_id=sr)
     batch = first(r"b_[a-z2-9]{8}", out)
     check("reflect hands out a batch", bool(batch), shape(out))
     has("with the fragments in full", out, "keptmark4v")
@@ -710,27 +752,27 @@ def run(w):
     has("and how to write back", out, "Write back with reflect")
     refused("only one conversation reflects at a time", b.tool("reflect", session_id=sb), "another conversation is reflecting")
     refused("a batch cannot be written back without its id",
-            a.tool("reflect", session_id=sa, entries=[{"kind": "lesson", "gist": "g", "body": "b", "from": [m1]}]),
+            a.tool("reflect", session_id=sr, entries=[{"kind": "lesson", "gist": "g", "body": "b", "from": [m1]}]),
             "batch is required to write back")
-    refused("nothing to write back", a.tool("reflect", session_id=sa, batch=batch), "nothing to write back")
+    refused("nothing to write back", a.tool("reflect", session_id=sr, batch=batch), "nothing to write back")
     refused("a batch that is not open",
-            a.tool("reflect", session_id=sa, batch="b_aaaaaaaa", entries=[{"kind": "lesson", "gist": "g", "body": "b", "from": [m1]}]),
+            a.tool("reflect", session_id=sr, batch="b_aaaaaaaa", entries=[{"kind": "lesson", "gist": "g", "body": "b", "from": [m1]}]),
             'batch "b_aaaaaaaa" is not open')
     refused("a statement about oneself needs experiences from separate occasions",
-            a.tool("reflect", session_id=sa, batch=batch, entries=[{"kind": "self", "gist": "我动手前会先问清楚", "from": [m1, fixed]}]),
+            a.tool("reflect", session_id=sr, batch=batch, entries=[{"kind": "self", "gist": "我动手前会先问清楚", "from": [m1, fixed]}]),
             "at least 3 experiences")
-    refused("an entry of a kind that is not one", a.tool("reflect", session_id=sa, batch=batch, entries=[{"kind": "poem", "gist": "g"}]),
-            "kind must be one of episode, lesson, impression, self, reading (entry 1)")
-    refused("an episode needs a body", a.tool("reflect", session_id=sa, batch=batch, entries=[{"kind": "episode", "gist": "g", "from": [m1]}]),
+    refused("an entry of a kind that is not one", a.tool("reflect", session_id=sr, batch=batch, entries=[{"kind": "poem", "gist": "g"}]),
+            "kind must be one of episode, lesson, impression, self, reading, subject (entry 1)")
+    refused("an episode needs a body", a.tool("reflect", session_id=sr, batch=batch, entries=[{"kind": "episode", "gist": "g", "from": [m1]}]),
             "body is required for episode (entry 1)")
-    refused("an impression needs a name", a.tool("reflect", session_id=sa, batch=batch, entries=[{"kind": "impression", "gist": "g", "from": [m1]}]),
+    refused("an impression needs a name", a.tool("reflect", session_id=sr, batch=batch, entries=[{"kind": "impression", "gist": "g", "from": [m1]}]),
             "about is required for an impression")
-    refused("an entry is checked for its fields", a.tool("reflect", session_id=sa, batch=batch, entries=[{"kind": "lesson", "body": "b"}]),
+    refused("an entry is checked for its fields", a.tool("reflect", session_id=sr, batch=batch, entries=[{"kind": "lesson", "body": "b"}]),
             "gist is required (entry 1)")
-    refused("an entry with a field it does not have", a.tool("reflect", session_id=sa, batch=batch, entries=[{"kind": "lesson", "gist": "g", "mood": 1}]),
+    refused("an entry with a field it does not have", a.tool("reflect", session_id=sr, batch=batch, entries=[{"kind": "lesson", "gist": "g", "mood": 1}]),
             '"mood" is not a field of an entry (entry 1)')
     refused("an unknown session", a.tool("reflect", session_id="s_aaaaaaaa"), 'unknown session_id "s_aaaaaaaa"')
-    out = a.tool("reflect", session_id=sa, batch=batch, entries=[
+    out = a.tool("reflect", session_id=sr, batch=batch, entries=[
         {"kind": "episode", "gist": "我和用户把记忆系统的方向定了下来", "body": "先问清，再被纠正，最后定稿。", "from": [m1, fixed], "milestone": True},
         {"kind": "lesson", "gist": "设计类需求先问清它记什么", "body": "两次都因此少走了弯路。", "from": [m1, m3]},
         {"kind": "impression", "about": "用户", "gist": "说话直接，纠正时会讲原因", "from": [fixed]},
@@ -738,7 +780,7 @@ def run(w):
     made = re.findall(r"m_[a-z2-9]{8}", out)
     check("the round is written back", len(made) == 4 and "(self)" in out and "(episode)" in out, shape(out))
     has("and says how many were left as they are", out, "1 left as they are")
-    refused("a batch is written back once", a.tool("reflect", session_id=sa, batch=batch, entries=[
+    refused("a batch is written back once", a.tool("reflect", session_id=sr, batch=batch, entries=[
         {"kind": "lesson", "gist": "g", "body": "b", "from": [m1]}]), "is not open")
     ctx = Client(base, "life", life_token, "web-connector").tool("get_context", model="model-b")
     has("a new conversation is shown what was said about oneself", ctx, "我动手前会先问清楚 (做设计的时候)")
@@ -748,7 +790,7 @@ def run(w):
     has("reflecting did not count as living through anything", ctx, "memories: 4 (1 core, 3 active, 0 faded, 0 archived)")
     has("the episode says what it is built on", a.tool("expand", ids=[made[0]]), f"built on: {m1}, {fixed}")
     has("an absorbed fragment says what it is part of", a.tool("expand", ids=[m1]), f"part of {made[0]}")
-    has("afterwards nothing waits", a.tool("reflect", session_id=sa), "nothing waits to be reflected on")
+    has("afterwards nothing waits", a.tool("reflect", session_id=sr), "nothing waits to be reflected on")
 
     print("== writing down the past from records, 320 accounts in one go")
     day0 = datetime.date(2026, 1, 1)
@@ -777,11 +819,65 @@ def run(w):
     lacks("it prints nothing a memory says", out, "keptmark4v")
     lacks("nor a gist", out, "记忆系统")
     lacks("nor an erased text", out, "qx4private7k")
-    has("it lists no restore", out, "0 restores")
+    has("it lists the one restore that moved it back in time", out, "1 restores")
     refused("check takes no arguments", a.tool("check", verbose=True), '"verbose" is not a field')
     out = Client(base, "claude", new_token, "desktop-app").tool("check")
     has("the same check on another memory", out, "problems: none")
     has("with that memory's own figures", out, "49 memories written")
+
+    print("== subjects")
+    st, body = admin(base, "/admin/memories/topics", secret)
+    topics_token = body.get("token", "")
+    t = Client(base, "topics", topics_token, "topic-client")
+    ts = t.begin("model-t")
+    out = t.tool("remember", session_id=ts, gist="第一次练琴", body="按和弦按得手疼 chordmark。", subject="Guitar Practice")
+    has("a new name starts a subject, and the answer says so", out, "under a new subject, m_")
+    has("and asks to merge it if it was a slip", out, "merge the two in your next round of reflection")
+    head = (re.findall(r"m_[a-z2-9]{8}", out) + ["", ""])[1]
+    out = t.tool("remember", session_id=ts, gist="第二次练琴", body="换了一首歌。", subject="guitar-practice")
+    has("another spelling of the name is the same subject", out, f"under subject {head}")
+    for i in range(5):
+        t.remember(ts, f"又练了一次 {i}", "正文。", subject=head)
+    loose = t.remember(ts, "和朋友吃饭", "没有主题的一件事。")
+    refused("a name of only punctuation is refused", t.tool("remember", session_id=ts, gist="g", body="b", subject="!!!"),
+            'subject "!!!" has no letter or digit')
+    ctx = t.tool("get_context", model="model-t")
+    check("get_context lists the subject on a line that starts with its id",
+          re.search(rf"\nsubjects, most recently active first:\n\[{head}\] Guitar Practice \(7 memories, 7 waiting, last \d{{4}}-\d\d-\d\d\)\nEnd of your memories", ctx) is not None,
+          shape(ctx))
+    lacks("and asks for no round while the conversation that wrote them goes on", ctx, "have not been reflected on")
+    out = t.tool("recall", subject="GUITAR PRACTICE", session_id=ts)
+    check("a recall kept to the subject starts with its line", out.startswith(f"[{head}] subject Guitar Practice (7 memories"), shape(out))
+    count_is("and lists its newest memories", out, "\n[m_", 5)
+    lacks("and none of another", out, loose)
+    has("a recall by a word of its name finds the subject", t.tool("recall", query="guitar"), f"[{head}] subject Guitar Practice")
+    relive(base, secret, "topics", 3600 * 1000)
+    t = Client(base, "topics", topics_token, "topic-client")
+    ctx = t.tool("get_context", model="model-t")
+    tr = first(r"s_[a-z2-9]{8}", ctx)
+    has("once they are ripe, get_context asks for a round on the subject, by id", ctx,
+        f"7 moments under subject {head} have not been reflected on. Before you answer, do one round on them")
+    out = t.tool("reflect", session_id=tr, subject="guitar practice")
+    has("a round is about one subject", out, f"subject of this batch:\n[{head}] subject Guitar Practice")
+    has("and says where its episodes go", out, "Episodes and lessons go under this subject unless you give another.")
+    batch = first(r"b_[a-z2-9]{8}", out)
+    frags = [x for x in re.findall(r"^\[(m_[a-z2-9]{8})\] \d{4}", out, re.M)]
+    out = t.tool("reflect", session_id=tr, batch=batch, entries=[
+        {"kind": "subject", "subject": "吉他", "gist": "学吉他：和弦、换歌、手疼", "replaces": [head]},
+        {"kind": "episode", "gist": "这一周学吉他", "body": "从手疼到能弹完一首。", "from": frags[:3]}], **{"pass": frags[3:]})
+    made_t = re.findall(r"m_[a-z2-9]{8}", out)
+    check("the round renames the subject and files the episode", len(made_t) == 2 and "(subject)" in out and "(episode)" in out, shape(out))
+    renamed = made_t[0] if made_t else ""
+    out = t.tool("expand", ids=[renamed])
+    has("the new subject item says what it holds", out, "holds: 5 memories (4 fragments, 1 episodes, 0 lessons); last active ")
+    has("and what it took the place of", out, f"replaces: {head}")
+    has("the old name now finds the renamed subject", t.tool("recall", query="", subject="guitar practice"), f"[{renamed}] subject 吉他")
+    has("a memory under it names it", t.tool("expand", ids=[made_t[1] if len(made_t) > 1 else ""]), f"subject: 吉他 ({renamed})")
+    out = t.tool("check")
+    has("the check finds no damage", out, "problems: none")
+    has("and gives the subjects' figure", out, "subjects: 1 (0 with moments waiting); 1 memories belong to no subject")
+    lacks("and no name", out, "吉他")
+    lacks("nor a description", out, "和弦")
 
     print("== restart again: reflection, rules and erasures are still there")
     w.stop()
@@ -800,10 +896,13 @@ def run(w):
     has("and the same figure", again.tool("check"), "343 memories written")
     has("and the same backlog", again.tool("check"), "333 moments have not been reflected on")
     has("an old session can go on writing", again.tool("remember", session_id=sa, gist="重启后继续写", body="正文"), "remembered as")
-    out = again.tool("reflect", session_id=sa)
+    relive(base, secret, "life", 3600 * 1000)
+    again = Client(base, "life", life_token, "cli-agent")
+    sr2 = again.begin("model-a")
+    out = again.tool("reflect", session_id=sr2)
     has("reflection still works after a restart", out, "batch: b_")
     batch = first(r"b_[a-z2-9]{8}", out)
-    out = again.tool("reflect", session_id=sa, batch=batch, entries=[
+    out = again.tool("reflect", session_id=sr2, batch=batch, entries=[
         {"kind": "lesson", "gist": "需求不清楚的时候，先问它要记住什么", "body": "两次经历合起来看。", "replaces": [made[1]]}])
     newer = first(r"m_[a-z2-9]{8}", out)
     check("a lesson takes the place of an earlier one", bool(newer) and "(lesson)" in out, shape(out))

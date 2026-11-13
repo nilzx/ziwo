@@ -67,6 +67,20 @@ describe("get_context", () => {
       expect(t).not.toMatch(/moments have not been reflected on/);
     }));
 
+  it("asks, at its end, for a subject and for no work of a task", () =>
+    start((f) => {
+      const t = context(f).text;
+      const said = t.slice(t.indexOf(serverSpeaks) + serverSpeaks.length);
+      expect(said).toContain(
+        "and how you now stand with the people and things in it, called by their names. Put it under the subject it belongs to: one listed above if it fits, else a short new name. Your own part belongs in it",
+      );
+      expect(said).toContain(
+        "what you thought, said and settled on, in a sentence, not the answer itself. When you were given a task, what you read, wrote and produced for it is the work, and none of that goes here. " +
+          "What goes here is the task as you lived it: what you did, in a line; where you got stuck and how it came right, without the details; what it was like to work with the person. " +
+          "A task leaves one memory, or a few when it was long and turned more than once, not one for each step. Call remember once you know how the turn ends",
+      );
+    }));
+
   it("keeps a name with a line break on one line", () =>
     start((f) => {
       const b = f.sess();

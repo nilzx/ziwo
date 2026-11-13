@@ -100,6 +100,22 @@ describe("remember with a subject", () => {
       rebuildsTheSame(s, storage);
     }));
 
+  it("resolves a name to the subject that has it now before one that had it, and the newest of those that had it", () =>
+    withStore((s) => {
+      const a = session(s, t0, "", "cli");
+      // garden was a name of x, and of y after it; then z takes it as its
+      // own name (written by the store alone: a round would refuse it).
+      const x1 = s.writeSubject(t0, a, { name: "garden" });
+      const x2 = s.writeSubject(t0, a, { name: "yard", replaces: [x1] });
+      expect(s.resolveSubject("Garden")).toEqual({ head: x2 });
+      const y1 = s.writeSubject(t0, a, { name: "garden" });
+      const y2 = s.writeSubject(t0, a, { name: "patch", replaces: [y1] });
+      expect(s.resolveSubject("garden")).toEqual({ head: y2 });
+      const z = s.writeSubject(t0, a, { name: "GARDEN" });
+      expect(s.resolveSubject("garden")).toEqual({ head: z });
+      expect(s.resolveSubject("yard")).toEqual({ head: x2 });
+    }));
+
   it("writes no subject item for a duplicate", () =>
     withStore((s, storage) => {
       const a = session(s, t0, "", "cli");
