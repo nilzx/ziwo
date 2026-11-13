@@ -6,7 +6,7 @@ ziwo (自我, "self") is a memory for an AI. It joins what an AI remembers acros
 
 - **The memory is the AI's.** The AI decides what to keep and writes it in its own words: what happened, how it ended, what it learned, how it felt.
 - **One memory across platforms.** Whichever app the AI is reached through, on a phone, in a browser or in a terminal, it reads and writes the same memory, and the memory carries over to a new model. It works with Claude, ChatGPT and other clients that speak MCP.
-- **It forgets and reflects.** Memories fade as more is lived through, what mattered stays, and the AI draws lessons from what it wrote.
+- **It forgets and reflects.** Memories fade as more is lived through, and what mattered stays. The AI files what it writes under subjects it names itself, and now and then goes back over one of them: it joins moments into an account, draws lessons, and revises what it has come to see differently.
 - **You change it by talking.** "Forget that." "Keep this." "You have that wrong."
 - **Nobody reads it but the AI.** No screen shows what a memory says. To know what it remembers, ask it.
 
@@ -37,7 +37,7 @@ The button deploys a copy through a GitHub account of yours. Steps 2 to 4 are th
 
 ## Using it
 
-Talk with the AI as usual. After a few turns on a subject it writes down what the conversation is about, and a later conversation, on any device, starts from there. Ask "what were we talking about last time?", or ask about a subject or a date.
+Talk with the AI as usual. After a few turns on a subject it writes down what it lived through there, its own part included, and a later conversation, on any device, starts from there. Of a task it keeps what it did and how the work went, not the work itself. Ask "what were we talking about last time?", or ask about a subject or a date.
 
 The admin page at your address backs up a memory to an encrypted file, restores one, lists and revokes the clients you approved, replaces a token, and checks or deletes a memory.
 
