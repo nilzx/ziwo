@@ -32,7 +32,7 @@ export const serverSpeaks =
 // the server's instructions nor the description of a tool it has not called
 // yet; what get_context answers is the one text every conversation reads.
 export const writeUnasked =
-  "Writing here is yours to do: nobody will ask you to, and you need not ask first. Once this conversation has gone a few turns and has come to be about something, call remember before you answer that turn, with what it is about and where it stands. Do not wait for the end: you cannot tell which turn is the last.\n";
+  "Writing here is yours to do: nobody will ask you to, and you need not ask first. Once this conversation has gone a few turns and has come to be about something, call remember in that turn, with what it is about and where it stands. Call it once you know how the turn ends: in a plain exchange that is before you answer; in a turn of work it is after the work, before your closing words. What you are about to say is part of where it stands, and nothing else records it: put in a sentence what you answered, concluded or promised, not the answer itself, then say it. Write as done only what is done. If the conversation moves on from there, write again the same way. Do not wait for the end: you cannot tell which turn is the last.\n";
 
 // zoneLine names the zone an answer's times are in. It ends every answer
 // that shows a time or a date, except get_context, whose "now" line names it.
