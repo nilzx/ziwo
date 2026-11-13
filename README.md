@@ -37,7 +37,7 @@ The button deploys a copy through a GitHub account of yours. Steps 2 to 4 are th
 
 ## Using it
 
-Talk with the AI as usual. After a few turns on a subject it writes down what it lived through there, its own part included, and a later conversation, on any device, starts from there. Of a task it keeps what it did and how the work went, not the work itself. Ask "what were we talking about last time?", or ask about a subject or a date.
+Talk with the AI as usual. As you talk, it writes down what it finds worth keeping: what passed between you that either of you might come back to, however small, and what it newly came to know. A later conversation, on any device, starts from there. Of a task it keeps what the work was like to live through, a hard spot, the day it was done, not the work itself or its steps. Ask "what were we talking about last time?", or ask about a subject or a date.
 
 The admin page at your address backs up a memory to an encrypted file, restores one, lists and revokes the clients you approved, replaces a token, and checks or deletes a memory.
 
