@@ -11,6 +11,7 @@ import { assemble, fixedFiles, localConfig, lockedWrangler, packagedConfig } fro
 import { compareUploads, parseUpload } from "../../scripts/upload-form.mjs";
 import { removeScratch, scratch, workerDir } from "./go.mjs";
 
+const { version } = JSON.parse(await readFile(path.join(workerDir, "package.json"), "utf8"));
 const wranglerPkg = JSON.parse(await readFile(path.join(workerDir, "node_modules", "wrangler", "package.json"), "utf8"));
 const { experimental_readRawConfig: readRawConfig } = await import("wrangler");
 const raw = () => readRawConfig({ config: path.join(workerDir, "wrangler.jsonc") }).rawConfig;
@@ -40,7 +41,7 @@ describe("the package pack-npm writes", () => {
     const config = raw();
     // as wrangler writes it back after a first deploy
     config.kv_namespaces = [{ binding: "OAUTH_KV", id: "0123456789abcdef0123456789abcdef" }];
-    made = await assemble({ upload: upload(), raw: config, outDir: out, version: "0.1.0", wrangler: await lockedWrangler(workerDir), node: wranglerPkg.engines.node });
+    made = await assemble({ upload: upload(), raw: config, outDir: out, version, wrangler: await lockedWrangler(workerDir), node: wranglerPkg.engines.node });
   });
   after(() => removeScratch(dir));
 
@@ -56,12 +57,10 @@ describe("the package pack-npm writes", () => {
 
   it("has the fields npm needs, the command, and wrangler's own Node.js range", async () => {
     const pkg = JSON.parse(await readFile(path.join(out, "package.json"), "utf8"));
-    const own = JSON.parse(await readFile(path.join(workerDir, "package.json"), "utf8"));
-    assert.equal(own.version, "0.1.0");
     assert.deepEqual(Object.keys(pkg).sort(), ["bin", "dependencies", "description", "engines", "files", "homepage", "license", "name", "publishConfig", "repository", "type", "version"]);
     assert.equal(pkg.name, "@ziwo/memory");
     assert.deepEqual(pkg.publishConfig, { access: "public" });
-    assert.equal(pkg.version, "0.1.0");
+    assert.equal(pkg.version, version);
     assert.equal(pkg.license, "MIT");
     assert.equal(pkg.type, "module");
     assert.ok(pkg.description.length > 20);
