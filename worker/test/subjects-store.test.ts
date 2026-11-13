@@ -10,7 +10,7 @@ import { encodeContent } from "../src/store/content";
 import { SubjectError } from "../src/store/errors";
 import { encodeRemember, type RememberEvent } from "../src/store/events";
 import { textOf } from "../src/memory/embedding";
-import { subjectKey } from "../src/store/subjects";
+import { ripeAfter, subjectKey } from "../src/store/subjects";
 import { thrown } from "./amend-helpers";
 import { dump, freshObject, get, hour, inObject, populate, search, session, t0, testParams, unit, withStore } from "./helpers";
 import { adminSecret, createMemory, fetchWorker, freshName } from "./mcp-helpers";
@@ -150,6 +150,20 @@ describe("remember with a subject", () => {
       expect(get(s, second).n).toBeGreaterThan(burst());
       s.rebuild();
       expect(burst()).toBe(get(s, first).n);
+    }));
+
+  it("starts a new burst at half an hour after the last fragment, and not a millisecond before", () =>
+    withStore((s, storage) => {
+      const a = session(s, t0, "", "cli");
+      const burst = () => storage.sql.exec<{ burst_n: number }>(`SELECT burst_n FROM sessions WHERE id = ?`, a).one().burst_n;
+      const first = rem(s, a, "第一件", undefined, t0).id;
+      const within = rem(s, a, "第二件", undefined, t0 + ripeAfter - 1).id;
+      expect(burst()).toBe(get(s, first).n);
+      const at = rem(s, a, "第三件", undefined, t0 + 2 * ripeAfter - 1).id;
+      expect(burst()).toBe(get(s, at).n);
+      expect(get(s, within).n).toBeLessThan(burst());
+      s.rebuild();
+      expect(burst()).toBe(get(s, at).n);
     }));
 
   it("keeps when a session last wrote a fragment", () =>
