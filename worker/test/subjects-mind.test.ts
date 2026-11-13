@@ -77,7 +77,7 @@ describe("get_context", () => {
       expect(said).toContain(
         "what you thought, said and settled on, in a sentence, not the answer itself. When you were given a task, what you read, wrote and produced for it is the work, and none of that goes here. " +
           "What goes here is the task as you lived it: what you did, in a line; where you got stuck and how it came right, without the details; what it was like to work with the person. " +
-          "A task leaves one memory, or a few when it was long and turned more than once, not one for each step. Call remember once you know how the turn ends",
+          "The steps of a task leave no memories of their own; the task leaves one when you hand the work over, and another when something changes how it went: the person sends it back, tells you how it landed, or you find you were wrong. Call remember once you know how the turn ends",
       );
     }));
 
