@@ -4,7 +4,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import type { Answer } from "../src/memory-object";
-import { ripeAfter } from "../src/memory/service";
+import { ripeAfter, subjectHint } from "../src/memory/service";
 import { serverSpeaks } from "../src/mcp/format";
 import { minute, t0 } from "./helpers";
 import { queryVectorOf } from "./embed-helpers";
@@ -71,14 +71,9 @@ describe("get_context", () => {
     start((f) => {
       const t = context(f).text;
       const said = t.slice(t.indexOf(serverSpeaks) + serverSpeaks.length);
-      expect(said).toContain(
-        "and how you now stand with the people and things in it, called by their names. Put it under the subject it belongs to: one listed above if it fits, else a short new name. Your own part belongs in it",
-      );
-      expect(said).toContain(
-        "what you thought, said and settled on, in a sentence, not the answer itself. When you were given a task, what you read, wrote and produced for it is the work, and none of that goes here. " +
-          "What goes here is the task as you lived it: what you did, in a line; where you got stuck and how it came right, without the details; what it was like to work with the person. " +
-          "The steps of a task leave no memories of their own; the task leaves one when you hand the work over, and another when something changes how it went: the person sends it back, tells you how it landed, or you find you were wrong. Call remember once you know how the turn ends",
-      );
+      // As little of the text as shows it asks for both.
+      expect(said).toContain("Put it under the subject it belongs to: one listed above if it fits, else a short new name.");
+      expect(said).toContain("What you read, wrote and produced is the work and lives where the work lives");
     }));
 
   it("keeps a name with a line break on one line", () =>
@@ -93,23 +88,24 @@ describe("get_context", () => {
 });
 
 describe("the prompt", () => {
-  it("asks for a round once six fragments of a subject in the recent list are ripe, at thirty minutes and not before", () =>
+  it("asks for a round once twelve fragments of a subject in the recent list are ripe, at thirty minutes and not before", () =>
     start((f) => {
+      expect(subjectHint).toBe(12);
       const b = f.begin("m", "b").session.id;
-      const ids = Array.from({ length: 6 }, (_, i) => write(f, b, `练${i}`, "guitar"));
+      const ids = Array.from({ length: subjectHint }, (_, i) => write(f, b, `练${i}`, "guitar"));
       const last = f.clock - minute;
       f.clock = last + ripeAfter - minute;
       expect(promptOf(context(f).text)).toBeNull();
       f.clock = last + ripeAfter;
       const t = context(f).text;
       const p = promptOf(t);
-      expect([p?.[1], p?.[2]]).toEqual(["6", ids[0]!.head]);
+      expect([p?.[1], p?.[2]]).toEqual([`${subjectHint}`, ids[0]!.head]);
       expect(t).toContain(
-        `\n6 moments under subject ${ids[0]!.head} have not been reflected on. Before you answer, do one round on them: call reflect with your session id and subject ${ids[0]!.head}, read what it hands you, and write back what you make of it. If reflect says another conversation is at it, go on without.\n`,
+        `\n${subjectHint} moments under subject ${ids[0]!.head} have not been reflected on. Before you answer, do one round on them: call reflect with your session id and subject ${ids[0]!.head}, read what it hands you, and write back what you make of it. If reflect says another conversation is at it, go on without.\n`,
       );
       // After the archived line and before what the server says about writing.
       expect(t.indexOf(p![0])).toBeGreaterThan(t.indexOf(serverSpeaks));
-      expect(t).not.toContain("guitar\n6 moments");
+      expect(t).not.toContain(`guitar\n${subjectHint} moments`);
       // It names the subject by id alone.
       expect(t.split("\n").find((l) => promptOf(l) !== null)).not.toMatch(/guitar/);
     }));
@@ -117,45 +113,52 @@ describe("the prompt", () => {
   it("asks for the first of two subjects that came to mind with as many ripe fragments", () =>
     start((f) => {
       const b = f.begin("m", "b").session.id;
-      const older = Array.from({ length: 6 }, (_, i) => write(f, b, `练${i}`, "guitar"));
-      const newer = Array.from({ length: 6 }, (_, i) => write(f, b, `弹${i}`, "piano"));
+      // Written by turns, so that both are in the recent list of eight.
+      const older: { id: string; head: string }[] = [];
+      const newer: { id: string; head: string }[] = [];
+      for (let i = 0; i < subjectHint; i++) {
+        older.push(write(f, b, `练${i}`, "guitar"));
+        newer.push(write(f, b, `弹${i}`, "piano"));
+      }
       f.advance(ripeAfter);
       // The recent list shows the newest first, so piano comes to mind first.
-      const p = promptOf(context(f).text);
-      expect([p?.[1], p?.[2]]).toEqual(["6", newer[0]!.head]);
+      const t = context(f).text;
+      expect(t).toContain(`] 2026-11-11 other: 练${subjectHint - 1}\n`);
+      const p = promptOf(t);
+      expect([p?.[1], p?.[2]]).toEqual([`${subjectHint}`, newer[0]!.head]);
       expect(newer[0]!.head).not.toBe(older[0]!.head);
     }));
 
-  it("is held back by a later fragment of that conversation, and five are not enough", () =>
+  it("is held back by a later fragment of that conversation, and one fewer is not enough", () =>
     start((f) => {
       const b = f.begin("m", "b").session.id;
-      for (let i = 0; i < 5; i++) write(f, b, `练${i}`, "guitar");
+      for (let i = 0; i < subjectHint - 1; i++) write(f, b, `练${i}`, "guitar");
       const t = f.clock - minute;
       f.clock = t + ripeAfter;
-      expect(promptOf(context(f).text)).toBeNull(); // five
+      expect(promptOf(context(f).text)).toBeNull(); // one fewer
       f.clock = t + 20 * minute;
       write(f, b, "又练了", "guitar");
       f.clock = t + ripeAfter;
-      expect(promptOf(context(f).text)).toBeNull(); // six, one of them twenty minutes old
+      expect(promptOf(context(f).text)).toBeNull(); // enough, one of them twenty minutes old
       f.clock = t + 50 * minute;
-      expect(promptOf(context(f).text)?.[1]).toBe("6");
+      expect(promptOf(context(f).text)?.[1]).toBe(`${subjectHint}`);
     }));
 
   it("asks a recall that lists the subject's items, the conversation that wrote them included", () =>
     start((f) => {
       const b = f.begin("m", "b").session.id;
-      for (let i = 0; i < 6; i++) write(f, b, `练${i} strings`, "guitar");
+      for (let i = 0; i < subjectHint; i++) write(f, b, `练${i} strings`, "guitar");
       // Started before they were ripe, so that its get_context asked nothing.
       const c = f.begin("m", "c").session.id;
       f.advance(ripeAfter);
       // The conversation that wrote them, once it has gone quiet for half an
       // hour, is asked by its own recall of the subject.
-      expect(promptOf(recall(f, { query: "", subject: "guitar", session: b }))?.[1]).toBe("6");
+      expect(promptOf(recall(f, { query: "", subject: "guitar", session: b }))?.[1]).toBe(`${subjectHint}`);
       const t = recall(f, { query: "strings", session: c });
-      expect(promptOf(t)?.[1], t).toBe("6");
-      expect(t.endsWith("time zone: UTC\n" + t.slice(t.indexOf("6 moments")))).toBe(true);
+      expect(promptOf(t)?.[1], t).toBe(`${subjectHint}`);
+      expect(t.endsWith("time zone: UTC\n" + t.slice(t.indexOf(`${subjectHint} moments`)))).toBe(true);
       // The subject is shown above the items.
-      expect(t).toMatch(/^\[m_[a-z2-9]{8}\] subject guitar \(6 memories, 6 waiting, last 2026-11-11\)\n/);
+      expect(t).toMatch(new RegExp(`^\\[m_[a-z2-9]{8}\\] subject guitar \\(${subjectHint} memories, ${subjectHint} waiting, last 2026-11-11\\)\n`));
       // A session that names nothing is never asked.
       expect(promptOf(recall(f, { query: "strings", session: "" }))).toBeNull();
       expect(promptOf(recall(f, { query: "strings", session: "s_nobody0" }))).toBeNull();
@@ -164,7 +167,7 @@ describe("the prompt", () => {
   it("is only for subjects that came to mind", () =>
     start((f) => {
       const b = f.begin("m", "b").session.id;
-      for (let i = 0; i < 6; i++) write(f, b, `T${i}`, "cooking");
+      for (let i = 0; i < subjectHint; i++) write(f, b, `T${i}`, "cooking");
       f.advance(ripeAfter);
       const d = f.begin("m", "d").session.id;
       for (let i = 0; i < 8; i++) write(f, d, `V${i}`, "garden");
@@ -192,8 +195,8 @@ describe("the prompt", () => {
   it("comes once per session, not while a round is held, and not to a session that opened one", () =>
     start((f) => {
       const b = f.begin("m", "b").session.id;
-      for (let i = 0; i < 6; i++) write(f, b, `练${i} guitar`, "guitar");
-      for (let i = 0; i < 6; i++) write(f, b, `做${i} cooking`, "cooking");
+      for (let i = 0; i < subjectHint; i++) write(f, b, `练${i} guitar`, "guitar");
+      for (let i = 0; i < subjectHint; i++) write(f, b, `做${i} cooking`, "cooking");
       // Started while nothing was ripe: its get_context asked nothing.
       const d = f.begin("m", "d").session.id;
       f.advance(ripeAfter);
@@ -218,7 +221,7 @@ describe("the prompt", () => {
   it("shows the subject it names when it is not among the twenty", () =>
     start((f) => {
       const b = f.begin("m", "b").session.id;
-      const old = Array.from({ length: 6 }, (_, i) => write(f, b, `老${i}`, "old one")).at(-1)!;
+      const old = Array.from({ length: subjectHint }, (_, i) => write(f, b, `老${i}`, "old one")).at(-1)!;
       // Twenty subjects active since, of moments that took place long ago:
       // the old subject's are still the newest memories.
       const c = f.begin("m", "c").session.id;
@@ -232,7 +235,7 @@ describe("the prompt", () => {
       expect(g.text).toContain("subjects, the 20 most recently active of 21:\n");
       const shown = g.text.slice(g.text.indexOf("subjects, the 20"), g.text.indexOf(serverSpeaks)).split("\n").slice(1, -1);
       expect(shown).toHaveLength(21);
-      expect(shown[20]).toMatch(new RegExp(`^\\[${old.head}\\] old one \\(6 memories, 6 waiting, `));
+      expect(shown[20]).toMatch(new RegExp(`^\\[${old.head}\\] old one \\(${subjectHint} memories, ${subjectHint} waiting, `));
     }));
 
   it("names the subject in the access log by fixed words alone", async () => {
@@ -242,7 +245,7 @@ describe("the prompt", () => {
     const b = idIn(await c.ok("get_context", {}), "s_");
     const marker = "zqxsubjectmark";
     let head = "";
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < subjectHint; i++) {
       head = idIn((await c.ok("remember", { session_id: b, gist: `练 ${i}`, body: "正文", subject: marker })).replace(/^remembered as m_\w+/, ""));
     }
     await setClock(m.name, t0 + ripeAfter);

@@ -26,7 +26,7 @@ function say(f: Fixture, more: Partial<RememberArgs> = {}): string {
 const keeps = "A memory keeps what the moment was like for you; the work itself stays where it lives, with its place in pointer.";
 const block = `It holds a block of code or of copied text. ${keeps}`;
 const long = (k: number) => `Its account runs to ${k} characters, which is long for a memory. ${keeps}`;
-const many = (k: number) => `That makes ${k} moments written in this conversation. Most turns need none, and a task leaves one memory, or a few.`;
+const many = (k: number) => `That makes ${k} moments written in this conversation. Not everything that happens needs one, and the steps of a task need none of their own.`;
 const lines = (t: string) => t.split("\n").slice(1);
 
 describe("the reminders", () => {
@@ -46,20 +46,20 @@ describe("the reminders", () => {
       expect(lines(say(f, { body: "```\n" + "长".repeat(1600) }))).toEqual([block]);
     }));
 
-  it("count the moments a conversation wrote as they happened, from the seventh", () =>
+  it("count the moments a conversation wrote as they happened, from the one after manyMoments", () =>
     start((f) => {
-      expect(manyMoments).toBe(6);
-      for (let i = 1; i <= 6; i++) expect(lines(say(f)), `moment ${i}`).toEqual([]);
+      expect(manyMoments).toBe(30);
+      for (let i = 1; i <= manyMoments; i++) expect(lines(say(f)), `moment ${i}`).toEqual([]);
       // Reconstructed and corrected ones do not count, and get no reminder.
       expect(lines(say(f, { source: "reconstructed", happenedAt: "2026-01-01" }))).toEqual([]);
       const fixed = ok(f.obj.amend({ sessionId: f.sess(), action: "correct", id: f.st.recent(f.st.clock(), 1)[0]!.id, gist: "改过" }));
       expect(fixed).not.toMatch(/moments written/);
-      const seventh = say(f);
-      expect(seventh).toMatch(/^remembered as m_[a-z2-9]{8}\n/);
-      expect(lines(seventh)).toEqual([many(7)]);
-      expect(lines(say(f, { body: "```\ncode\n```", subject: "garden" }))).toEqual([block, many(8)]);
-      expect(lines(say(f, { body: "长".repeat(1600) }))).toEqual([long(1600), many(9)]);
-      // A reconstructed one, past the seventh, is not reminded either.
+      const first = say(f);
+      expect(first).toMatch(/^remembered as m_[a-z2-9]{8}\n/);
+      expect(lines(first)).toEqual([many(manyMoments + 1)]);
+      expect(lines(say(f, { body: "```\ncode\n```", subject: "garden" }))).toEqual([block, many(manyMoments + 2)]);
+      expect(lines(say(f, { body: "长".repeat(1600) }))).toEqual([long(1600), many(manyMoments + 3)]);
+      // A reconstructed one, past the first reminded, is not reminded either.
       expect(lines(say(f, { source: "reconstructed", happenedAt: "2026-01-01" }))).toEqual([]);
       // Another conversation starts from none.
       f.session = f.begin("model-a", "other").session.id;
@@ -68,10 +68,10 @@ describe("the reminders", () => {
 
   it("follow the answer's subject sentence, and a duplicate gets none", () =>
     start((f) => {
-      for (let i = 0; i < 6; i++) say(f);
+      for (let i = 0; i < manyMoments; i++) say(f);
       const t = say(f, { body: "```\nx\n```", subject: "garden" });
       expect(t).toMatch(/^remembered as m_\w+ under a new subject, m_\w+\. If it is one you already have under another name, merge the two in your next round of reflection\.\n/);
-      expect(lines(t)).toEqual([block, many(7)]);
+      expect(lines(t)).toEqual([block, many(manyMoments + 1)]);
       const same = text(f.obj.answer({ tool: "remember", args: { sessionId: f.sess(), gist: `第${n}件`, body: "```\nx\n```" } }));
       expect(same).toMatch(/^already remembered as m_[a-z2-9]{8}$/);
     }));
@@ -98,14 +98,14 @@ describe("the reminders", () => {
       lines.push(a.map(String).join(" "));
     });
     try {
-      for (let i = 0; i < 6; i++) await c.ok("remember", { session_id: s, gist: `zqx 第${i}件`, body: "zqxbody 正文" });
+      for (let i = 0; i < manyMoments; i++) await c.ok("remember", { session_id: s, gist: `zqx 第${i}件`, body: "zqxbody 正文" });
       await c.ok("remember", { session_id: s, gist: "zqx 代码", body: "```\nzqxcode\n```" });
       await c.ok("remember", { session_id: s, gist: "zqx 长", body: "长".repeat(1501) });
     } finally {
       spy.mockRestore();
     }
     const tools = lines.map((l) => JSON.parse(l) as Record<string, unknown>).filter((l) => l.msg === "tool");
-    expect(tools.map((l) => l.reminded)).toEqual([undefined, undefined, undefined, undefined, undefined, undefined, "block+many", "long+many"]);
+    expect(tools.map((l) => l.reminded)).toEqual([...Array<undefined>(manyMoments).fill(undefined), "block+many", "long+many"]);
     for (const l of lines) {
       expect(l).not.toContain("zqx");
       expect(l).not.toContain("长长");

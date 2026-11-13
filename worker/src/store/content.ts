@@ -129,15 +129,16 @@ export function ticks(e: RememberEvent): boolean {
 
 // kindFactor scales the starting strength of a memory by its kind: an account
 // outlasts the moments it was made from, an impression outlasts that, and a
-// lesson lasts longest.
+// lesson lasts longest. The moments are many and meant to fade soon; an
+// account stands for a handful of them, so it outlasts them by a wide margin.
 export function kindFactor(kind: string): number {
   switch (kind) {
     case KindEpisode:
-      return 2;
+      return 6;
     case KindImpression:
-      return 3;
+      return 9;
     case KindLesson:
-      return 4;
+      return 12;
   }
   return 1;
 }

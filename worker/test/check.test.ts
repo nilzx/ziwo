@@ -1,7 +1,7 @@
 // Port of check_test.go of the earlier Go implementation (repository history, up to `a4a8bab`).
 
 import { describe, expect, it } from "vitest";
-import { countFindings, type Finding, LevelNote, LevelProblem, LevelWarning, type Report, reportText } from "../src/store/check";
+import { checkManyWrites, countFindings, type Finding, LevelNote, LevelProblem, LevelWarning, type Report, reportText } from "../src/store/check";
 import type { Store } from "../src/store/store";
 import { amend, ent, entry, reflectOn } from "./amend-helpers";
 import { hour, listed, read, remember, rememberWith, session, t0, withStore } from "./helpers";
@@ -216,6 +216,24 @@ describe("check", () => {
       const r = s.check();
       expect(found(r, LevelWarning, "backlog").text).toBe("50 moments have not been reflected on");
       expect(r.figures.map((x) => x.name)).not.toContain("waiting for reflect");
+    }));
+
+  // Not in check_test.go: the threshold moved from 20 to 60 when a missed
+  // moment came to count for more than a memory too many.
+  it("CheckFlagsAConversationThatWroteMoreThanSixtyMoments", () =>
+    withStore((s) => {
+      expect(checkManyWrites).toBe(60);
+      const sess = session(s, t0, "", "cli");
+      for (let i = 0; i < checkManyWrites; i++) remember(s, t0, sess, `第 ${i} 件`, "正文");
+      // What is reconstructed from a record is not counted.
+      rememberWith(s, { sessionId: sess, gist: "旧事", body: "正文", source: "reconstructed", happened: t0 - 24 * hour });
+      expect(s.check().findings.map((x) => x.code)).not.toContain("many-writes");
+      remember(s, t0, sess, "又一件", "正文");
+      const f = found(s.check(), LevelWarning, "many-writes");
+      expect(f.ids).toEqual([`${sess} (${checkManyWrites + 1})`]);
+      expect(f.text).toBe(
+        "1 conversations wrote more than 60 moments each; not everything that happens needs a memory, the steps of a task need none of their own, and every moment pushes older ones away",
+      );
     }));
 
   it("CheckNamesAtMostTwentyIds", () =>

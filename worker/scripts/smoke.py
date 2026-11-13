@@ -830,17 +830,21 @@ def run(w):
     topics_token = body.get("token", "")
     t = Client(base, "topics", topics_token, "topic-client")
     ts = t.begin("model-t")
+    # Seventeen moments of no subject first, so that the conversation's 31st
+    # moment is reminded and the subject's are still the newest when it ripens.
+    for i in range(17):
+        t.remember(ts, f"闲聊了一句 {i}", "没有主题。")
     out = t.tool("remember", session_id=ts, gist="第一次练琴", body="按和弦按得手疼 chordmark。", subject="Guitar Practice")
     has("a new name starts a subject, and the answer says so", out, "under a new subject, m_")
     has("and asks to merge it if it was a slip", out, "merge the two in your next round of reflection")
     head = (re.findall(r"m_[a-z2-9]{8}", out) + ["", ""])[1]
     out = t.tool("remember", session_id=ts, gist="第二次练琴", body="换了一首歌。", subject="guitar-practice")
     has("another spelling of the name is the same subject", out, f"under subject {head}")
-    for i in range(5):
+    for i in range(10):
         t.remember(ts, f"又练了一次 {i}", "正文。", subject=head)
     loose = t.remember(ts, "和朋友吃饭", "没有主题的一件事。")
     out = t.tool("remember", session_id=ts, gist="抄了一段配置", body="```\nfencemark7q = 1\n```")
-    has("a fenced block is written and reminded of, and so are many moments", out, "\nThat makes 9 moments written in this conversation.")
+    has("a fenced block is written and reminded of, and so are many moments", out, "\nThat makes 31 moments written in this conversation.")
     has("the block first", out,
         "\nIt holds a block of code or of copied text. A memory keeps what the moment was like for you; the work itself stays where it lives, with its place in pointer.")
     logged = ""
@@ -852,7 +856,7 @@ def run(w):
         if '"reminded":"block+many"' in logged:
             break
         time.sleep(0.25)
-    # It is the conversation's ninth moment as well.
+    # It is the conversation's 31st moment as well.
     check("the access log says so in fixed words", '"reminded":"block+many"' in logged,
           [l[-120:] for l in logged.splitlines() if '"tool":"remember"' in l][-1:])
     check("and holds nothing of the body", "fencemark7q" not in logged)
@@ -860,11 +864,11 @@ def run(w):
             'subject "!!!" has no letter or digit')
     ctx = t.tool("get_context", model="model-t")
     check("get_context lists the subject on a line that starts with its id",
-          re.search(rf"\nsubjects, most recently active first:\n\[{head}\] Guitar Practice \(7 memories, 7 waiting, last \d{{4}}-\d\d-\d\d\)\nEnd of your memories", ctx) is not None,
+          re.search(rf"\nsubjects, most recently active first:\n\[{head}\] Guitar Practice \(12 memories, 12 waiting, last \d{{4}}-\d\d-\d\d\)\nEnd of your memories", ctx) is not None,
           shape(ctx))
     lacks("and asks for no round while the conversation that wrote them goes on", ctx, "have not been reflected on")
     out = t.tool("recall", subject="GUITAR PRACTICE", session_id=ts)
-    check("a recall kept to the subject starts with its line", out.startswith(f"[{head}] subject Guitar Practice (7 memories"), shape(out))
+    check("a recall kept to the subject starts with its line", out.startswith(f"[{head}] subject Guitar Practice (12 memories"), shape(out))
     count_is("and lists its newest memories", out, "\n[m_", 5)
     lacks("and none of another", out, loose)
     has("a recall by a word of its name finds the subject", t.tool("recall", query="guitar"), f"[{head}] subject Guitar Practice")
@@ -873,7 +877,7 @@ def run(w):
     ctx = t.tool("get_context", model="model-t")
     tr = first(r"s_[a-z2-9]{8}", ctx)
     has("once they are ripe, get_context asks for a round on the subject, by id", ctx,
-        f"7 moments under subject {head} have not been reflected on. Before you answer, do one round on them")
+        f"12 moments under subject {head} have not been reflected on. Before you answer, do one round on them")
     out = t.tool("reflect", session_id=tr, subject="guitar practice")
     has("a round is about one subject", out, f"subject of this batch:\n[{head}] subject Guitar Practice")
     has("and says where its episodes go", out, "Episodes and lessons go under this subject unless you give another.")
@@ -886,13 +890,13 @@ def run(w):
     check("the round renames the subject and files the episode", len(made_t) == 2 and "(subject)" in out and "(episode)" in out, shape(out))
     renamed = made_t[0] if made_t else ""
     out = t.tool("expand", ids=[renamed])
-    has("the new subject item says what it holds", out, "holds: 5 memories (4 fragments, 1 episodes, 0 lessons); last active ")
+    has("the new subject item says what it holds", out, "holds: 10 memories (9 fragments, 1 episodes, 0 lessons); last active ")
     has("and what it took the place of", out, f"replaces: {head}")
     has("the old name now finds the renamed subject", t.tool("recall", query="", subject="guitar practice"), f"[{renamed}] subject 吉他")
     has("a memory under it names it", t.tool("expand", ids=[made_t[1] if len(made_t) > 1 else ""]), f"subject: 吉他 ({renamed})")
     out = t.tool("check")
     has("the check finds no damage", out, "problems: none")
-    has("and gives the subjects' figure", out, "subjects: 1 (0 with moments waiting); 2 memories belong to no subject")
+    has("and gives the subjects' figure", out, "subjects: 1 (0 with moments waiting); 19 memories belong to no subject")
     lacks("and no name", out, "吉他")
     lacks("nor a description", out, "和弦")
 

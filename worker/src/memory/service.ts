@@ -66,9 +66,11 @@ const peopleShown = 8;
 export { ripeAfter };
 
 // manyMoments is how many moments a conversation may write as they happen
-// before the answer to remember says that most turns need none. A starting
-// value.
-export const manyMoments = 6;
+// before the answer to remember says that not everything needs one. What is
+// worth keeping is the AI's to judge, and a miss costs more than a memory
+// too many, so it is set high: it is for a conversation or a task whose
+// every step is written down. A starting value.
+export const manyMoments = 30;
 
 // fenced finds a fenced block: a line that starts with three backticks or
 // three tildes.
@@ -86,8 +88,10 @@ export interface Reminders {
 // When a subject comes to mind (its items are in get_context's recent list,
 // or listed by a recall) and this many of its fragments are ripe, the answer
 // asks for a round on it; get_context asks for one on the unsorted at
-// unsortedHint. Starting values.
-export const subjectHint = 6;
+// unsortedHint. Both are starting values. A subject may gather a handful of
+// moments in one conversation; subjectHint waits for one full batch, as many
+// as a round hands out by default (DefaultReflect).
+export const subjectHint = 12;
 export const unsortedHint = 12;
 export const subjectsShown = 20; // subjects get_context lists
 export const subjectsFound = 3; // subjects a recall with a query shows at most
@@ -290,9 +294,9 @@ export class Service {
   // whether its name started that subject.
   //
   // reminders say what the answer reminds of, a memory being written all
-  // the same: a fenced block in the body, else a body over longBody; and the
-  // manyMoments-th and later moment a session wrote as it happened. A
-  // duplicate gets none.
+  // the same: a fenced block in the body, else a body over longBody; and
+  // every moment a session wrote as it happened after its first manyMoments.
+  // A duplicate gets none.
   remember(req: RememberRequest): { id: string; dup: boolean; subject?: { id: string; started: boolean }; reminders?: Reminders } {
     const now = this.now();
     const input = clean(req, now);

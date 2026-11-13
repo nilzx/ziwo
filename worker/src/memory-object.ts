@@ -764,8 +764,9 @@ export class Memory extends DurableObject<Env> {
 // noticed while it can still be mended.
 //
 // Reminders follow on lines of their own: a memory keeps what a moment was
-// like, not the work of a task, and a task leaves one memory or a few. They
-// are told at the moment a model does otherwise; the memory is written.
+// like, not the work of a task, and not everything needs one, the steps of
+// a task least of all. They are told at the moment a model does otherwise;
+// the memory is written.
 export function rememberedText(r: { id: string; dup: boolean; subject?: { id: string; started: boolean }; reminders?: Reminders }): string {
   if (r.dup) return "already remembered as " + r.id;
   let b: string;
@@ -776,7 +777,7 @@ export function rememberedText(r: { id: string; dup: boolean; subject?: { id: st
   if (r.reminders?.block) b += `\nIt holds a block of code or of copied text. ${keeps}`;
   else if (r.reminders?.long !== undefined) b += `\nIts account runs to ${r.reminders.long} characters, which is long for a memory. ${keeps}`;
   if (r.reminders?.many !== undefined) {
-    b += `\nThat makes ${r.reminders.many} moments written in this conversation. Most turns need none, and a task leaves one memory, or a few.`;
+    b += `\nThat makes ${r.reminders.many} moments written in this conversation. Not everything that happens needs one, and the steps of a task need none of their own.`;
   }
   return b;
 }

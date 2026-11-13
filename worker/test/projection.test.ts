@@ -75,10 +75,10 @@ describe("projection", () => {
         .toEqual([{ reviewed: null }, { reviewed: 2 }, { reviewed: 2 }]);
       expect([m("m_c1").pending, m("m_r1").pending]).toEqual([true, true]);
 
-      // Strength by kind: episode 2, impression 3, lesson 4, with base 10.
-      near(m("m_e1").strength, 20, 1e-9);
-      near(m("m_i2").strength, 30, 1e-9);
-      near(m("m_l1").strength, 40, 1e-9);
+      // Strength by kind: episode 6, impression 9, lesson 12, with base 10.
+      near(m("m_e1").strength, 60, 1e-9);
+      near(m("m_i2").strength, 90, 1e-9);
+      near(m("m_l1").strength, 120, 1e-9);
       expect([m("m_m1").core, m("m_m1").milestone, m("m_m1").fadeAt]).toEqual([true, true, 0]);
 
       // A reconstructed memory took place when it says, and did not tick.

@@ -28,7 +28,7 @@ export const LevelWarning = "warning"; // it works, and something about how it i
 export const LevelNote = "note"; // worth knowing
 
 // Thresholds of the usage checks. They are starting values.
-export const checkManyWrites = 20; // moments written by one conversation
+export const checkManyWrites = 60; // moments written by one conversation
 export const checkMinSample = 20; // below this, shares say little
 export const checkCoreShare = 0.3; // of standing memories that never fade
 export const checkStrongShare = 0.2; // of fragments felt at 0.9 or above
@@ -273,7 +273,7 @@ function checkUse(c: Checker): void {
     GROUP BY session_id HAVING count(*) > ?3 ORDER BY count(*) DESC`, KindFragment, SourceReconstructed, checkManyWrites);
   if (busy.length > 0) {
     c.find(LevelWarning, "many-writes", busy,
-      `${busy.length} conversations wrote more than ${checkManyWrites} moments each; most turns need no memory, and every moment pushes older ones away`);
+      `${busy.length} conversations wrote more than ${checkManyWrites} moments each; not everything that happens needs a memory, the steps of a task need none of their own, and every moment pushes older ones away`);
   }
   const core = c.one(`SELECT count(*) ${standing} AND m.core = 1`);
   if (total >= checkMinSample && core > checkCoreShare * total) {

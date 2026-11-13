@@ -41,9 +41,9 @@ describe("reflect", () => {
       // An account outlasts the moments it was made from; a lesson lasts longest.
       expect([e.kind, e.ord, e.pending, e.source, l.kind, i.kind, i.about])
         .toEqual([KindEpisode, 4, false, "lived", KindLesson, KindImpression, "用户"]);
-      near(e.strength, 20, 1e-9);
-      near(l.strength, 40, 1e-9);
-      near(i.strength, 30, 1e-9);
+      near(e.strength, 60, 1e-9);
+      near(l.strength, 120, 1e-9);
+      near(i.strength, 90, 1e-9);
       expect(s.sources(e.id)).toEqual([f1, f2, f3]);
       // The fragments are part of the episode now. They stay in the record and
       // leave ordinary recall.
@@ -75,6 +75,33 @@ describe("reflect", () => {
       const b = get(s, other);
       expect([tierOf(get(s, alone), now), tierOf(b, now)]).toEqual(["archived", "active"]);
       near(b.archiveAt, 9 + archiveAfter, 1e-5);
+      replays(s, storage);
+    }));
+
+  it("reweighing an account keeps what its kind gives it", () =>
+    withStore((s, storage) => {
+      const sess = session(s, t0, "", "cli");
+      const f = [remember(s, t0, sess, "一", "一"), remember(s, t0, sess, "二", "二"), remember(s, t0, sess, "三", "三")];
+      const [ep, le, im] = reflectOn(s, sess, [
+        ent(KindEpisode, "一段经历", f[0]!),
+        ent(KindLesson, "一条教训", f[1]!),
+        { ...ent(KindImpression, "一个印象", f[1]!), about: "某人" },
+      ]);
+      // Written at a quarter, each starts at base 10 * 4^(2*0.25-1) = 5 times
+      // its kind's factor; reweighed from a half to a quarter, it ends there.
+      const want: [string, number][] = [[ep!, 30], [le!, 60], [im!, 45]];
+      for (const [id] of want) amend(s, sess, AmendReweigh, id, 0.25);
+      const fresh = reflectOn(s, sess, [
+        entry({ kind: KindEpisode, gist: "另一段经历", importance: 0.25, from: [f[2]!] }),
+      ]);
+      near(get(s, fresh[0]!).strength, 30, 1e-9);
+      const clock = s.clock();
+      for (const [id, strength] of want) {
+        const m = get(s, id);
+        near(m.strength, strength, 1e-9);
+        near(m.fadeAt, clock + strength * Math.log(1 / 0.3), 1e-9);
+        near(m.archiveAt, clock + strength * Math.log(1 / 0.05), 1e-9);
+      }
       replays(s, storage);
     }));
 
