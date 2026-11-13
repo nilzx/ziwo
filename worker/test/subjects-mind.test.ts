@@ -114,6 +114,18 @@ describe("the prompt", () => {
       expect(t.split("\n").find((l) => promptOf(l) !== null)).not.toMatch(/guitar/);
     }));
 
+  it("asks for the first of two subjects that came to mind with as many ripe fragments", () =>
+    start((f) => {
+      const b = f.begin("m", "b").session.id;
+      const older = Array.from({ length: 6 }, (_, i) => write(f, b, `练${i}`, "guitar"));
+      const newer = Array.from({ length: 6 }, (_, i) => write(f, b, `弹${i}`, "piano"));
+      f.advance(ripeAfter);
+      // The recent list shows the newest first, so piano comes to mind first.
+      const p = promptOf(context(f).text);
+      expect([p?.[1], p?.[2]]).toEqual(["6", newer[0]!.head]);
+      expect(newer[0]!.head).not.toBe(older[0]!.head);
+    }));
+
   it("is held back by a later fragment of that conversation, and five are not enough", () =>
     start((f) => {
       const b = f.begin("m", "b").session.id;
