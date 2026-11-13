@@ -9,7 +9,7 @@ A web or mobile client can only be told about the memory through the server's ow
 `mcp.json` shows the server entry. Copy it to `.mcp.json` in a project, or add the same entry to your user configuration, with your server's address and the name of the memory in the path. The token is read from the environment, so it stays out of the file:
 
 ```sh
-export ZIWO_TOKEN=ziwo_...   # printed once by: ziwo new claude
+export ZIWO_TOKEN=ziwo_...   # shown once by the admin page when the memory is created, and again when a new token is issued
 ```
 
 The entry has `"alwaysLoad": true`. Claude Code defers MCP tools by default: at the start the model sees the server's instructions and the tool names, and must search for a tool before it can call it. With `alwaysLoad` the tools of this server are loaded up front, which also saves one round trip per conversation. Ten fresh single-turn conversations per group, with prompts unrelated to memory:

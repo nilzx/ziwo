@@ -1,14 +1,13 @@
-// The sealing module against Go's internal/sealed: files the Go build sealed
-// (fixtures/, and fresh ones when a go command is there) open here, files
-// sealed here open in the Go build, and the failures say what Go says.
+// The sealing module: files sealed by the earlier Go implementation
+// (fixtures/) open here, and the failures say what that implementation said.
 
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { after, before, describe, it } from "node:test";
+import { describe, it } from "node:test";
 import { minPassphrase, open, seal, SealError } from "../../page/seal.mjs";
 import { fixtures } from "./fixtures.mjs";
-import { buildSealHelper, goSeal, haveGo, removeScratch, scratch, workerDir } from "./go.mjs";
+import { workerDir } from "./go.mjs";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -110,61 +109,5 @@ describe("sealing here", () => {
     const bad = box.slice();
     bad[bad.length >> 1] ^= 0x80;
     await refused(() => open(bad, pass), "wrong-key", wrong);
-  });
-});
-
-describe("against the Go build, both ways", { skip: haveGo() ? false : "no go command" }, () => {
-  /** @type {string} */
-  let dir;
-  /** @type {string} */
-  let bin;
-  before(async () => {
-    dir = await scratch("ziwo-seal-");
-    bin = await buildSealHelper(dir);
-  });
-  after(() => removeScratch(dir));
-
-  it("Go opens what is sealed here, an empty export too, and a 12-byte passphrase of four characters", async () => {
-    for (const [p, k] of [[plain, pass], [new Uint8Array(0), pass], [enc.encode("{}\n"), "记忆口令"]]) {
-      const r = goSeal(bin, "open", await seal(/** @type {Uint8Array} */ (p), /** @type {string} */ (k)), /** @type {string} */ (k));
-      assert.ok(r.ok, r.ok ? "" : r.error);
-      assert.deepEqual(new Uint8Array(r.out), p);
-    }
-  });
-
-  it("opens here what Go seals now", async () => {
-    for (const p of [plain, new Uint8Array(0)]) {
-      const r = goSeal(bin, "seal", p, pass);
-      assert.ok(r.ok);
-      assert.deepEqual(await open(r.out, pass), p);
-    }
-  });
-
-  it("fails as Go fails: wrong passphrase, changed byte, not an export, short passphrase", async () => {
-    const box = await seal(plain, pass);
-    const ours = async (/** @type {Uint8Array} */ b, /** @type {string} */ k) => open(b, k).then(() => "", (e) => e.message);
-    const go = (/** @type {Uint8Array} */ b, /** @type {string} */ k) => {
-      const r = goSeal(bin, "open", b, k);
-      return r.ok ? "" : r.error;
-    };
-    const bad = box.slice();
-    bad[magic.length + 40] ^= 1;
-    const notExport = enc.encode("not an export at all");
-    for (const [b, k] of [[box, "correct horse batterx"], [bad, pass], [box.subarray(0, box.length - 10), pass], [notExport, pass]]) {
-      const want = go(/** @type {Uint8Array} */ (b), /** @type {string} */ (k));
-      assert.notEqual(want, "");
-      assert.equal(await ours(/** @type {Uint8Array} */ (b), /** @type {string} */ (k)), want);
-    }
-    const short = goSeal(bin, "seal", plain, "elevenchars");
-    assert.equal(short.ok, false);
-    await refused(() => seal(plain, "elevenchars"), "short-passphrase", short.ok ? "" : short.error);
-  });
-
-  it("the fixtures are what the Go build makes of the fixed strings", async () => {
-    for (const f of fixtures) {
-      const r = goSeal(bin, "open", await fixture(f.file), f.pass);
-      assert.ok(r.ok);
-      assert.equal(r.out.toString(), f.plain);
-    }
   });
 });

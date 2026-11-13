@@ -2,7 +2,7 @@
 
 This document describes how the Worker implementation of ziwo behaves, for a developer or an AI agent who wants to operate, extend or audit a deployment. It describes the code in `worker/` as of 2026-11-12. Where it states a figure that was measured, it says when and under what conditions; where something has not been measured, it says so.
 
-ziwo is an autobiographical memory for an AI: it records what the AI lived through, felt and learned, not the state of a project. It is served over MCP (the Model Context Protocol). The repository holds two implementations; this is the current one. The earlier Go server for self-hosting is described in [go-server.md](go-server.md), which also lists how the two differ. OAuth is described in more depth, with its sources, in [worker/docs/oauth-notes.md](../worker/docs/oauth-notes.md).
+ziwo is an autobiographical memory for an AI: it records what the AI lived through, felt and learned, not the state of a project. It is served over MCP (the Model Context Protocol). Several formats here come from an earlier implementation in Go, which was removed from the repository on 2026-11-13 and is in its history up to commit `a4a8bab`; logs and exports it wrote are still read. OAuth is described in more depth, with its sources, in [worker/docs/oauth-notes.md](../worker/docs/oauth-notes.md).
 
 Contents: [Terms](#terms) · [Architecture](#architecture) · [MCP surface](#mcp-surface) · [Data model](#data-model) · [Forgetting](#forgetting) · [Recall](#recall) · [Reflection and amending](#reflection-and-amending) · [Memories and the admin API](#memories-and-the-admin-api) · [Authentication](#authentication) · [Configuration](#configuration) · [The access log](#the-access-log) · [Limits and measured figures](#limits-and-measured-figures) · [Development](#development)
 
@@ -326,7 +326,7 @@ Derived tables, rebuilt from the log:
 | `reflect` | a round written back | `session`, `batch`, `passed`, `wrote` |
 | `restore` | an import | `from` (the exported memory's instance), `exported_at`, `events` |
 
-What an item says is never in an event: it is in `contents`, and the event carries its hash. Field names, their order and which are left out when empty follow the Go build's structs, so logs move between the two builds; `tz` and `replaces` are new on this platform. The Go build ignores `replaces`: it replaces an impression by the earlier ones of the same `about` and nothing else, so a log written here in which a lesson, or an impression of another name, took the place of an earlier one replays there with both standing.
+What an item says is never in an event: it is in `contents`, and the event carries its hash. Field names, their order and which are left out when empty follow the earlier Go implementation, so that its logs are still read; `tz` and `replaces` came later. A log without `replaces` replays as it was lived: an impression takes the place of the earlier ones of the same `about`, and nothing else is replaced.
 
 ### Ids
 
@@ -336,7 +336,7 @@ An id is a prefix and eight characters drawn from `abcdefghijkmnpqrstuvwxyz23456
 
 The event log's format is `3`. A database whose log was written in another format is refused: a newer format with a message that says so, an older one because this build does not migrate it (no memory on this platform was written in one). An import whose `log_format` is not 3 is refused the same way.
 
-`derivedVersion` (now `11`) identifies the layout of the derived tables and the logic that fills them. The Go build stands at 6; 7 added the indexes a new session's load reads; 8 projects `amend`, `erase` and `reflect` events and replays an erasure as it was lived; 9 keeps the time zone a session reported; 10 keys a carrier by one spelling of its name; 11 indexes what replaced an item, which `expand` reads to show what the new item took the place of.
+`derivedVersion` (now `11`) identifies the layout of the derived tables and the logic that fills them. 6 is the layout the earlier Go implementation wrote; 7 added the indexes a new session's load reads; 8 projects `amend`, `erase` and `reflect` events and replays an erasure as it was lived; 9 keeps the time zone a session reported; 10 keys a carrier by one spelling of its name; 11 indexes what replaced an item, which `expand` reads to show what the new item took the place of.
 
 When the memory object first builds its store (the first call after the object starts), it compares `meta.derived` with `derivedVersion` and the parameters in force. If they differ, it drops the derived tables, empties the keyword index, sets the clock to 0 and replays every event in order, in one transaction. A replay depends only on the events, the contents and the parameters; it never reads the wall clock. After the last event, an item whose content was gone when its event was applied and that no erase event marked is marked erased (its content was lost), and vectors of items that no longer exist are dropped. A replay that fails leaves every table as it was.
 
@@ -354,7 +354,7 @@ What stays:
 - The item's place in the experience clock: an erased fragment still counts as a moment lived.
 - Items built on it, such as an episode; `check` warns about items replaced or absorbed by one that no longer stands, and about statements about oneself that rest on erased experiences.
 - Exports made before the erasure.
-- Cloudflare keeps 30 days of point-in-time history of a SQLite-backed Durable Object's storage ([Cloudflare documentation](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/)); within that time the erased content can be recovered from it. ziwo offers no route that does so. The SQLite `secure_delete` pragma, which the Go build uses, is refused on this platform.
+- Cloudflare keeps 30 days of point-in-time history of a SQLite-backed Durable Object's storage ([Cloudflare documentation](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/)); within that time the erased content can be recovered from it. ziwo offers no route that does so. The SQLite `secure_delete` pragma is refused on this platform.
 
 A replay reproduces an erasure as it was lived: an item whose content is gone still takes part in the events that came before its `erase` event (a correction of it, a newer impression that replaced it, an episode that absorbed it) and is marked erased only at that event.
 
@@ -445,7 +445,7 @@ The keyword index is FTS5 with the `unicode61` tokenizer, which splits on spaces
 
 The search terms are joined with `OR` and ranked by FTS5's `bm25`. Common English function words (`a`, `the`, `for`, `is`, …) and two-character phrases that hold a Chinese particle or pronoun (`的`, `了`, `是`, `我`, …) are left out unless the query has nothing else. At most 48 terms are used. The lists are `stopWords` and `stopChars` in `src/store/segment.ts`.
 
-A keyword match scores its `bm25` relative to the best keyword match of the same search (the best scores 1), multiplied by the share of the search's terms that the item holds (in its gist alone, for a faded item in an ordinary recall). Without that share, an item that shares one passing word with the query would score as high as the best match. The Go build has neither the stop words nor the share.
+A keyword match scores its `bm25` relative to the best keyword match of the same search (the best scores 1), multiplied by the share of the search's terms that the item holds (in its gist alone, for a faded item in an ordinary recall). Without that share, an item that shares one passing word with the query would score as high as the best match.
 
 The quality of keyword search on real Chinese, Japanese or Korean text has not been checked.
 
@@ -609,17 +609,17 @@ The admin API sends and takes an export **in the clear**: the event log and what
 {"end":true,"events":<n>,"head":"<hex>","token_sha256":"<hex>"}
 ```
 
-- `settings` is present only when the memory's parameters or default zone differ from the defaults; the Go build ignores it.
+- `settings` is present only when the memory's parameters or default zone differ from the defaults. A file without it, such as one the earlier Go implementation wrote, has the defaults.
 - `content` is present on a `remember` event whose content still exists.
 - `chain` is the SHA-256 (hex) of the previous line's chain, `\n`, `seq`, `\n`, `at`, `\n`, `kind`, `\n`, the payload as written and, when there is content, `\n` and the content. The footer repeats the last one. An export that was cut short or changed fails the check.
 - `token_sha256` is the memory's token hash; an imported memory answers to the same token. Without it, the import draws a new token and shows it once.
 - Derived tables and vectors are not exported; they are rebuilt and re-embedded.
 
-The export is built inside one synchronous call to the object, so it describes one state of the memory. The format is the Go build's, and a memory with default settings is written with no `settings` field, as the Go build writes it; exports move between the builds in both directions (tested against the Go build when a `go` command is present).
+The export is built inside one synchronous call to the object, so it describes one state of the memory. The format is the earlier Go implementation's, and a memory with default settings is written with no `settings` field, as it was; exports that implementation wrote are still imported (the tests import recordings of them).
 
 An import checks the whole file before anything is written: the header, every line, the chain, unique `seq`s and content ids, the footer's count and head, the settings. It then stores the events with their `seq` and `at`, appends a `restore` event, and replays the log, in one transaction; if the replay fails, nothing is kept. For 7 days after a restore, `get_context` tells the model that the memory was brought back and from an export of when.
 
-**The sealed form.** An export is never stored in the clear by ziwo's own tools. The admin page and the admin script seal it on the owner's side before it is saved, and open a sealed file on the owner's side before it is sent; the Worker never sees a passphrase and never runs the sealing code (the platform refuses PBKDF2 above 100,000 iterations). The sealed form is the Go build's (`page/seal.mjs`):
+**The sealed form.** An export is never stored in the clear by ziwo's own tools. The admin page and the admin script seal it on the owner's side before it is saved, and open a sealed file on the owner's side before it is sent; the Worker never sees a passphrase and never runs the sealing code (the platform refuses PBKDF2 above 100,000 iterations). The sealed form is the earlier Go implementation's (`page/seal.mjs`); files it sealed still open:
 
 | Part | Content |
 | --- | --- |
@@ -882,7 +882,7 @@ All commands run in `worker/`. Node and npm are needed; `npm install` first.
 | `npm run pack:npm`, `npm run check:npm` | Assemble the npm package in `pkg/`, and check it (see [Making a release](#making-a-release)). |
 | `npm run dev` | `wrangler dev --local --config wrangler.dev.jsonc`: the Worker on this machine, keyword search only. The admin secret is `ADMIN_SECRET` from `worker/.dev.vars` when that is there and counts; without it the admin page offers to choose one, for an hour after each start (locally the version's time is the time the server started). OAuth works there on `http://localhost`. |
 
-On 2026-11-13, 392 Vitest tests and 112 Node tests passed, and the smoke check passed.
+On 2026-11-13, 392 Vitest tests and 107 Node tests passed, and the smoke check passed.
 
 ### Layout of `worker/`
 
@@ -917,8 +917,8 @@ test/node/             Node tests: page logic, sealing, the admin script, the np
 ### How the tests are organised
 
 - `test/*.test.ts` run inside the Workers runtime through `@cloudflare/vitest-plugin`, with `wrangler.dev.jsonc`. A test that needs a memory gets a Durable Object of its own; `runInDurableObject` runs code inside an object and `evictDurableObject` stands in for reopening one.
-- Files named after a Go test (`store.test.ts`, `decay.test.ts`, `amend.test.ts`, `reflect.test.ts`, `check.test.ts`, `service.test.ts`, `forgetting.test.ts`, `amend-service.test.ts`, `segment.test.ts`) port the Go build's tests. `go-answers.ts`, `go-listing.ts` and `go-export.ts` hold what the Go server answered and wrote for the same calls, so `mcp.test.ts` and `export.test.ts` compare the Worker's answers and exports with the Go build's byte for byte.
+- Files named after a Go test (`store.test.ts`, `decay.test.ts`, `amend.test.ts`, `reflect.test.ts`, `check.test.ts`, `service.test.ts`, `forgetting.test.ts`, `amend-service.test.ts`, `segment.test.ts`) port the earlier Go implementation's tests. `go-answers.ts`, `go-listing.ts` and `go-export.ts` are recordings of what that implementation answered and wrote for the same calls, so `mcp.test.ts` and `export.test.ts` compare the Worker's answers and exports with them byte for byte; they need no Go toolchain and are not regenerated.
 - Files about what is new on this platform: the Worker and its routes (`worker.test.ts`), the MCP surface (`mcp.test.ts`), replay (`projection.test.ts`, `erase-replay.test.ts`), a lesson or an impression taking the place of earlier ones (`replaces.test.ts`), search by meaning (`embedding.test.ts`, `meaning.test.ts`, `hedge.test.ts`, `vectors.test.ts`), recall by time and in parts (`recall-span.test.ts`, `recall-parts.test.ts`, which compares with the ranking as it was before, kept in `recall-before.ts`), time zones, one-line folding, the admin API, deleting, OAuth, its KV writes and the registration budget, the consent page, the limit on guessing, the admin page, the configuration, and checks at scale (`scale.test.ts`).
 - Search by meaning is tested with stand-in embedders (`embed-helpers.ts`), never with a real model.
-- `test/node/` tests the page's logic, the sealing (against fixtures the Go build sealed, and against the Go build itself when a `go` command is present; those tests are skipped otherwise), and every command of the admin script against `wrangler dev`.
+- `test/node/` tests the page's logic, the sealing (against fixtures in `test/node/fixtures/` that the earlier Go implementation sealed at commit `a4a8bab`, which cannot be regenerated from this repository, and against the sealing done here), and every command of the admin script against `wrangler dev`.
 - Tests and logs hold made-up text, and assertions look at ids, figures and fixed strings.

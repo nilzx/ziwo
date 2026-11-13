@@ -1,4 +1,4 @@
-// Port of internal/store/reflect_test.go.
+// Port of reflect_test.go of the earlier Go implementation (repository history, up to `a4a8bab`).
 
 import { describe, expect, it } from "vitest";
 import { AmendPin, AmendRestore, AmendRetract, AmendReweigh, AmendUnpin } from "../src/store/amend";

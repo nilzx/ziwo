@@ -1,4 +1,4 @@
-// Port of internal/memory/amend_test.go, through the object's methods. The
+// Port of amend_test.go of the earlier Go implementation (repository history, up to `a4a8bab`), through the object's methods. The
 // tests whose subject is search by meaning run with the stand-in model of
 // embed-helpers.ts; f.sync() runs what the alarm runs. The others hand in
 // matches by meaning from the stand-in in service-helpers.ts, computed over

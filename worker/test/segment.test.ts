@@ -1,4 +1,4 @@
-// Port of TestMatchQuery in internal/store/store_test.go.
+// Port of TestMatchQuery in store_test.go of the earlier Go implementation (repository history, up to `a4a8bab`).
 
 import { expect, it } from "vitest";
 import { covered, matchQuery, searchTerms } from "../src/store/segment";

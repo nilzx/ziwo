@@ -38,11 +38,6 @@ jobs:
         with:
           node-version: 24
           package-manager-cache: false
-      # Some Node tests check the Worker against the Go build.
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          cache: false
       - run: npm ci
       - name: The tag is the version
         if: github.ref_type == 'tag'

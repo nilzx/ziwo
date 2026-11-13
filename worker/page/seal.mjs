@@ -1,5 +1,5 @@
-// The sealed form of an export, byte for byte as Go's internal/sealed writes
-// it: a fixed first line, a 16-byte salt, a 12-byte nonce, then the gzip of
+// The sealed form of an export, byte for byte as the sealing of the earlier Go implementation (repository history, up to `a4a8bab`)
+// writes it: a fixed first line, a 16-byte salt, a 12-byte nonce, then the gzip of
 // the export under AES-256-GCM with the first line as associated data, keyed
 // by PBKDF2-SHA256 over 600,000 iterations.
 //

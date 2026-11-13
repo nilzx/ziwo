@@ -1,4 +1,4 @@
-// Port of internal/store/amend_test.go.
+// Port of amend_test.go of the earlier Go implementation (repository history, up to `a4a8bab`).
 
 import { evictDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";

@@ -1,4 +1,4 @@
-// Port of internal/memory/service_test.go. A listing or a reading is logged
+// Port of service_test.go of the earlier Go implementation (repository history, up to `a4a8bab`). A listing or a reading is logged
 // in the call that made it, so what Go checks after f.sync() for those is
 // checked at once here. Search by meaning runs in the object with the
 // stand-in model of embed-helpers.ts: f.sync() runs what the alarm runs.

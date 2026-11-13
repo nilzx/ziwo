@@ -1,5 +1,6 @@
 // Amending and reflecting, as the service offers them. Port of
-// internal/memory/amend.go without the vector index and the embedder: where
+// amend.go of the earlier Go implementation (repository history, up to `a4a8bab`),
+// without the vector index and the embedder: where
 // Go wakes the embedder, the object sets its alarm after the call, and where
 // Go drops a memory from its index, the memory stays there until that alarm
 // sweeps it; recall leaves it out meanwhile. Erasing drops the vector at once

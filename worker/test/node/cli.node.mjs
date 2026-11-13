@@ -1,7 +1,6 @@
 // bin/ziwo-admin.mjs, every command, against the Worker under wrangler dev,
-// with the Go build on the other side of export and import. No output of
-// the script may hold the admin secret, a token it did not just create, or
-// what a memory says.
+// including export and import. No output of the script may hold the admin
+// secret, a token it did not just create, or what a memory says.
 
 import assert from "node:assert/strict";
 import { execFile, spawnSync } from "node:child_process";
@@ -10,7 +9,7 @@ import { readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { after, before, describe, it } from "node:test";
 import { open, seal } from "../../page/seal.mjs";
-import { buildSealHelper, buildZiwo, goSeal, haveGo, removeScratch, scratch, workerDir } from "./go.mjs";
+import { removeScratch, scratch, workerDir } from "./go.mjs";
 import { approveClient, startWorker, tool } from "./worker-dev.mjs";
 
 const script = path.join(workerDir, "bin/ziwo-admin.mjs");
@@ -18,7 +17,6 @@ const marker = "clitestmarker";
 const pass = "a passphrase for the test";
 const magic = "ZIWO-EXPORT-1\n";
 const tokenRE = /^token {4}(ziwo_[A-Za-z0-9_-]{43})$/m;
-const go = haveGo();
 const havePython = spawnSync("python3", ["-c", "import pty"], { stdio: "ignore" }).status === 0;
 
 // Runs a command in a terminal, types the passphrase in TYPED at each
@@ -59,8 +57,6 @@ sys.exit(os.waitstatus_to_exitcode(status))
 
 /** @type {string} */ let dir;
 /** @type {Awaited<ReturnType<typeof startWorker>>} */ let worker;
-/** @type {string} */ let goBin = "";
-/** @type {string} */ let sealBin = "";
 // Everything the script printed, to look through at the end.
 const printed = /** @type {string[]} */ ([]);
 // Tokens that were issued, and so may be printed once, each by its own command.
@@ -79,12 +75,6 @@ function cli(args, env = {}) {
     env: { PATH: process.env.PATH, ZIWO_URL: worker?.base, ZIWO_ADMIN_SECRET: worker?.secret, ...env },
   });
   printed.push(r.stdout, r.stderr);
-  return { code: r.status, out: r.stdout, err: r.stderr };
-}
-
-/** @param {string[]} args @param {string} home */
-function ziwo(args, home) {
-  const r = spawnSync(goBin, args, { cwd: dir, encoding: "utf8", env: { PATH: process.env.PATH, ZIWO_DIR: home, ZIWO_EXPORT_KEY: pass } });
   return { code: r.status, out: r.stdout, err: r.stderr };
 }
 
@@ -163,10 +153,6 @@ describe("ziwo-admin against the Worker under wrangler dev", () => {
   before(async () => {
     dir = await scratch("ziwo-admin-");
     worker = await startWorker(dir);
-    if (go) {
-      goBin = buildZiwo(dir);
-      sealBin = await buildSealHelper(dir);
-    }
   });
   after(async () => {
     await worker?.stop();
@@ -301,7 +287,7 @@ describe("ziwo-admin against the Worker under wrangler dev", () => {
     r = cli(["export", "alpha", "-o", "alpha.ziwo-export"], { ZIWO_PASSPHRASE: pass });
     assert.equal(r.code, 1);
     assert.equal(r.err, "ziwo-admin export: alpha.ziwo-export already exists\n");
-    // Named as Go names an export, by default.
+    // Named by default as the earlier Go implementation named an export.
     r = cli(["export", "alpha"], { ZIWO_PASSPHRASE: pass });
     assert.equal(r.code, 0, r.err);
     const named = /to (alpha-\d{8}-\d{6}\.ziwo-export) /.exec(r.out)?.[1] ?? "";
@@ -326,36 +312,19 @@ describe("ziwo-admin against the Worker under wrangler dev", () => {
     assert.match(new TextDecoder().decode(typed), new RegExp(marker));
   });
 
-  it("writes an export the Go build opens and imports", { skip: go ? false : "no go command" }, () => {
-    const home = path.join(dir, "go-home");
-    spawnSync("mkdir", [home]);
-    const r = ziwo(["import", "gocopy", path.join(dir, "alpha.ziwo-export")], home);
-    assert.equal(r.code, 0, r.err);
-    assert.match(r.out, /^brought back 3 memories from \d+ events, as exported on /);
-    assert.match(r.out, /It answers to the token it had when it was exported\./);
-    const l = ziwo(["list"], home);
-    assert.match(l.out, /^gocopy\s+3\s+\d+\s+\S+ \S+\s+set$/m);
-  });
-
-  it("imports what the Go build exported, which keeps its token", { skip: go ? false : "no go command" }, async () => {
-    const home = path.join(dir, "go-home");
-    const out = path.join(dir, "from-go.ziwo-export");
-    const e = ziwo(["export", "gocopy", "-o", out], home);
-    assert.equal(e.code, 0, e.err);
-    const r = cli(["import", "beta", out], { ZIWO_PASSPHRASE: pass });
+  it("imports an export that keeps its token", async () => {
+    const r = cli(["import", "beta", "alpha.ziwo-export"], { ZIWO_PASSPHRASE: pass });
     assert.equal(r.code, 0, r.err);
     assert.match(r.out, /^brought back 3 memories from \d+ events, as exported on \d{4}-\d\d-\d\d \d\d:\d\dZ\naddress {2}http:\/\/127\.0\.0\.1:\d+\/beta\/mcp\nIt answers to the token it had when it was exported\.\n$/);
     assert.equal((await tool(worker.base, "beta", tokens.b, "check", {})).status, 200);
     assert.equal(rowsOf(cli(["show", "beta"]).out).memories, "3");
   });
 
-  it("imports an export that held no token, and prints the new token once", { skip: go ? false : "no go command" }, async () => {
+  it("imports an export that held no token, and prints the new token once", async () => {
     const clear = new TextDecoder().decode(await open(await readFile(path.join(dir, "alpha.ziwo-export")), pass));
     const without = clear.replace(/,"token_sha256":"[0-9a-f]+"/, "");
     assert.notEqual(without, clear);
-    const sealed = goSeal(sealBin, "seal", new TextEncoder().encode(without), pass);
-    assert.ok(sealed.ok);
-    await writeFile(path.join(dir, "no-token.ziwo-export"), sealed.out);
+    await writeFile(path.join(dir, "no-token.ziwo-export"), await seal(new TextEncoder().encode(without), pass));
     const r = cli(["import", "delta", "no-token.ziwo-export"], { ZIWO_PASSPHRASE: pass });
     assert.equal(r.code, 0, r.err);
     assert.match(r.out, /The export held no token\. This one is shown this once\. Only its hash is stored\./);
@@ -387,7 +356,7 @@ describe("ziwo-admin against the Worker under wrangler dev", () => {
   });
 
   it("a sealed file made here is what an import takes", async () => {
-    // Round trip through the script alone, for a deployment without Go.
+    // Round trip through the script alone.
     const clear = await open(await readFile(path.join(dir, "alpha.ziwo-export")), pass);
     await writeFile(path.join(dir, "resealed.ziwo-export"), await seal(clear, pass));
     const r = cli(["import", "epsilon", "resealed.ziwo-export"], { ZIWO_PASSPHRASE: pass });

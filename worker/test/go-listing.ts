@@ -1,5 +1,5 @@
-// What the Go server (internal/server, built from this repository on
-// 2026-11-11) shows a client: its instructions and its tools/list.
+// What the Go server (built on 2026-11-11 from
+// the earlier Go implementation (repository history, up to `a4a8bab`)) shows a client: its instructions and its tools/list.
 // Generated, not edited.
 
 export const goListing = {

@@ -1,4 +1,4 @@
-// Port of internal/store/check_test.go.
+// Port of check_test.go of the earlier Go implementation (repository history, up to `a4a8bab`).
 
 import { describe, expect, it } from "vitest";
 import { countFindings, type Finding, LevelNote, LevelProblem, LevelWarning, type Report, reportText } from "../src/store/check";

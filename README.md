@@ -50,6 +50,5 @@ The admin page at your address backs up a memory to an encrypted file, restores 
 ## More
 
 - [Technical specification](docs/spec.md): the tools, the data model, forgetting, search, the admin API, sign-in, configuration and limits.
-- [The Go server](docs/go-server.md): another way to run ziwo, on a machine of your own. It is the earlier implementation, and the Cloudflare one has moved on from it.
 
 MIT. See [LICENSE](LICENSE).

@@ -1,6 +1,6 @@
 // Turning text into vectors: the settings of the deployment, the embedder
 // that calls Workers AI, and the query's embedding, made in the Worker
-// within a time limit. Port of internal/embed with the model on the platform.
+// within a time limit. Port of the embedder of the earlier Go implementation (repository history, up to `a4a8bab`) with the model on the platform.
 //
 // What is sent to the model is what a memory says, or the query. None of it
 // goes to a log.

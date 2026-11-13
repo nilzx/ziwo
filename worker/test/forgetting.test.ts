@@ -1,4 +1,4 @@
-// Port of internal/memory/forgetting_test.go. What Go checks after f.sync()
+// Port of forgetting_test.go of the earlier Go implementation (repository history, up to `a4a8bab`). What Go checks after f.sync()
 // is checked at once here: a listing or a reading is logged in the call that
 // made it.
 

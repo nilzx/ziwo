@@ -1,5 +1,5 @@
-// What the Go server (internal/server, built from this repository on
-// 2026-11-11) answered to the conversation in mcp.test.ts, call by call.
+// What the Go server (built on 2026-11-11 from
+// the earlier Go implementation (repository history, up to `a4a8bab`)) answered to the conversation in mcp.test.ts, call by call.
 // Ids are replaced by {names}; times of day by 08:00Z, the clock the test
 // fixes. Generated, not edited: differences from Go are made in the test.
 
