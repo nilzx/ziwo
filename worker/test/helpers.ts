@@ -118,6 +118,8 @@ export function dump(s: Store, storage: DurableObjectStorage): string {
     `SELECT * FROM links ORDER BY src, dst`,
     `SELECT * FROM policies ORDER BY id`,
     `SELECT * FROM restores ORDER BY at`,
+    `SELECT * FROM subjects ORDER BY id`,
+    `SELECT * FROM subject_names ORDER BY key, id`,
     `SELECT pack, model, dims, count, ns, vecs FROM vector_rows ORDER BY pack`,
     `SELECT key, value FROM meta WHERE key IN ('derived', 'clock') ORDER BY key`,
   ]) {
@@ -127,8 +129,17 @@ export function dump(s: Store, storage: DurableObjectStorage): string {
     lines.push("--");
   }
   for (const q of ["纠正", "proxy", "猫"]) lines.push(`${q}: ${JSON.stringify(search(s, q))}`);
+  // The subjects' keyword index, by the row numbers it finds.
+  for (const q of subjectWords) {
+    const found = storage.sql.exec(`SELECT rowid FROM subjects_fts WHERE subjects_fts MATCH ? ORDER BY rowid`, `"${q}"`).toArray();
+    lines.push(`subject ${q}: ${JSON.stringify(found.map((r) => r.rowid))}`);
+  }
   return lines.join("\n");
 }
+
+// subjectWords are the words dump looks for in the subjects' keyword index:
+// the subject tests name and describe their subjects with them.
+export const subjectWords = ["guitar", "music", "吉", "猫", "cooking", "garden"];
 
 // populate writes a little of everything: two carriers, plain and rich
 // memories, a listing, a reading and a vector.

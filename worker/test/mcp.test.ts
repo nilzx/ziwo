@@ -366,6 +366,9 @@ describe.each(generations)("%s protocol generation", (gen) => {
       "recall-all": (s) => s + zoneLine,
       "recall-none-deep": (s) => s + "; recall without a query lists your newest memories",
       "recall-none": (s) => s + ", and recall without a query lists your newest memories",
+      // The check names how many subjects there are and how many memories
+      // belong to none.
+      check: (s) => s.replace("\nproblems:", "\nsubjects: 0 (0 with moments waiting); 4 memories belong to no subject\nproblems:"),
     };
     expect(Object.keys(got).sort()).toEqual(Object.keys(goAnswers).sort());
     for (const [step, text] of Object.entries(got)) {

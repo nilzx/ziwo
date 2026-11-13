@@ -14,6 +14,7 @@
 
 import { type Embedder, type EmbedSettings, labelOf, prepare } from "../embed";
 import { logLine } from "../log";
+import { KindSubject } from "../store/content";
 import { labelKey, type Store } from "../store/store";
 import type { Label } from "../store/vectors";
 import { clip } from "./clean";
@@ -35,8 +36,9 @@ export const lastRetry = 60_000;
 export const fullEvery = 60 * 60 * 1000;
 
 // textOf is what is embedded of a memory: its gist and body, cut as Go cuts
-// them.
-export function textOf(m: { gist: string; body: string }): string {
+// them; of a subject, its name and description.
+export function textOf(m: { gist: string; body: string; kind?: string; about?: string }): string {
+  if (m.kind === KindSubject) return clip((m.about ?? "") + "\n" + m.gist, embedMaxRunes);
   return clip(m.gist + "\n" + m.body, embedMaxRunes);
 }
 

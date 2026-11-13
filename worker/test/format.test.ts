@@ -150,6 +150,6 @@ describe("rebuilding", () => {
       version: storage.sql.exec(`SELECT value FROM meta WHERE key = 'index'`).one().value,
     }));
     expect(after.dump).toBe(before);
-    expect(after.version).toBe("1");
+    expect(after.version).toBe("2");
   });
 });

@@ -206,7 +206,9 @@ describe("import", () => {
       exportedAt: go.exportedAt, note: "It answers to the token it had when it was exported.",
     });
     const text = await (await admin(`/admin/memories/${name}/check`, { accept: "text/plain" })).text();
-    expect(text).toBe(go.importCheck);
+    // Beyond Go: the subjects' figure. A Go export holds no subject, and
+    // every memory in it belongs to none.
+    expect(text).toBe(go.importCheck.replace("\nproblems:", "\nsubjects: 0 (0 with moments waiting); 4 memories belong to no subject\nproblems:"));
     const facts = await inMemory(name, (obj, storage) => ({
       token: obj.store.tokenHash(),
       events: storage.sql.exec<{ seq: number; at: number; kind: string; payload: string }>(`SELECT seq, at, kind, payload FROM events ORDER BY seq`).toArray(),

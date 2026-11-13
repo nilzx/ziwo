@@ -2,7 +2,7 @@
 // says, and the preferences. Port of amend.go. The store methods in store.ts
 // hold the transaction; these functions run inside it.
 
-import { type Append, KindSelf, StateErased, StateSuperseded, writeMemory } from "./content";
+import { type Append, KindSelf, KindSubject, StateErased, StateSuperseded, writeMemory } from "./content";
 import { bit, type Db, flag, num, text } from "./db";
 import { clampStrength, crossings, isCore, type Params } from "./decay";
 import { ErasedError, NoMemoryError, NoPreferenceError, NoSessionError, SupersededError, TooManyPreferencesError } from "./errors";
@@ -193,15 +193,28 @@ function applyStanding(db: Db, p: Params, e: AmendEvent): void {
 // Unlike Go it also empties about and context: they are part of what the
 // memory said, and applyRemember never fills them in on a replay once the
 // content is gone.
+//
+// An erased item leaves its subject. An erased subject item takes its name
+// and description out of the subjects' index; if it stood for its subject,
+// the subject is gone and its items belong to none.
 export function applyErase(db: Db, at: number, e: EraseEvent): void {
-  const r = db.first(`SELECT n FROM memories WHERE id = ?`, e.id);
+  const r = db.first(`SELECT n, kind, state FROM memories WHERE id = ?`, e.id);
   if (r === undefined) return;
   const n = num(r.n);
   db.run(
     `UPDATE memories SET state = '${StateErased}', gist = '', body = '', outcome = '', feeling = '',
-       lesson = '', people = '[]', pointer = '', about = '', context = '', hash = '' WHERE n = ?`,
+       lesson = '', people = '[]', pointer = '', about = '', context = '', hash = '', subject = '' WHERE n = ?`,
     n,
   );
-  db.run(`DELETE FROM memories_fts WHERE rowid = ?`, n);
+  if (text(r.kind) !== KindSubject) {
+    db.run(`DELETE FROM memories_fts WHERE rowid = ?`, n);
+  } else {
+    db.run(`DELETE FROM subjects_fts WHERE rowid = ?`, n);
+    db.run(`DELETE FROM subject_names WHERE id = ?`, e.id);
+    if (text(r.state) === "") {
+      db.run(`DELETE FROM subjects WHERE id = ?`, e.id);
+      db.run(`UPDATE memories SET subject = '' WHERE subject = ?`, e.id);
+    }
+  }
   db.sessionActive(e.session, at);
 }

@@ -45,6 +45,10 @@ export interface RememberEvent {
   // none. Absent on an impression, the impressions it replaces are found by
   // what they are about, as Go does.
   replaces?: string[];
+  // A fragment, an episode or a lesson: the id of the subject item that
+  // stood for its subject when it was written. Absent for an unsorted item,
+  // and on every other kind. New on this platform.
+  subject?: string;
 }
 
 export interface RecallEvent {
@@ -115,6 +119,7 @@ export function encodeRemember(e: RememberEvent): string {
     ref: omit(e.ref),
     milestone: e.milestone ? true : undefined,
     replaces: e.replaces !== undefined && e.replaces.length > 0 ? e.replaces : undefined,
+    subject: omit(e.subject ?? ""),
   });
 }
 
@@ -173,6 +178,7 @@ export function decodeRemember(payload: string): RememberEvent {
     milestone: bool(o, "milestone"),
     // Absent and null both mean the field was not written.
     replaces: o.replaces === undefined || o.replaces === null ? undefined : strs(o, "replaces"),
+    subject: str(o, "subject"),
   };
 }
 

@@ -133,7 +133,7 @@ export function clean(req: RememberRequest, now: number): RememberInput {
 }
 
 // CleanText is what cleanText returns: every field filled in.
-export type CleanText = Required<Omit<RememberInput, "sessionId" | "happened">>;
+export type CleanText = Required<Omit<RememberInput, "sessionId" | "happened" | "subject">>;
 
 // cleanText checks what a memory says and fills in defaults.
 export function cleanText(req: RememberRequest): CleanText {

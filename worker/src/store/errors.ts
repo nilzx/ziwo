@@ -83,3 +83,16 @@ export class EntryError extends Error {
     super(`entry ${index + 1}: ${msg}`);
   }
 }
+
+// SubjectError is thrown when a subject given by name or id cannot be used:
+// the name has no letter or digit, or the id names no subject. value is as it
+// was given.
+export class SubjectError extends Error {
+  override name = "SubjectError";
+  constructor(
+    readonly value: string,
+    readonly reason: "no-letter" | "no-subject",
+  ) {
+    super(reason === "no-letter" ? "a subject's name needs a letter or a digit" : "no such subject");
+  }
+}

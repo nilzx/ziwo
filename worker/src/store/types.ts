@@ -54,6 +54,9 @@ export interface Memory {
   retracted: boolean; // set aside on request; not recalled until restored
   pinned: boolean; // kept as core on request
   corrects: string; // id of the memory this one corrects
+  // Fragment, episode, lesson: the head of the subject it is filed under, or
+  // "". Subject item: the head of its subject, itself while it stands.
+  subject: string;
 
   // Forgetting; see decay.ts. The clock counts memories written.
   ord: number; // 1 for the first memory written, 2 for the next
@@ -88,6 +91,35 @@ export interface RememberInput {
   // When it took place, for a memory reconstructed afterwards. Absent or 0
   // means when it was written.
   happened?: number;
+  // The subject it belongs to, by name or id, already cleaned; absent or ""
+  // for none.
+  subject?: string;
+}
+
+// Subject is a subject as its head says it: the subject item that stands
+// for it now.
+export interface Subject {
+  id: string; // the head's id
+  n: number; // the head's row number
+  name: string;
+  description: string; // "" when none was given
+  activeAt: number; // the latest time something was written into it
+}
+
+// SubjectFigures are a subject's figures, read when shown: the items that
+// stand in it, by kind, and the fragments in it that wait for reflect.
+export interface SubjectFigures {
+  fragments: number;
+  episodes: number;
+  lessons: number;
+  waiting: number;
+}
+
+// Waiting is how many fragments of one subject wait for reflect, and how
+// many of those are ripe for the session asking.
+export interface Waiting {
+  waiting: number;
+  ripe: number;
 }
 
 // RecallNote records that some memories came to mind.

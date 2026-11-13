@@ -3,7 +3,18 @@
 // worth a second look. It is how a memory is examined by its owner, or by
 // whoever tests the system, without anyone reading it. Port of check.go.
 
-import { KindFragment, KindImpression, KindSelf, SourceReconstructed, StateAbsorbed, StateErased, StateSuperseded } from "./content";
+import {
+  KindEpisode,
+  KindFragment,
+  KindImpression,
+  KindLesson,
+  KindSelf,
+  KindSubject,
+  SourceReconstructed,
+  StateAbsorbed,
+  StateErased,
+  StateSuperseded,
+} from "./content";
 import { type Binding, type Db, text } from "./db";
 import { kindAmend, kindErase, kindExpand, kindRecall, kindReflect, kindRemember, kindRestore, kindSession } from "./events";
 import { sha256Hex } from "./ids";
@@ -206,8 +217,21 @@ function checkTables(c: Checker, db: Db): void {
         OR (m.corrects <> '' AND m.corrects NOT IN (SELECT id FROM memories))
         OR (m.ref <> '' AND m.ref NOT IN (SELECT id FROM memories))
      UNION SELECT l.src FROM links l WHERE l.dst NOT IN (SELECT id FROM memories) OR l.src NOT IN (SELECT id FROM memories)
-     UNION SELECT json_extract(e.payload, '$.id') FROM events e, json_each(e.payload, '$.replaces') r
-      WHERE e.kind = ? AND r.value NOT IN (SELECT id FROM memories)`, kindRemember);
+     UNION SELECT json_extract(e.payload, '$.id') FROM events e
+      WHERE e.kind = ? AND (json_extract(e.payload, '$.subject') NOT IN (SELECT id FROM memories)
+        OR EXISTS (SELECT 1 FROM json_each(e.payload, '$.replaces') r WHERE r.value NOT IN (SELECT id FROM memories)))`,
+    kindRemember);
+  // A subject stands by its head: a subject item that stands, heads itself,
+  // and has a row in subjects. Every item filed under a subject names one.
+  // Each read goes through an index: most memories belong to no subject.
+  const heads = `(SELECT id FROM memories INDEXED BY memories_by_kind WHERE kind = '${KindSubject}' AND state = '')`;
+  c.flag(LevelProblem, "subject-off",
+    "memories are filed under a subject that does not stand, or the subjects table disagrees with the subject items: run rebuild",
+    `SELECT m.id FROM memories m INDEXED BY memories_by_subject WHERE m.subject > '' AND m.subject NOT IN ${heads}
+     UNION SELECT m.id FROM memories m INDEXED BY memories_by_kind WHERE m.kind = '${KindSubject}' AND m.state = ''
+        AND (m.subject <> m.id OR m.id NOT IN (SELECT id FROM subjects))
+     UNION SELECT s.id FROM subjects s WHERE s.id NOT IN ${heads}
+        OR s.n <> (SELECT n FROM memories WHERE id = s.id)`);
   c.flag(LevelWarning, "nothing-in-its-place", "memories were replaced or absorbed by one that no longer stands",
     `SELECT m.id FROM memories m JOIN memories by ON by.id = m.state_by
       WHERE m.state IN (?1, ?2) AND m.retracted = 0 AND (by.retracted = 1 OR by.state = ?3)`,
@@ -271,6 +295,17 @@ function checkUse(c: Checker): void {
   const pending = c.one(`SELECT count(*) FROM memories m WHERE ${isPending}`);
   if (pending >= checkBacklog) c.find(LevelWarning, "backlog", [], `${pending} moments have not been reflected on`);
   else c.figure("waiting for reflect", `${pending}`);
+  const members = `m.kind IN ('${KindFragment}', '${KindEpisode}', '${KindLesson}') AND ${isLive}`;
+  c.figure("subjects",
+    `${c.one(`SELECT count(*) FROM subjects`)} ` +
+    `(${c.one(`SELECT count(DISTINCT m.subject) FROM memories m INDEXED BY memories_pending WHERE ${isPending} AND m.subject > ''`)} with moments waiting); ` +
+    `${c.one(`SELECT count(*) FROM memories m INDEXED BY memories_by_subject WHERE m.subject = '' AND ${members}`)} memories belong to no subject`);
+  const single = c.list(`SELECT s.id FROM subjects s
+    WHERE (SELECT count(*) FROM memories m INDEXED BY memories_by_subject WHERE m.subject = s.id AND ${members}) = 1 ORDER BY s.n`);
+  if (single.length > 0) {
+    c.find(LevelNote, "subject-of-one", single,
+      `${single.length} subjects hold a single memory; one may be a slip, to merge in a round of reflection`);
+  }
   const variants = c.one(`SELECT count(*) FROM (SELECT lower(trim(about)) FROM memories WHERE kind = ? GROUP BY 1
     HAVING count(DISTINCT about) > 1)`, KindImpression);
   if (variants > 0) {

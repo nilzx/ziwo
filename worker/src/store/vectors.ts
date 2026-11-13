@@ -89,9 +89,10 @@ class Mirror {
   }
 
   // search returns up to k vectors closest to q, best first, leaving out any
-  // whose similarity is below min, and any of a memory not in among when it
-  // is given. q is a unit vector of the label's size.
-  search(q: Float32Array, k: number, min: number, among?: ReadonlySet<number>): VectorHit[] {
+  // whose similarity is below min, any of a memory not in among when it is
+  // given, and any of a memory in except. q is a unit vector of the label's
+  // size.
+  search(q: Float32Array, k: number, min: number, among?: ReadonlySet<number>, except?: ReadonlySet<number>): VectorHit[] {
     const dims = this.label.dims;
     if (q.length !== dims || k <= 0) return [];
     const top: VectorHit[] = [];
@@ -99,6 +100,7 @@ class Mirror {
       const v = p.vecs;
       for (let i = 0; i < p.count; i++) {
         if (among !== undefined && !among.has(p.ns[i]!)) continue;
+        if (except !== undefined && except.has(p.ns[i]!)) continue;
         const off = i * dims;
         let s = 0;
         for (let j = 0; j < dims; j++) s += q[j]! * v[off + j]!;
@@ -174,8 +176,8 @@ export class VectorRows {
     return this.index(label).size;
   }
 
-  search(label: Label, q: Float32Array, k: number, min: number, among?: ReadonlySet<number>): VectorHit[] {
-    return this.index(label).search(q, k, min, among);
+  search(label: Label, q: Float32Array, k: number, min: number, among?: ReadonlySet<number>, except?: ReadonlySet<number>): VectorHit[] {
+    return this.index(label).search(q, k, min, among, except);
   }
 
   // add stores the unit vectors given, of label, each in place of the one

@@ -21,8 +21,11 @@ export const logFormat = 3;
 // reflect events, and replays an erasure the way it was lived (see
 // applyRemember and applyErase); 9 keeps the time zone a session reported;
 // 10 keys a carrier by one spelling of its name (see carrierKey); 11 indexes
-// what replaced a memory (state_by), which expand shows with the new memory.
-export const derivedVersion = "11";
+// what replaced a memory (state_by), which expand shows with the new memory;
+// 12 files items under subjects (subject, subjects, subject_names), keeps when
+// a session last wrote a fragment, and leaves subject items out of what is
+// listed.
+export const derivedVersion = "12";
 
 // appendOnlyTriggers make the database itself refuse to change or remove an
 // event.
@@ -76,6 +79,8 @@ BEGIN SELECT RAISE(ABORT, 'content is written once'); END;
 // The derived tables other than the keyword index, which is cleared rather
 // than dropped: see indexSchema.
 export const dropDerived = `
+DROP TABLE IF EXISTS subject_names;
+DROP TABLE IF EXISTS subjects;
 DROP TABLE IF EXISTS restores;
 DROP TABLE IF EXISTS links;
 DROP TABLE IF EXISTS policies;
@@ -91,9 +96,11 @@ CREATE TABLE sessions (
   last_active_at INTEGER NOT NULL, -- last time it started, wrote or recalled
   model          TEXT    NOT NULL, -- self-reported by the model; '' when unknown
   client         TEXT    NOT NULL, -- MCP client name; '' when unknown
-  tz             TEXT    NOT NULL  -- IANA time zone the model reported; '' when none
+  tz             TEXT    NOT NULL, -- IANA time zone the model reported; '' when none
+  wrote_at       INTEGER NOT NULL  -- last time it wrote a fragment; 0 when it wrote none
 ) STRICT;
 CREATE INDEX sessions_by_activity ON sessions(last_active_at);
+CREATE INDEX sessions_by_wrote ON sessions(wrote_at);
 
 -- One row per model that has ever loaded this memory.
 CREATE TABLE carriers (
@@ -109,7 +116,7 @@ CREATE TABLE memories (
   created_at       INTEGER NOT NULL, -- when it happened
   written_at       INTEGER NOT NULL, -- when it was written; later, for what was reconstructed
   session_id       TEXT    NOT NULL,
-  kind             TEXT    NOT NULL, -- fragment, episode, lesson, impression, self or reading
+  kind             TEXT    NOT NULL, -- fragment, episode, lesson, impression, self, reading or subject
   moment           TEXT    NOT NULL,
   source           TEXT    NOT NULL,
   importance       REAL    NOT NULL,
@@ -121,7 +128,7 @@ CREATE TABLE memories (
   lesson           TEXT    NOT NULL,
   people           TEXT    NOT NULL, -- JSON array of names
   pointer          TEXT    NOT NULL,
-  about            TEXT    NOT NULL, -- impression: who or what it is about
+  about            TEXT    NOT NULL, -- impression: who or what it is about; subject: its name
   context          TEXT    NOT NULL, -- self: the situation the statement holds in
   ref              TEXT    NOT NULL, -- self: the statement it revises; reading: the memory it reads
   milestone        INTEGER NOT NULL, -- 0 or 1; marked as a milestone when reflected on
@@ -144,23 +151,33 @@ CREATE TABLE memories (
   state_by         TEXT    NOT NULL, -- id of the memory that replaced or absorbed it, or ''
   retracted        INTEGER NOT NULL, -- 0 or 1; set aside on request, can be restored
   pinned           INTEGER NOT NULL, -- 0 or 1; kept as core on request
-  corrects         TEXT    NOT NULL  -- id of the memory this one corrects, or ''
+  corrects         TEXT    NOT NULL, -- id of the memory this one corrects, or ''
+  subject          TEXT    NOT NULL  -- fragment, episode, lesson: the head of its subject, or '';
+                                     -- subject item: the head of its subject (itself while it stands);
+                                     -- '' for every other kind, and once erased
 ) STRICT;
 CREATE INDEX memories_by_hash ON memories(hash, written_at);
 CREATE INDEX memories_by_archive ON memories(archive_at) WHERE core = 0;
 CREATE INDEX memories_by_kind ON memories(kind, about);
 CREATE INDEX memories_by_ref ON memories(ref) WHERE ref <> '';
+-- The items of a subject ('' for those of none), and what they are.
+CREATE INDEX memories_by_subject ON memories(subject, kind, state, retracted);
 -- What every new session reads: the tier counts, the newest memories, the
 -- core ones, and how many fragments wait. Each index holds only the memories
 -- its query is about, in the order the query wants them, so loading does not
--- walk the whole table. Their conditions are those in conditions.ts.
+-- walk the whole table. Their conditions are those in conditions.ts. The
+-- kinds left out are written as one comparison each: SQLite looks a NOT IN
+-- of three values up in a table of its own, which costs a row read for
+-- every memory it is asked of.
 CREATE INDEX memories_standing_tiers ON memories(core, fade_at, archive_at)
-  WHERE state = '' AND retracted = 0 AND kind NOT IN ('self', 'reading');
+  WHERE state = '' AND retracted = 0 AND kind <> 'self' AND kind <> 'reading' AND kind <> 'subject';
 CREATE INDEX memories_standing_recent ON memories(created_at DESC, n DESC)
-  WHERE state = '' AND retracted = 0 AND kind NOT IN ('self', 'reading');
+  WHERE state = '' AND retracted = 0 AND kind <> 'self' AND kind <> 'reading' AND kind <> 'subject';
 CREATE INDEX memories_standing_core ON memories(pinned DESC, importance DESC, intensity DESC, n DESC)
-  WHERE core = 1 AND state = '' AND retracted = 0 AND kind NOT IN ('self', 'reading');
-CREATE INDEX memories_pending ON memories(core, fade_at, n)
+  WHERE core = 1 AND state = '' AND retracted = 0 AND kind <> 'self' AND kind <> 'reading' AND kind <> 'subject';
+-- What waits for reflect, by subject ('' for unsorted), nearest to fading first; with the
+-- session that wrote it, so that ripeness is read from the index alone.
+CREATE INDEX memories_pending ON memories(subject, core, fade_at, n, session_id)
   WHERE kind = 'fragment' AND state = '' AND retracted = 0 AND reviewed IS NULL;
 
 -- What replaced or absorbed a memory, looked up from the new memory.
@@ -173,6 +190,24 @@ CREATE TABLE links (
   PRIMARY KEY (src, dst)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX links_by_dst ON links(dst);
+
+-- Each subject, by the subject item that stands for it.
+CREATE TABLE subjects (
+  id        TEXT    PRIMARY KEY,      -- the head
+  n         INTEGER NOT NULL UNIQUE,  -- its row number in memories
+  active_at INTEGER NOT NULL          -- the latest time something was written into it, unix ms
+) STRICT;
+CREATE INDEX subjects_by_activity ON subjects(active_at, n);
+
+-- The keys of the names subject items were written with, to resolve a name
+-- when something is written. A replay never resolves a name: this table is
+-- read only by writes.
+CREATE TABLE subject_names (
+  key TEXT NOT NULL,  -- subjectKey of the name
+  id  TEXT NOT NULL,  -- the subject item written with it
+  PRIMARY KEY (key, id)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX subject_names_by_id ON subject_names(id);
 
 -- Standing rules about what to remember, set in conversation.
 CREATE TABLE policies (
@@ -200,9 +235,9 @@ CREATE TABLE restores (
 //
 // indexVersion identifies the definition below. Bump it whenever the
 // definition changes: the index is then dropped, created again and refilled.
-export const indexVersion = "1";
+export const indexVersion = "2";
 
-export const dropIndex = `DROP TABLE IF EXISTS memories_fts;`;
+export const dropIndex = `DROP TABLE IF EXISTS memories_fts; DROP TABLE IF EXISTS subjects_fts;`;
 
 export const indexSchema = `
 -- Keyword index. rowid = memories.n. Contentless: the text lives in memories.
@@ -211,9 +246,15 @@ export const indexSchema = `
 CREATE VIRTUAL TABLE memories_fts USING fts5(
   gist, rest, content='', contentless_delete=1, tokenize='unicode61'
 );
+-- Subjects, by name and description. rowid = memories.n of the subject item.
+-- Kept apart from memories_fts so that subjects take no part in how items rank.
+CREATE VIRTUAL TABLE subjects_fts USING fts5(
+  name, description, content='', contentless_delete=1, tokenize='unicode61'
+);
 `;
 
-export const clearIndex = `INSERT INTO memories_fts(memories_fts) VALUES('delete-all');`;
+export const clearIndex = `INSERT INTO memories_fts(memories_fts) VALUES('delete-all');
+INSERT INTO subjects_fts(subjects_fts) VALUES('delete-all');`;
 
 // Keys of the meta table. The first four are as in Go (format.go); the rest
 // are new on this platform.
@@ -229,6 +270,9 @@ export const metaZone = "timezone";
 // The open round of reflection, as in Go (reflect.go). It is working state,
 // not memory: it is not in the log, and a rebuild leaves it as it is.
 export const metaReflect = "reflect";
+// The sessions already asked to reflect, as a JSON array of session ids,
+// newest last. Working state as well: not in the log, kept by a rebuild.
+export const metaPrompted = "prompted";
 // What the alarm that embeds keeps about its runs (see embedding.ts). Working
 // state too, not memory: a rebuild leaves it as it is.
 export const metaVectorsSeen = "vectors_seen"; // the highest row number an ordinary run has dealt with

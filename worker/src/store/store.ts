@@ -18,17 +18,30 @@ import {
 import {
   type Append,
   applyRemember,
+  KindEpisode,
   KindFragment,
   KindImpression,
+  KindLesson,
   KindReading,
   KindSelf,
+  KindSubject,
   StateAbsorbed,
   StateErased,
   StateSuperseded,
   writeMemory,
 } from "./content";
 import { checkStore, type Report } from "./check";
-import { isActiveBand, isArchived, isFadedBand, isListed, isLive, isPending, notArchived, notYetFaded } from "./conditions";
+import {
+  isActiveBand,
+  isArchived,
+  isEmbedded,
+  isFadedBand,
+  isListed,
+  isLive,
+  isPending,
+  notArchived,
+  notYetFaded,
+} from "./conditions";
 import { type Binding, Db, flag, inList, isConstraint, num, realOrZero, type Row, text, type Usage } from "./db";
 import {
   crossings,
@@ -62,11 +75,12 @@ import {
   kindRestore,
   kindSession,
 } from "./events";
-import { NoSessionError } from "./errors";
+import { NoSessionError, SubjectError } from "./errors";
 import type { ParsedExport } from "./export";
 import { contentHash, newID } from "./ids";
 import { abandonReflect, applyReflect, beginReflect, type Entry, finishReflect } from "./reflect";
 import { matchQuery } from "./segment";
+import { resolveSubject, type Resolved, writeSubjectItem } from "./subjects";
 import {
   clearIndex,
   derivedSchema,
@@ -101,7 +115,10 @@ import type {
   RestoreNote,
   Session,
   Span,
+  Subject,
+  SubjectFigures,
   TextHit,
+  Waiting,
 } from "./types";
 
 // dedupWindow is how far back remember looks for an identical memory before
@@ -155,7 +172,7 @@ const memorySelect = `SELECT m.n, m.id, m.created_at, m.written_at, m.session_id
   COALESCE(s.client, '') AS client, m.moment, m.source, m.importance, m.intensity, m.gist, m.body, m.outcome,
   m.feeling, m.lesson, m.people, m.pointer, m.last_recalled_at, m.recall_count, m.ord, m.touched_ord, m.read_ord,
   m.core, m.strength, m.fade_at, m.archive_at, m.kind, m.state, m.state_by, m.retracted, m.pinned, m.corrects,
-  m.about, m.context, m.ref, m.milestone, m.reviewed IS NULL AS unreviewed
+  m.about, m.context, m.ref, m.milestone, m.reviewed IS NULL AS unreviewed, m.subject
 FROM memories m`;
 const memoryJoin = ` LEFT JOIN sessions s ON s.id = m.session_id `;
 
@@ -323,6 +340,13 @@ export class Store {
     // does when it applies the event. Only such a memory has an empty hash
     // and stands otherwise; the hash index finds it.
     this.db.run(`UPDATE memories SET state = '${StateErased}' WHERE hash = '' AND state <> '${StateErased}'`);
+    // A subject item so marked no longer stands for its subject, whose items
+    // are then of none.
+    this.db.run(`DELETE FROM subjects WHERE id IN (SELECT id FROM memories WHERE kind = '${KindSubject}' AND state = '${StateErased}')`);
+    this.db.run(
+      `UPDATE memories SET subject = '' WHERE subject IN (SELECT id FROM memories WHERE kind = '${KindSubject}' AND state = '${StateErased}')`,
+    );
+    this.db.run(`UPDATE memories SET subject = '' WHERE kind = '${KindSubject}' AND state = '${StateErased}'`);
     this.vec.removeOrphans();
     this.db.setMeta(metaDerived, this.derivedMark());
   }
@@ -345,7 +369,7 @@ export class Store {
       case kindSession: {
         const e = decodeSession(payload);
         this.db.run(
-          `INSERT INTO sessions(id, started_at, last_active_at, model, client, tz) VALUES(?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO sessions(id, started_at, last_active_at, model, client, tz, wrote_at) VALUES(?, ?, ?, ?, ?, ?, 0)`,
           e.id, at, at, e.model, e.client, e.tz ?? "",
         );
         const carrier = carrierKey(e.model);
@@ -483,9 +507,13 @@ export class Store {
   }
 
   // remember writes a new memory and returns its id. If an identical memory
-  // was written within dedupWindow, it returns that memory's id and dup true.
-  // It throws NoSessionError when the session does not exist.
-  remember(at: number, input: RememberInput): { id: string; dup: boolean } {
+  // was written within dedupWindow, it returns that memory's id and dup true,
+  // and the subject is not looked at. It throws NoSessionError when the
+  // session does not exist, and SubjectError when the subject given cannot
+  // be used. With a subject, subject says which, by its head, and whether
+  // the name started it: a new name first writes the subject item, in the
+  // same transaction.
+  remember(at: number, input: RememberInput): { id: string; dup: boolean; subject?: { id: string; started: boolean } } {
     const hash = contentHash(input.gist, input.body);
     const since = at - dedupWindow;
     return this.retry(() => {
@@ -499,6 +527,18 @@ export class Store {
         hash, since,
       );
       if (existing !== undefined) return { id: text(existing.id), dup: true };
+      let subject = "";
+      let started = false;
+      if ((input.subject ?? "") !== "") {
+        const r = resolveSubject(this.db, input.subject ?? "");
+        if ("refused" in r) throw new SubjectError(input.subject ?? "", r.refused);
+        if ("head" in r) subject = r.head;
+        if ("fresh" in r) {
+          subject = newID("m_");
+          started = true;
+          writeSubjectItem(this.db, this.append, at, input.sessionId, subject, { name: r.fresh, description: "", replaces: [], from: [] });
+        }
+      }
       const id = newID("m_");
       writeMemory(
         this.db,
@@ -507,15 +547,36 @@ export class Store {
         {
           id, session: input.sessionId, kind: "", moment: input.moment, source: input.source,
           importance: input.importance, intensity: input.intensity ?? 0, hash: "", corrects: "",
-          happened: input.happened ?? 0, from: [], ref: "", milestone: false,
+          happened: input.happened ?? 0, from: [], ref: "", milestone: false, subject,
         },
         {
           gist: input.gist, body: input.body, outcome: input.outcome, feeling: input.feeling,
           lesson: input.lesson, people: input.people, pointer: input.pointer,
         },
       );
-      return { id, dup: false };
+      return subject === "" ? { id, dup: false } : { id, dup: false, subject: { id: subject, started } };
     });
+  }
+
+  // writeSubject writes one subject item by itself and returns its id: a new
+  // subject, or with replaces the subjects it takes the place of (by their
+  // heads), and with from the items it puts under itself. Nothing is
+  // checked: a round of reflection writes subject items after its own
+  // checks, and tests write them with this.
+  writeSubject(at: number, session: string, s: { name: string; description?: string; replaces?: string[]; from?: string[] }): string {
+    return this.retry(() => {
+      const id = newID("m_");
+      writeSubjectItem(this.db, this.append, at, session, id, {
+        name: s.name, description: s.description ?? "", replaces: s.replaces ?? [], from: s.from ?? [],
+      });
+      return id;
+    });
+  }
+
+  // resolveSubject resolves a subject given by name or id as a write does
+  // (see subjects.ts).
+  resolveSubject(value: string): Resolved {
+    return resolveSubject(this.db, value);
   }
 
   // amend changes a memory's standing or weight: action is one of the Amend
@@ -692,10 +753,13 @@ export class Store {
   // An ordinary search matches active and core memories on anything they say,
   // and faded memories on their gist alone. Archived memories are left out. A
   // deep search matches every memory on anything it says.
-  searchText(query: string, clock: number, deep: boolean, limit: number, span?: Span): TextHit[] {
+  searchText(query: string, clock: number, deep: boolean, limit: number, span?: Span, subject?: string): TextHit[] {
     const match = matchQuery(query);
     if (match === "") return [];
-    const { cond, args } = span === undefined ? { cond: "", args: [] } : spanCond(span);
+    const kept = span === undefined ? { cond: "", args: [] as Binding[] } : spanCond(span);
+    // A recall kept to one subject ("" for the items of none).
+    const cond = kept.cond + (subject === undefined ? "" : " AND m.subject = ?");
+    const args: Binding[] = subject === undefined ? kept.args : [...kept.args, subject];
     // CROSS JOIN fixes the order: the keyword index is read first and each
     // match looked up by row number. Left to choose, the planner may walk an
     // index of memories and probe the keyword index once per memory.
@@ -725,9 +789,17 @@ export class Store {
   }
 
   // pending returns up to limit fragments that reflect has not dealt with,
-  // those nearest to fading first.
+  // those nearest to fading first. The index keeps them by subject: the
+  // first of each subject are read and merged.
   pending(limit: number): Memory[] {
-    return this.memoriesBy("memories_pending", `WHERE ${isPending} ORDER BY m.core, m.fade_at, m.n LIMIT ?`, limit);
+    const all = ["", ...this.db.all(`SELECT id FROM subjects`).map((r) => text(r.id))]
+      .flatMap((subject) => this.pendingOf(subject, [], limit));
+    const order = (m: Memory): [number, number, number] => [m.core ? 1 : 0, m.core ? 0 : m.fadeAt, m.n];
+    all.sort((a, b) => {
+      const [x, y] = [order(a), order(b)];
+      return x[0] - y[0] || x[1] - y[1] || x[2] - y[2];
+    });
+    return all.slice(0, limit);
   }
 
   // pendingCount reports how many fragments wait for reflect.
@@ -735,6 +807,187 @@ export class Store {
     return num(
       this.db.first(`SELECT count(*) AS c FROM memories m INDEXED BY memories_pending WHERE ${isPending}`)?.c,
     );
+  }
+
+  // ---- Subjects. See subjects.ts. A subject is shown by its head; its
+  // figures are read when shown.
+
+  // subjectsRecent returns the subjects most recently active, newest first.
+  subjectsRecent(limit: number): Subject[] {
+    return this.db
+      .all(
+        `SELECT s.id, s.n, s.active_at, m.about, m.gist FROM subjects s INDEXED BY subjects_by_activity
+           JOIN memories m ON m.n = s.n ORDER BY s.active_at DESC, s.n DESC LIMIT ?`,
+        limit,
+      )
+      .map(toSubject);
+  }
+
+  // subjects returns the subjects with the given heads, in the order asked
+  // for. An id that is no head is skipped.
+  subjects(heads: string[]): Subject[] {
+    if (heads.length === 0) return [];
+    const byID = new Map(
+      this.db
+        .all(`SELECT s.id, s.n, s.active_at, m.about, m.gist FROM subjects s JOIN memories m ON m.n = s.n WHERE s.id IN ${inList}`, JSON.stringify(heads))
+        .map((r) => [text(r.id), toSubject(r)]),
+    );
+    return [...new Set(heads)].flatMap((h) => {
+      const x = byID.get(h);
+      return x === undefined ? [] : [x];
+    });
+  }
+
+  // subjectCount reports how many subjects there are.
+  subjectCount(): number {
+    return num(this.db.first(`SELECT count(*) AS c FROM subjects`)?.c);
+  }
+
+  // subjectFigures reads the figures of the subjects with the given heads:
+  // the fragments, episodes and lessons that stand in each, in any tier, and
+  // its fragments that wait for reflect, ripe or not. Read from
+  // memories_by_subject and memories_pending alone.
+  subjectFigures(heads: string[]): Map<string, SubjectFigures> {
+    const out = new Map<string, SubjectFigures>();
+    if (heads.length === 0) return out;
+    for (const h of heads) out.set(h, { fragments: 0, episodes: 0, lessons: 0, waiting: 0 });
+    const list = JSON.stringify(heads);
+    for (const r of this.db.all(
+      `SELECT m.subject, m.kind, count(*) AS c FROM memories m INDEXED BY memories_by_subject
+        WHERE m.subject IN ${inList} AND m.kind IN ('${KindFragment}', '${KindEpisode}', '${KindLesson}') AND ${isLive}
+        GROUP BY m.subject, m.kind`,
+      list,
+    )) {
+      const f = out.get(text(r.subject))!;
+      const c = num(r.c);
+      if (text(r.kind) === KindFragment) f.fragments = c;
+      else if (text(r.kind) === KindEpisode) f.episodes = c;
+      else f.lessons = c;
+    }
+    for (const [subject, w] of this.waitingBySubject(heads, [])) out.get(subject)!.waiting = w.waiting;
+    return out;
+  }
+
+  // hotSessions returns the sessions whose fragments are not ripe: those
+  // that wrote a fragment after since, and asking, the session that asks.
+  hotSessions(since: number, asking: string): string[] {
+    const hot = this.db
+      .all(`SELECT id FROM sessions INDEXED BY sessions_by_wrote WHERE wrote_at > ?`, since)
+      .map((r) => text(r.id));
+    if (asking !== "" && !hot.includes(asking)) hot.push(asking);
+    return hot;
+  }
+
+  // waitingBySubject counts, for each of the given subjects ("" for the
+  // unsorted), the fragments that wait for reflect and how many of them are
+  // ripe: written in none of the hot sessions. One read of memories_pending.
+  // A subject with none waiting is left out.
+  waitingBySubject(subjects: string[], hot: string[]): Map<string, Waiting> {
+    const out = new Map<string, Waiting>();
+    if (subjects.length === 0) return out;
+    for (const r of this.db.all(
+      `SELECT m.subject, count(*) AS waiting, count(*) FILTER (WHERE m.session_id NOT IN ${inList}) AS ripe
+         FROM memories m INDEXED BY memories_pending WHERE ${isPending} AND m.subject IN ${inList} GROUP BY m.subject`,
+      JSON.stringify(hot), JSON.stringify(subjects),
+    )) {
+      out.set(text(r.subject), { waiting: num(r.waiting), ripe: num(r.ripe) });
+    }
+    return out;
+  }
+
+  // ripestSubject returns the subject ("" for the unsorted) with the most
+  // ripe fragments waiting, and how many; ties go to the one whose oldest
+  // ripe fragment was written first. Undefined when none is ripe.
+  ripestSubject(hot: string[]): { subject: string; ripe: number } | undefined {
+    let best: { subject: string; ripe: number; first: number } | undefined;
+    for (const r of this.db.all(
+      `SELECT m.subject, count(*) AS ripe, MIN(m.n) AS first FROM memories m INDEXED BY memories_pending
+        WHERE ${isPending} AND m.session_id NOT IN ${inList} GROUP BY m.subject`,
+      JSON.stringify(hot),
+    )) {
+      const x = { subject: text(r.subject), ripe: num(r.ripe), first: num(r.first) };
+      if (best === undefined || x.ripe > best.ripe || (x.ripe === best.ripe && x.first < best.first)) best = x;
+    }
+    return best === undefined ? undefined : { subject: best.subject, ripe: best.ripe };
+  }
+
+  // pendingOf returns up to limit ripe fragments of the subject ("" for the
+  // unsorted) that wait for reflect, those nearest to fading first.
+  pendingOf(subject: string, hot: string[], limit: number): Memory[] {
+    return this.memoriesBy(
+      "memories_pending",
+      `WHERE ${isPending} AND m.subject = ? AND m.session_id NOT IN ${inList} ORDER BY m.core, m.fade_at, m.n LIMIT ?`,
+      subject, JSON.stringify(hot), limit,
+    );
+  }
+
+  // heldOn returns up to limit episodes and lessons of the subject ("" for
+  // those of none) that stand and are not archived when the clock reads
+  // clock, newest first.
+  heldOn(subject: string, clock: number, limit: number): Memory[] {
+    return this.memoriesBy(
+      "memories_by_subject",
+      `WHERE m.subject = ? AND m.kind IN ('${KindEpisode}', '${KindLesson}') AND ${isLive} AND ${notArchived}
+       ORDER BY m.created_at DESC, m.n DESC LIMIT ?`,
+      subject, clock, limit,
+    );
+  }
+
+  // subjectMembersNs returns the row numbers of the listed memories of the
+  // subject ("" for those of none), in any standing: what a search by
+  // meaning kept to it may find. Read from the index alone.
+  subjectMembersNs(subject: string): Set<number> {
+    return new Set(
+      this.db
+        .all(`SELECT m.n FROM memories m INDEXED BY memories_by_subject WHERE m.subject = ? AND ${isListed}`, subject)
+        .map((r) => num(r.n)),
+    );
+  }
+
+  // inSubjectList returns the newest memories of the subject ("" for those of
+  // none) that took place within span, newest first, as inSpanList does.
+  inSubjectList(subject: string, clock: number, span: Span, deep: boolean, limit: number): Memory[] {
+    const { cond, args } = spanCond(span);
+    // The items of a subject are read through its own index; those of none
+    // may be most of the memory, and are read newest first until enough.
+    const index = subject === "" ? "memories_standing_recent" : "memories_by_subject";
+    return this.memoriesBy(
+      index,
+      `WHERE m.subject = ? AND ${isLive} AND ${isListed}${deep ? "" : ` AND ${notArchived}`}${cond}
+       ORDER BY m.created_at DESC, m.n DESC LIMIT ?`,
+      subject, ...(deep ? [] : [clock]), ...args, limit,
+    );
+  }
+
+  // searchSubjects returns the subjects that best match query by keyword in
+  // a name or a description, best first, each by its head. An earlier name
+  // finds the subject that took it over.
+  searchSubjects(query: string, limit: number): { head: string; score: number }[] {
+    const match = matchQuery(query);
+    if (match === "") return [];
+    const out: { head: string; score: number }[] = [];
+    for (const r of this.db.all(
+      `SELECT m.subject AS head, bm25(subjects_fts) AS score
+         FROM subjects_fts CROSS JOIN memories m ON m.n = subjects_fts.rowid
+        WHERE subjects_fts MATCH ? AND m.subject <> '' ORDER BY score LIMIT ?`,
+      match, 4 * limit,
+    )) {
+      const head = text(r.head);
+      // bm25 is negative, more so for a better match.
+      if (!out.some((x) => x.head === head)) out.push({ head, score: -num(r.score) });
+    }
+    return out.slice(0, limit);
+  }
+
+  // subjectNs returns the row numbers of every subject item, and of the
+  // heads among them: a search of memories by meaning leaves out the first,
+  // and a search of subjects keeps to the second.
+  subjectNs(): { all: Set<number>; heads: Set<number> } {
+    const all = new Set(
+      this.db.all(`SELECT m.n FROM memories m INDEXED BY memories_by_kind WHERE m.kind = ?`, KindSubject).map((r) => num(r.n)),
+    );
+    const heads = new Set(this.db.all(`SELECT n FROM subjects`).map((r) => num(r.n)));
+    return { all, heads };
   }
 
   // selves returns the statements about oneself that stand, oldest first.
@@ -886,21 +1139,25 @@ export class Store {
   }
 
   // ---- Vectors. See vectors.ts. A memory needs a vector when it stands,
-  // is listed and is not archived; only such memories keep one.
+  // is listed and is not archived, and so does a subject's head; only these
+  // keep one.
 
   // needingVectors returns the row numbers of the memories that need a
   // vector when the clock reads clock, in order. It reads the partial index
   // of standing memories alone, and sorts here: the platform would count the
   // rows of a sort in SQL again.
   private needingVectors(clock: number): number[] {
-    return this.db
+    const listed = this.db
       .all(
         `SELECT m.n FROM memories m INDEXED BY memories_standing_tiers
           WHERE ${isLive} AND ${isListed} AND ${notArchived}`,
         clock,
       )
-      .map((r) => num(r.n))
-      .sort((a, b) => a - b);
+      .map((r) => num(r.n));
+    const heads = this.db
+      .all(`SELECT m.n FROM memories m INDEXED BY memories_by_kind WHERE m.kind = ? AND ${isLive}`, KindSubject)
+      .map((r) => num(r.n));
+    return [...listed, ...heads].sort((a, b) => a - b);
   }
 
   // tendVectors does what comes before embedding, in one transaction: it
@@ -978,7 +1235,7 @@ export class Store {
     for (;;) {
       const rows = this.db
         .all(
-          `SELECT m.n FROM memories m WHERE m.n > ? AND ${isLive} AND ${isListed} AND ${notArchived} ORDER BY m.n LIMIT ?`,
+          `SELECT m.n FROM memories m WHERE m.n > ? AND ${isLive} AND ${isEmbedded} AND ${notArchived} ORDER BY m.n LIMIT ?`,
           after, clock, vectorScanChunk,
         )
         .map((r) => num(r.n));
@@ -1011,7 +1268,7 @@ export class Store {
       const need = new Set(
         this.db
           .all(
-            `SELECT m.n FROM memories m WHERE m.n IN ${inList} AND ${isLive} AND ${isListed} AND ${notArchived}`,
+            `SELECT m.n FROM memories m WHERE m.n IN ${inList} AND ${isLive} AND ${isEmbedded} AND ${notArchived}`,
             JSON.stringify(entries.map((e) => e.n)), clock,
           )
           .map((r) => num(r.n)),
@@ -1023,11 +1280,13 @@ export class Store {
   }
 
   // searchVectors returns up to k memories whose vectors of label are
-  // closest to the unit vector q, best first, at or above min, and only
-  // memories in among when it is given. The first search after the object
-  // wakes loads the vectors.
-  searchVectors(label: Label, q: Float32Array, k: number, min: number, among?: ReadonlySet<number>): VectorHit[] {
-    return this.vec.search(label, q, k, min, among);
+  // closest to the unit vector q, best first, at or above min, only
+  // memories in among when it is given, and none in except. The first
+  // search after the object wakes loads the vectors.
+  searchVectors(
+    label: Label, q: Float32Array, k: number, min: number, among?: ReadonlySet<number>, except?: ReadonlySet<number>,
+  ): VectorHit[] {
+    return this.vec.search(label, q, k, min, among, except);
   }
 
   // vectorCount reports how many vectors of label are stored.
@@ -1113,6 +1372,7 @@ function toMemory(r: Row): Memory {
     retracted: flag(r.retracted),
     pinned: flag(r.pinned),
     corrects: text(r.corrects),
+    subject: text(r.subject),
     ord: num(r.ord),
     touchedOrd: num(r.touched_ord),
     readOrd: num(r.read_ord),
@@ -1123,6 +1383,10 @@ function toMemory(r: Row): Memory {
   };
   m.pending = flag(r.unreviewed) && m.kind === KindFragment && m.state === "" && !m.retracted;
   return m;
+}
+
+function toSubject(r: Row): Subject {
+  return { id: text(r.id), n: num(r.n), name: text(r.about), description: text(r.gist), activeAt: num(r.active_at) };
 }
 
 // carrierKey brings the spellings a model gives its own name to one form, so
