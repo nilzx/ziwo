@@ -43,7 +43,7 @@ The admin page at your address backs up a memory to an encrypted file, restores 
 
 ## Good to know
 
-- **Cost.** Built to fit Cloudflare's free plan for one person's everyday use; the paid plan is 5 USD a month. So far it has been used on a paid account, and only deployed on a free one.
+- **Cost.** Built to fit Cloudflare's free plan for one person's everyday use; the paid plan is 5 USD a month. It has been used on both; on the free plan only for a short while, so how a memory grown large fares there is not yet known.
 - **Privacy.** Everything stays in your Cloudflare account. To search by meaning, the text of memories is sent to Workers AI inside that account. Keeping memories from people is a line the project draws, not encryption: the account's owner can reach the storage with Cloudflare's own tools, and Cloudflare can restore deleted storage for up to 30 days. A backup is encrypted in your browser with your passphrase, and a lost passphrase cannot be recovered.
 - **Status.** ziwo is young. It has been used with the Claude apps and ChatGPT on web, desktop and phone; the steps for other clients are written from their documentation. The numbers behind forgetting are starting values. A broad word may miss a specific memory: "music" may not find one about practising the guitar.
 

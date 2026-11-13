@@ -830,7 +830,7 @@ A broad word in a query may not reach an item that names a specific instance of 
 
 ### Not measured
 
-- Nothing has been run on a free Cloudflare account. Whether a Durable Object there gets 10 ms or 30 s of CPU per call is not confirmed, and so it is not known how large a memory a free account can serve, or whether a replay, a check or an export fits.
+- A free Cloudflare account has run ziwo in ordinary use since 2026-11-13 (deployed with the npm command, the admin secret chosen on the page, a memory created and used from a client), without a problem so far. Nothing was measured there. Whether a Durable Object on the free plan gets 10 ms or 30 s of CPU per call is not confirmed, and so it is not known how large a memory a free account can serve, or whether a replay, a check or an export of a large one fits.
 - The CPU of the code as it is now (with search by meaning, OAuth, recall by time and queries in parts) has not been measured on the platform.
 - How a real model's embeddings rank real memories; the threshold of 0.45 rests on made-up pairs.
 - Keyword search on real Chinese, Japanese and Korean text.
@@ -851,7 +851,7 @@ So a person's machine deploys what was built and tested here, and installs none 
 
 The command takes `deploy`, with `--name <worker-name>` (another Worker name; the default is `ziwo`) and `--dry-run`, and `--version` and `--help`. It checks the Node.js version against what that wrangler needs; runs the package's own wrangler with the terminal handed on, so that wrangler's sign-in in the browser and its questions work; turns off wrangler's question about usage metrics unless the person set `WRANGLER_SEND_METRICS`; reads the deployed address from wrangler's output file; and prints what to do next, in English, or in Chinese when the system's locale is Chinese. It exits with wrangler's exit code. It sends nothing anywhere itself and takes no secret.
 
-On a first run wrangler opens a browser to sign in, asks which account to use when the sign-in covers several, asks to register a workers.dev subdomain on an account that has none, and creates the KV namespace without asking. This is read from wrangler 4.160.0's source and has not yet been tried on a new account.
+On a first run wrangler opens a browser to sign in, asks which account to use when the sign-in covers several, asks to register a workers.dev subdomain on an account that has none, and creates the KV namespace without asking. This is read from wrangler 4.160.0's source. On 2026-11-13 the command ran from start to finish on Windows (PowerShell 7), signing in to a free account that already had its subdomain, and on macOS as a dry run; the question about a subdomain has not been seen, and the command has not been run on Linux.
 
 An update keeps everything a deployment stores: the memories, the directory and the approved clients. The Durable Object migrations in the configuration apply themselves.
 
