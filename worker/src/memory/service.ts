@@ -40,6 +40,8 @@ import {
   DefaultRecall,
   goQuote,
   InvalidInput,
+  longBody,
+  runeCount,
   MaxExpand,
   MaxRecall,
   queryParts,
@@ -62,6 +64,24 @@ const peopleShown = 8;
 // ripeAfter is how long a session must have written no fragment before the
 // fragments of its last burst are ripe (see subjects.ts).
 export { ripeAfter };
+
+// manyMoments is how many moments a conversation may write as they happen
+// before the answer to remember says that most turns need none. A starting
+// value.
+export const manyMoments = 6;
+
+// fenced finds a fenced block: a line that starts with three backticks or
+// three tildes.
+const fenced = /^(?:```|~~~)/m;
+
+// Reminders are what the answer to remember reminds of: a block of code or
+// copied text in the body, else how long the body is; and how many moments
+// the conversation has written.
+export interface Reminders {
+  block?: true;
+  long?: number;
+  many?: number;
+}
 
 // When a subject comes to mind (its items are in get_context's recent list,
 // or listed by a recall) and this many of its fragments are ripe, the answer
@@ -268,11 +288,25 @@ export class Service {
   // true when the same memory had just been written and nothing new was
   // stored. subject says which subject it was filed under, by its head, and
   // whether its name started that subject.
-  remember(req: RememberRequest): { id: string; dup: boolean; subject?: { id: string; started: boolean } } {
+  //
+  // reminders say what the answer reminds of, a memory being written all
+  // the same: a fenced block in the body, else a body over longBody; and the
+  // manyMoments-th and later moment a session wrote as it happened. A
+  // duplicate gets none.
+  remember(req: RememberRequest): { id: string; dup: boolean; subject?: { id: string; started: boolean }; reminders?: Reminders } {
     const now = this.now();
     const input = clean(req, now);
     try {
-      return this.st.remember(now, input);
+      const r = this.st.remember(now, input);
+      if (r.dup) return { id: r.id, dup: true };
+      const reminders: Reminders = {};
+      if (fenced.test(input.body)) reminders.block = true;
+      else if (runeCount(input.body) > longBody) reminders.long = runeCount(input.body);
+      if (r.moments !== undefined && r.moments > manyMoments) reminders.many = r.moments;
+      return {
+        id: r.id, dup: false, ...(r.subject === undefined ? {} : { subject: r.subject }),
+        ...(Object.keys(reminders).length === 0 ? {} : { reminders }),
+      };
     } catch (err) {
       if (err instanceof NoSessionError) {
         throw new InvalidInput(`unknown session_id ${goQuote(input.sessionId)}: call get_context and pass the session id it returns`);

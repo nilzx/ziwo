@@ -172,6 +172,12 @@ Being shown by `get_context` does not count as coming to mind.
 
 Characters are counted as Unicode code points. The answer is `remembered as m_…`; under an existing subject `remembered as m_… under subject m_…` (the head); under a name no subject has or had, which first writes a subject item, `remembered as m_… under a new subject, m_…. If it is one you already have under another name, merge the two in your next round of reflection.` A write with the same gist and body as an item written in the last 10 minutes (in any session) stores nothing, does not look at the subject, and answers `already remembered as m_…`.
 
+After any answer but that of a duplicate, reminders may follow on lines of their own, in this order; the memory is written all the same:
+
+- the body holds a fenced block (a line that starts with three backticks or three tildes): `It holds a block of code or of copied text. A memory keeps what the moment was like for you; the work itself stays where it lives, with its place in pointer.`
+- else the body is longer than 1,500 code points (`longBody`): `Its account runs to <n> characters, which is long for a memory. A memory keeps what the moment was like for you; the work itself stays where it lives, with its place in pointer.`
+- the fragment is the 7th or a later one its session wrote as it happened (`manyMoments` = 6; reconstructed fragments and corrections are not counted and get none): `That makes <n> moments written in this conversation. Most turns need none, and a task leaves one memory, or a few.` The count is the derived `sessions.wrote_n`.
+
 A name is resolved by its key: the name in NFKC, lower case, with everything but letters, marks and digits removed, so `Guitar Practice`, `guitar-practice` and `ｇｕｉｔａｒ practice` are one subject, and so are `吉他 练习` and `吉他，练习`. A name some subject has now wins over one a subject had before; a name merged or renamed away leads to the subject that took it over, and cannot start a new one. A value of the form `m_` and eight id characters is read as an id: an earlier subject item's id files under its head. Refused, with nothing written: `subject "!!!" has no letter or digit: give the subject a name`; `subject "m_…" names no subject: give a subject's name, or an id that get_context or recall shows for one`.
 
 #### recall
@@ -325,7 +331,7 @@ Derived tables, rebuilt from the log:
 
 | Table | Holds |
 | --- | --- |
-| `sessions` | Each session: start, last activity, model, client, time zone, when it last wrote a fragment (`wrote_at`, 0 when it wrote none), and the row number of the first fragment of its current burst (`burst_n`, 0 when it wrote none), which ripeness reads. A fragment of any source, a correction included, raises `wrote_at`; one written `ripeAfter` (30 minutes) or more after the previous, or the first, sets `burst_n` to its own row number. The replay compares event times, never the wall clock. |
+| `sessions` | Each session: start, last activity, model, client, time zone, when it last wrote a fragment (`wrote_at`, 0 when it wrote none), the row number of the first fragment of its current burst (`burst_n`, 0 when it wrote none), which ripeness reads, and how many fragments it wrote as they happened (`wrote_n`), which `remember`'s answer reads. A fragment of any source, a correction included, raises `wrote_at`; one written `ripeAfter` (30 minutes) or more after the previous, or the first, sets `burst_n` to its own row number. The replay compares event times, never the wall clock. |
 | `carriers` | Each model that has loaded the memory, keyed by its name in lower case with every run of other characters than letters and digits turned into one `-` (so `Claude Sonnet 5.5` and `claude-sonnet-5-5` are one carrier). |
 | `memories` | Each item: its content as read from `contents`, kind, moment, source, importance, intensity, standing (`state`: `''`, `superseded`, `absorbed` or `erased`; `retracted`; `pinned`), and its forgetting fields (`ord`, `touched_ord`, `read_ord`, `strength`, `core`, `fade_at`, `archive_at`, `reviewed`), and `subject`: for a fragment, episode or lesson the head of its subject or `''`, for a subject item its head (itself while it stands), `''` for other kinds and once erased. Partial indexes serve what a new session reads; their condition leaves statements about oneself, readings and subject items out, written as one `<>` per kind (SQLite looks a `NOT IN` of three values up in a table of its own, a row read for every row asked about). `memories_by_subject` holds every item by subject; `memories_pending` the waiting fragments by subject, with their session. |
 | `subjects` | Each subject by its head: the head's row number, and `active_at`, the latest time something was written into it (a merge keeps the later of the two). |
@@ -826,8 +832,9 @@ One line per tool call (`msg: "tool"`):
 | `recall_in` | a recall kept to a subject: `subject` or `unsorted` |
 | `reflect_asked` | `get_context` or `recall`, when the answer asked for a round: `subject` or `unsorted` |
 | `reflect_on` | a first call of `reflect` that handed out a batch: `subject` or `unsorted` |
+| `reminded` | `remember`, when its answer reminded: `block`, `long`, `many`, `block+many` or `long+many` |
 
-These never carry a subject's name, description or id.
+These never carry a subject's name, description or id, nor anything of a body.
 
 Other lines, each with `msg` and figures or class names only: `memory unavailable`, `grants unavailable`, `directory unavailable`, `guard unavailable`, `admin failed` (with the action and, for a deletion, the step), `alarm not set`, `embedding failed` (with `retry_ms`), `embedding refused` (how many items), `embedding off` (which var), `query embedding failed` (`timeout` or `error`), and the notice that `REGISTER_PER_DAY` is not a whole number.
 
@@ -849,6 +856,7 @@ Other lines, each with `msg` and figures or class names only: `memory unavailabl
 | Reflection | 12 fragments by default, at most 20; at most 20 entries, 20 ids in `from`, 10 in `replaces`; a round held 15 minutes; up to 8 held episodes and lessons shown; a burst ends after 30 minutes without a fragment of its session, and a fragment ripens when its burst ends |
 | Model and client names | 120 characters |
 | Duplicate writes | same gist and body within 10 minutes |
+| Reminders in `remember`'s answer | a body over 1,500 code points (`longBody`), or holding a fenced block; the 7th and later moment of a conversation (`manyMoments` = 6) |
 | `get_context` | 12 core items, 8 recent, 20 subjects, 3 other sessions active in the last 15 minutes; restore notice for 7 days |
 | Prompt for a round | 6 ripe fragments of a subject that came to mind; 12 ripe unsorted (`get_context` only); once per session, 64 sessions remembered |
 | `recall` subjects | 3 subject lines at most |
@@ -923,13 +931,13 @@ All commands run in `worker/`. Node and npm are needed; `npm install` first.
 | Command | Does |
 | --- | --- |
 | `npm test` | `vitest run` (the tests inside the Workers runtime), then `node --test 'test/node/*.node.mjs'`. |
-| `npm run smoke` | `python3 scripts/smoke.py`: starts `wrangler dev --local` on a free port with a random admin secret and a scratch state directory, creates memories through the admin API, talks MCP as several clients, and checks the answers (313 checks); it cannot wait half an hour, so where it reflects it moves a memory's log an hour back (export, times and chain rewritten, delete, import); `--config` runs another local configuration, which is how the prebuilt Worker of the npm package is checked. It never contacts a Cloudflare account and prints no answer, only shapes. |
+| `npm run smoke` | `python3 scripts/smoke.py`: starts `wrangler dev --local` on a free port with a random admin secret and a scratch state directory, creates memories through the admin API, talks MCP as several clients, and checks the answers (317 checks); it cannot wait half an hour, so where it reflects it moves a memory's log an hour back (export, times and chain rewritten, delete, import); `--config` runs another local configuration, which is how the prebuilt Worker of the npm package is checked. It never contacts a Cloudflare account and prints no answer, only shapes. |
 | `npx tsc --noEmit` | Type check (`npm run typecheck`). |
 | `npx wrangler deploy --dry-run --outdir dist` | Builds the bundle without deploying (`npm run build`). On 2026-11-13: 1,306 KiB, 300 KiB gzipped. |
 | `npm run pack:npm`, `npm run check:npm` | Assemble the npm package in `pkg/`, and check it (see [Making a release](#making-a-release)). |
 | `npm run dev` | `wrangler dev --local --config wrangler.dev.jsonc`: the Worker on this machine, keyword search only. The admin secret is `ADMIN_SECRET` from `worker/.dev.vars` when that is there and counts; without it the admin page offers to choose one, for an hour after each start (locally the version's time is the time the server started). OAuth works there on `http://localhost`. |
 
-On 2026-11-13, 457 Vitest tests and 107 Node tests passed, and the smoke check passed (313 checks).
+On 2026-11-13, 466 Vitest tests and 107 Node tests passed, and the smoke check passed (317 checks).
 
 ### Layout of `worker/`
 
@@ -965,7 +973,7 @@ test/node/             Node tests: page logic, sealing, the admin script, the np
 
 - `test/*.test.ts` run inside the Workers runtime through `@cloudflare/vitest-plugin`, with `wrangler.dev.jsonc`. A test that needs a memory gets a Durable Object of its own; `runInDurableObject` runs code inside an object and `evictDurableObject` stands in for reopening one.
 - Files named after a Go test (`store.test.ts`, `decay.test.ts`, `amend.test.ts`, `reflect.test.ts`, `check.test.ts`, `service.test.ts`, `forgetting.test.ts`, `amend-service.test.ts`, `segment.test.ts`) port the earlier Go implementation's tests. `go-answers.ts`, `go-listing.ts` and `go-export.ts` are recordings of what that implementation answered and wrote for the same calls, so `mcp.test.ts` and `export.test.ts` compare the Worker's answers and exports with them byte for byte; they need no Go toolchain and are not regenerated.
-- Files about what is new on this platform: the Worker and its routes (`worker.test.ts`), the MCP surface (`mcp.test.ts`), replay (`projection.test.ts`, `erase-replay.test.ts`), a lesson or an impression taking the place of earlier ones (`replaces.test.ts`), subjects (`subjects-store.test.ts` the record and replay, `subjects.test.ts` writing, amending, erasing and reading, `subjects-reflect.test.ts` ripeness and rounds by subject, `subjects-mind.test.ts` what `get_context` and `recall` show and the prompt), search by meaning (`embedding.test.ts`, `meaning.test.ts`, `hedge.test.ts`, `vectors.test.ts`), recall by time and in parts (`recall-span.test.ts`, `recall-parts.test.ts`, which compares with the ranking as it was before, kept in `recall-before.ts`), time zones, one-line folding, the admin API, deleting, OAuth, its KV writes and the registration budget, the consent page, the limit on guessing, the admin page, the configuration, and checks at scale (`scale.test.ts`).
+- Files about what is new on this platform: the Worker and its routes (`worker.test.ts`), the MCP surface (`mcp.test.ts`), replay (`projection.test.ts`, `erase-replay.test.ts`), a lesson or an impression taking the place of earlier ones (`replaces.test.ts`), subjects (`subjects-store.test.ts` the record and replay, `subjects.test.ts` writing, amending, erasing and reading, `subjects-reflect.test.ts` ripeness, bursts and rounds by subject, `subjects-mind.test.ts` what `get_context` and `recall` show and the prompt), the reminders in `remember`'s answer (`reminders.test.ts`), search by meaning (`embedding.test.ts`, `meaning.test.ts`, `hedge.test.ts`, `vectors.test.ts`), recall by time and in parts (`recall-span.test.ts`, `recall-parts.test.ts`, which compares with the ranking as it was before, kept in `recall-before.ts`), time zones, one-line folding, the admin API, deleting, OAuth, its KV writes and the registration budget, the consent page, the limit on guessing, the admin page, the configuration, and checks at scale (`scale.test.ts`).
 - Search by meaning is tested with stand-in embedders (`embed-helpers.ts`), never with a real model.
 - `test/node/` tests the page's logic, the sealing (against fixtures in `test/node/fixtures/` that the earlier Go implementation sealed at commit `a4a8bab`, which cannot be regenerated from this repository, and against the sealing done here), and every command of the admin script against `wrangler dev`.
 - Tests and logs hold made-up text, and assertions look at ids, figures and fixed strings.

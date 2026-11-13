@@ -839,6 +839,23 @@ def run(w):
     for i in range(5):
         t.remember(ts, f"又练了一次 {i}", "正文。", subject=head)
     loose = t.remember(ts, "和朋友吃饭", "没有主题的一件事。")
+    out = t.tool("remember", session_id=ts, gist="抄了一段配置", body="```\nfencemark7q = 1\n```")
+    has("a fenced block is written and reminded of, and so are many moments", out, "\nThat makes 9 moments written in this conversation.")
+    has("the block first", out,
+        "\nIt holds a block of code or of copied text. A memory keeps what the moment was like for you; the work itself stays where it lives, with its place in pointer.")
+    logged = ""
+    for _ in range(20):
+        try:
+            logged = open(os.path.join(w.scratch, f"wrangler-{w.runs}.log"), encoding="utf-8", errors="replace").read()
+        except OSError:
+            logged = ""
+        if '"reminded":"block+many"' in logged:
+            break
+        time.sleep(0.25)
+    # It is the conversation's ninth moment as well.
+    check("the access log says so in fixed words", '"reminded":"block+many"' in logged,
+          [l[-120:] for l in logged.splitlines() if '"tool":"remember"' in l][-1:])
+    check("and holds nothing of the body", "fencemark7q" not in logged)
     refused("a name of only punctuation is refused", t.tool("remember", session_id=ts, gist="g", body="b", subject="!!!"),
             'subject "!!!" has no letter or digit')
     ctx = t.tool("get_context", model="model-t")
@@ -875,7 +892,7 @@ def run(w):
     has("a memory under it names it", t.tool("expand", ids=[made_t[1] if len(made_t) > 1 else ""]), f"subject: 吉他 ({renamed})")
     out = t.tool("check")
     has("the check finds no damage", out, "problems: none")
-    has("and gives the subjects' figure", out, "subjects: 1 (0 with moments waiting); 1 memories belong to no subject")
+    has("and gives the subjects' figure", out, "subjects: 1 (0 with moments waiting); 2 memories belong to no subject")
     lacks("and no name", out, "吉他")
     lacks("nor a description", out, "和弦")
 

@@ -138,6 +138,20 @@ describe("remember with a subject", () => {
       expect(s.clock()).toBe(before + 1);
     }));
 
+  it("starts a burst with a session's first fragment, whenever it was written", () =>
+    withStore((s, storage) => {
+      // Times near the start of the clock: a first fragment written less
+      // than half an hour after zero still starts its session's burst.
+      const a = s.startSession(1000, "", "cli").session.id;
+      const first = rem(s, a, "第一件", undefined, 2000).id;
+      const second = rem(s, a, "第二件", undefined, 3000).id;
+      const burst = () => storage.sql.exec<{ burst_n: number }>(`SELECT burst_n FROM sessions WHERE id = ?`, a).one().burst_n;
+      expect(burst()).toBe(get(s, first).n);
+      expect(get(s, second).n).toBeGreaterThan(burst());
+      s.rebuild();
+      expect(burst()).toBe(get(s, first).n);
+    }));
+
   it("keeps when a session last wrote a fragment", () =>
     withStore((s, storage) => {
       const a = session(s, t0, "", "cli");

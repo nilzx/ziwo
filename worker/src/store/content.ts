@@ -250,8 +250,8 @@ export function applyRemember(db: Db, p: Params, seq: number, at: number, e: Rem
     db.run(
       `UPDATE sessions SET last_active_at = MAX(last_active_at, ?),
          burst_n = CASE WHEN wrote_at = 0 OR ? - wrote_at >= ? THEN ? ELSE burst_n END,
-         wrote_at = MAX(wrote_at, ?) WHERE id = ?`,
-      at, at, ripeAfter, seq, at, e.session,
+         wrote_at = MAX(wrote_at, ?), wrote_n = wrote_n + ? WHERE id = ?`,
+      at, at, ripeAfter, seq, at, ticks(e) ? 1 : 0, e.session,
     );
   } else {
     db.sessionActive(e.session, at);

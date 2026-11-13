@@ -25,6 +25,7 @@ import {
   KindReading,
   KindSelf,
   KindSubject,
+  SourceReconstructed,
   StateAbsorbed,
   StateErased,
   StateSuperseded,
@@ -395,7 +396,7 @@ export class Store {
       case kindSession: {
         const e = decodeSession(payload);
         this.db.run(
-          `INSERT INTO sessions(id, started_at, last_active_at, model, client, tz, wrote_at, burst_n) VALUES(?, ?, ?, ?, ?, ?, 0, 0)`,
+          `INSERT INTO sessions(id, started_at, last_active_at, model, client, tz, wrote_at, burst_n, wrote_n) VALUES(?, ?, ?, ?, ?, ?, 0, 0, 0)`,
           e.id, at, at, e.model, e.client, e.tz ?? "",
         );
         const carrier = carrierKey(e.model);
@@ -539,7 +540,12 @@ export class Store {
   // be used. With a subject, subject says which, by its head, and whether
   // the name started it: a new name first writes the subject item, in the
   // same transaction.
-  remember(at: number, input: RememberInput): { id: string; dup: boolean; subject?: { id: string; started: boolean } } {
+  //
+  // moments, for a fragment written as it happened, is how many such
+  // fragments its session has written, this one included.
+  remember(
+    at: number, input: RememberInput,
+  ): { id: string; dup: boolean; subject?: { id: string; started: boolean }; moments?: number } {
     const hash = contentHash(input.gist, input.body);
     const since = at - dedupWindow;
     return this.retry(() => {
@@ -580,7 +586,12 @@ export class Store {
           lesson: input.lesson, people: input.people, pointer: input.pointer,
         },
       );
-      return subject === "" ? { id, dup: false } : { id, dup: false, subject: { id: subject, started } };
+      const out: { id: string; dup: boolean; subject?: { id: string; started: boolean }; moments?: number } = { id, dup: false };
+      if (subject !== "") out.subject = { id: subject, started };
+      if (input.source !== SourceReconstructed) {
+        out.moments = num(this.db.first(`SELECT wrote_n FROM sessions WHERE id = ?`, input.sessionId)?.wrote_n);
+      }
+      return out;
     });
   }
 

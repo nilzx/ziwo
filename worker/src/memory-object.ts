@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { clip, InvalidInput, parseSpan, parseWhen, queryParts, type RememberRequest, trimSpace } from "./memory/clean";
 import type { AmendRequest, EntryRequest, EraseRequest, ReflectView } from "./memory/amend";
-import { type ContextView, type MeaningHit, recallDepth, type RecallView, type Result, Service } from "./memory/service";
+import { type ContextView, type MeaningHit, recallDepth, type RecallView, type Reminders, type Result, Service } from "./memory/service";
 import { embedSettings, prepare, type QueryVector, queryMaxRunes, WorkersAI } from "./embed";
 import { type EmbedRun, Embedding } from "./memory/embedding";
 import { logLine } from "./log";
@@ -83,6 +83,7 @@ export interface AnswerNote {
   recall_in?: "subject" | "unsorted"; // a recall kept to a subject, or to the unsorted
   reflect_asked?: "subject" | "unsorted"; // the answer asked for a round of reflection
   reflect_on?: "subject" | "unsorted"; // a first call of reflect handed out a batch
+  reminded?: "long" | "block" | "many" | "long+many" | "block+many"; // what remember's answer reminded of
 }
 
 // Access is what a token presented for this memory comes to: the memory's
@@ -429,7 +430,7 @@ export class Memory extends DurableObject<Env> {
     return asked !== "" && known === undefined ? { view, zone, unknownZone: asked } : { view, zone };
   }
 
-  remember(args: RememberArgs): { id: string; dup: boolean; subject?: { id: string; started: boolean } } | Invalid {
+  remember(args: RememberArgs): { id: string; dup: boolean; subject?: { id: string; started: boolean }; reminders?: Reminders } | Invalid {
     return outcome(() => {
       const { happenedAt, ...req } = args;
       let happened: number | undefined;
@@ -495,7 +496,11 @@ export class Memory extends DurableObject<Env> {
         case "remember": {
           const r = this.remember(call.args);
           if ("invalid" in r) return r;
-          return { text: rememberedText(r) };
+          const note: AnswerNote = {};
+          const words = [r.reminders?.block ? "block" : r.reminders?.long !== undefined ? "long" : "", r.reminders?.many !== undefined ? "many" : ""];
+          const reminded = words.filter((w) => w !== "").join("+");
+          if (reminded !== "") note.reminded = reminded as AnswerNote["reminded"];
+          return { text: rememberedText(r), note };
         }
         case "recall": {
           const view = this.recallWith(call);
@@ -757,11 +762,23 @@ export class Memory extends DurableObject<Env> {
 // rememberedText is the answer to remember: the id, and the subject it was
 // put under, saying so when the name started a new one, so that a slip is
 // noticed while it can still be mended.
-export function rememberedText(r: { id: string; dup: boolean; subject?: { id: string; started: boolean } }): string {
+//
+// Reminders follow on lines of their own: a memory keeps what a moment was
+// like, not the work of a task, and a task leaves one memory or a few. They
+// are told at the moment a model does otherwise; the memory is written.
+export function rememberedText(r: { id: string; dup: boolean; subject?: { id: string; started: boolean }; reminders?: Reminders }): string {
   if (r.dup) return "already remembered as " + r.id;
-  if (r.subject === undefined) return "remembered as " + r.id;
-  if (!r.subject.started) return `remembered as ${r.id} under subject ${r.subject.id}`;
-  return `remembered as ${r.id} under a new subject, ${r.subject.id}. If it is one you already have under another name, merge the two in your next round of reflection.`;
+  let b: string;
+  if (r.subject === undefined) b = "remembered as " + r.id;
+  else if (!r.subject.started) b = `remembered as ${r.id} under subject ${r.subject.id}`;
+  else b = `remembered as ${r.id} under a new subject, ${r.subject.id}. If it is one you already have under another name, merge the two in your next round of reflection.`;
+  const keeps = "A memory keeps what the moment was like for you; the work itself stays where it lives, with its place in pointer.";
+  if (r.reminders?.block) b += `\nIt holds a block of code or of copied text. ${keeps}`;
+  else if (r.reminders?.long !== undefined) b += `\nIts account runs to ${r.reminders.long} characters, which is long for a memory. ${keeps}`;
+  if (r.reminders?.many !== undefined) {
+    b += `\nThat makes ${r.reminders.many} moments written in this conversation. Most turns need none, and a task leaves one memory, or a few.`;
+  }
+  return b;
 }
 
 // maxEventsInOneGo is the most events a rebuild, an export or an import

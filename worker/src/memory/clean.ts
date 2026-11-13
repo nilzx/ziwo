@@ -21,6 +21,11 @@ export const MaxPeople = 16;
 // is a gist, and has the gist's limit.
 export const MaxSubjectRunes = 80;
 
+// longBody is the length, in code points, past which the answer to remember
+// says that an account is long for a memory. A starting value; it is also
+// where embedding stops reading.
+export const longBody = 1500;
+
 // unsortedWord, given as a subject, means no subject.
 export const unsortedWord = "unsorted";
 

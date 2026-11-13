@@ -98,7 +98,8 @@ CREATE TABLE sessions (
   client         TEXT    NOT NULL, -- MCP client name; '' when unknown
   tz             TEXT    NOT NULL, -- IANA time zone the model reported; '' when none
   wrote_at       INTEGER NOT NULL, -- last time it wrote a fragment; 0 when it wrote none
-  burst_n        INTEGER NOT NULL  -- row number of the first fragment of its current burst; 0 when it wrote none
+  burst_n        INTEGER NOT NULL, -- row number of the first fragment of its current burst; 0 when it wrote none
+  wrote_n        INTEGER NOT NULL  -- fragments it wrote as they happened (not reconstructed, not corrections)
 ) STRICT;
 CREATE INDEX sessions_by_activity ON sessions(last_active_at);
 CREATE INDEX sessions_by_wrote ON sessions(wrote_at);

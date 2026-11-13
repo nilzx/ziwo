@@ -61,6 +61,7 @@ function noteFields(n: AnswerNote): Record<string, string> {
     const v = n[k];
     if (v !== undefined && words.has(v)) out[k] = v;
   }
+  if (n.reminded !== undefined && ["long", "block", "many", "long+many", "block+many"].includes(n.reminded)) out.reminded = n.reminded;
   return out;
 }
 
