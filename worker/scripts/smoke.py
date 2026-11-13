@@ -877,7 +877,7 @@ def run(w):
     ctx = t.tool("get_context", model="model-t")
     tr = first(r"s_[a-z2-9]{8}", ctx)
     has("once they are ripe, get_context asks for a round on the subject, by id", ctx,
-        f"12 moments under subject {head} have not been reflected on. Before you answer, do one round on them")
+        f"12 moments under subject {head} have not been reflected on. If the person has come to talk, do one round on them before you answer")
     out = t.tool("reflect", session_id=tr, subject="guitar practice")
     has("a round is about one subject", out, f"subject of this batch:\n[{head}] subject Guitar Practice")
     has("and says where its episodes go", out, "Episodes and lessons go under this subject unless you give another.")

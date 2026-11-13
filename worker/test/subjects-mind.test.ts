@@ -73,7 +73,7 @@ describe("get_context", () => {
       const said = t.slice(t.indexOf(serverSpeaks) + serverSpeaks.length);
       // As little of the text as shows it asks for both.
       expect(said).toContain("Put it under the subject it belongs to: one listed above if it fits, else a short new name.");
-      expect(said).toContain("What you read, wrote and produced is the work and lives where the work lives");
+      expect(said).toContain("Of a task, the details are not kept here: not what you read, wrote and produced, nor the order you did things in.");
     }));
 
   it("keeps a name with a line break on one line", () =>
@@ -101,7 +101,7 @@ describe("the prompt", () => {
       const p = promptOf(t);
       expect([p?.[1], p?.[2]]).toEqual([`${subjectHint}`, ids[0]!.head]);
       expect(t).toContain(
-        `\n${subjectHint} moments under subject ${ids[0]!.head} have not been reflected on. Before you answer, do one round on them: call reflect with your session id and subject ${ids[0]!.head}, read what it hands you, and write back what you make of it. If reflect says another conversation is at it, go on without.\n`,
+        `\n${subjectHint} moments under subject ${ids[0]!.head} have not been reflected on. If the person has come to talk, do one round on them before you answer: call reflect with your session id and subject ${ids[0]!.head}, read what it hands you, and write back what you make of it. If they have come with work to do, do the work and leave the round for a conversation that has room. If reflect says another conversation is at it, go on without.\n`,
       );
       // After the archived line and before what the server says about writing.
       expect(t.indexOf(p![0])).toBeGreaterThan(t.indexOf(serverSpeaks));
@@ -185,7 +185,7 @@ describe("the prompt", () => {
       f.advance(ripeAfter);
       const t = context(f).text;
       expect(t).toContain(
-        "\n12 moments you wrote belong to no subject and have not been reflected on. Before you answer, do one round on them: call reflect with your session id and subject unsorted, read what it hands you, give what you make of it a subject, and write it back. If reflect says another conversation is at it, go on without.\n",
+        "\n12 moments you wrote belong to no subject and have not been reflected on. If the person has come to talk, do one round on them before you answer: call reflect with your session id and subject unsorted, read what it hands you, give what you make of it a subject, and write it back. If they have come with work to do, do the work and leave the round for a conversation that has room. If reflect says another conversation is at it, go on without.\n",
       );
       const c = f.begin("m", "c").session.id;
       expect(recall(f, { query: "", session: c })).not.toMatch(unsortedPrompt);
