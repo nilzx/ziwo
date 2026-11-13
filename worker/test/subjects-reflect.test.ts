@@ -393,3 +393,22 @@ describe("figures", () => {
       expect(t0).toBeLessThan(at);
     }));
 });
+
+describe("the check after a round", () => {
+  it("notes a name used for one moment, not a subject a round filed an account under", () =>
+    start((f) => {
+      const a = under(f, "一").id;
+      const b = under(f, "二").id;
+      const c = under(f, "三").id;
+      // One subject is made with the moments moved into it, one by filing an account alone.
+      const r = round(f, [subjectEntry("garden", "what grows there", { from: [a, b] }), episode("一二", [a, b], "garden"), episode("三", [c], "pond")], "unsorted");
+      expect(Array.isArray(r.ids), String(r.ids)).toBe(true);
+      const single = () => f.st.check().findings.find((x) => x.code === "subject-of-one");
+      expect(single()).toBeUndefined();
+      const slip = under(f, "四", "a slip").head;
+      expect(single()?.ids).toEqual([slip]);
+      // A second moment under it, and it is a subject like any other.
+      under(f, "五", "a slip");
+      expect(single()).toBeUndefined();
+    }));
+});

@@ -576,7 +576,7 @@ Every action needs a known session; an action on an erased item is refused, and 
 - Figures: the log (format, events by kind), items by tier, kind and source (subject items left out), the experience clock, statements about oneself, preferences, fragments waiting for reflection, and `subjects: <n> (<n> with moments waiting); <n> memories belong to no subject` (standing fragments, episodes and lessons).
 - Problems (the record is damaged or the tables disagree with it): `content-lost`, `content-altered` (content does not match the hash in its event), `erase-incomplete`, `content-orphaned`, `session-unknown`, `tables-stale`, `clock-off`, `link-broken` (an item replaced or absorbed by, correcting, revising or built on an item that does not exist, or an event whose `replaces` or `subject` names one), `subject-off` (items filed under a subject that does not stand, or a `subjects` table that disagrees with the subject items: run rebuild).
 - Warnings (how the memory is used looks off): `nothing-in-its-place`, `self-unsupported`, `many-writes` (one session wrote more than 20 fragments), `core-inflated` (more than 30% core, from 20 items), `feeling-inflated` (more than 20% of fragments felt at 0.9 or above, from 20), `looks-like-project-notes` (a body holds a code fence or runs over 3,000 characters), `same-gist`, `backlog` (50 or more fragments waiting).
-- Notes: `vector-orphaned`, `name-variants`, `never-came-to-mind`, `restored`, `not-built`, `subject-of-one` (subjects that hold a single memory; one may be a slip, to merge in a round of reflection).
+- Notes: `vector-orphaned`, `name-variants`, `never-came-to-mind`, `restored`, `not-built`, `subject-of-one` (subjects whose whole holding is one moment: one may be a slip, to merge in a round of reflection; a subject that holds an account a round made is not counted, whether or not the moments it rests on were moved into it).
 
 A finding lists at most 20 ids. The thresholds are starting values. A check reads every item's content once to compare it with its hash.
 
@@ -937,7 +937,7 @@ All commands run in `worker/`. Node and npm are needed; `npm install` first.
 | `npm run pack:npm`, `npm run check:npm` | Assemble the npm package in `pkg/`, and check it (see [Making a release](#making-a-release)). |
 | `npm run dev` | `wrangler dev --local --config wrangler.dev.jsonc`: the Worker on this machine, keyword search only. The admin secret is `ADMIN_SECRET` from `worker/.dev.vars` when that is there and counts; without it the admin page offers to choose one, for an hour after each start (locally the version's time is the time the server started). OAuth works there on `http://localhost`. |
 
-On 2026-11-13, 467 Vitest tests and 107 Node tests passed, and the smoke check passed (317 checks).
+On 2026-11-13, 468 Vitest tests and 107 Node tests passed, and the smoke check passed (317 checks).
 
 ### Layout of `worker/`
 

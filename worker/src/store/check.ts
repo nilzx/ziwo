@@ -300,8 +300,14 @@ function checkUse(c: Checker): void {
     `${c.one(`SELECT count(*) FROM subjects`)} ` +
     `(${c.one(`SELECT count(DISTINCT m.subject) FROM memories m INDEXED BY memories_pending WHERE ${isPending} AND m.subject > ''`)} with moments waiting); ` +
     `${c.one(`SELECT count(*) FROM memories m INDEXED BY memories_by_subject WHERE m.subject = '' AND ${members}`)} memories belong to no subject`);
+  // A subject of one holds one moment and nothing else. A subject a round of
+  // reflection made holds an account, and often the moments it was put
+  // together from, which no longer stand: that is no slip.
+  const held = `m.kind IN ('${KindFragment}', '${KindEpisode}', '${KindLesson}') AND m.state <> '${StateErased}'`;
   const single = c.list(`SELECT s.id FROM subjects s
-    WHERE (SELECT count(*) FROM memories m INDEXED BY memories_by_subject WHERE m.subject = s.id AND ${members}) = 1 ORDER BY s.n`);
+    WHERE (SELECT count(*) FROM memories m INDEXED BY memories_by_subject WHERE m.subject = s.id AND ${held}) = 1
+      AND (SELECT count(*) FROM memories m INDEXED BY memories_by_subject WHERE m.subject = s.id AND ${members} AND m.kind = '${KindFragment}') = 1
+    ORDER BY s.n`);
   if (single.length > 0) {
     c.find(LevelNote, "subject-of-one", single,
       `${single.length} subjects hold a single memory; one may be a slip, to merge in a round of reflection`);
