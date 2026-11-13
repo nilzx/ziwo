@@ -599,14 +599,24 @@ export class Store {
 
   // erase deletes what a memory says, for good, and returns the memory's row
   // number. The log keeps the fact that the memory existed and that it was
-  // erased.
+  // erased. A subject item that stands for its subject takes the subject's
+  // earlier names and descriptions with it (see subjectEarlier).
   erase(at: number, session: string, id: string, reason: string): number {
     return this.tx(() => {
-      const n = eraseMemory(this.db, this.append, at, session, id, reason);
-      // Its vector goes in the same transaction, under every label.
-      this.vec.remove([n]);
-      return n;
+      const gone = eraseMemory(this.db, this.append, at, session, id, reason);
+      // Their vectors go in the same transaction, under every label.
+      this.vec.remove(gone.map((g) => g.n));
+      return gone[gone.length - 1]!.n;
     });
+  }
+
+  // subjectEarlier returns the ids of the subject items, other than the
+  // given head, that its subject took the place of, in the order they were
+  // written: what erasing the head erases with it.
+  subjectEarlier(head: string): string[] {
+    return this.db
+      .all(`SELECT id FROM memories WHERE subject = ? AND kind = ? AND id <> ? ORDER BY n`, head, KindSubject, head)
+      .map((r) => text(r.id));
   }
 
   // addPreference records a standing rule about what to remember and returns
@@ -836,6 +846,24 @@ export class Store {
       const x = byID.get(h);
       return x === undefined ? [] : [x];
     });
+  }
+
+  // subjectPeople returns the names in the people of the items that stand in
+  // the subject, most frequent first, then by first appearance, at most
+  // limit.
+  subjectPeople(head: string, limit: number): string[] {
+    const count = new Map<string, number>();
+    for (const r of this.db.all(
+      `SELECT m.people FROM memories m INDEXED BY memories_by_subject
+        WHERE m.subject = ? AND m.kind IN ('${KindFragment}', '${KindEpisode}', '${KindLesson}') AND ${isLive} ORDER BY m.n`,
+      head,
+    )) {
+      const people: unknown = JSON.parse(text(r.people));
+      if (!Array.isArray(people)) continue;
+      for (const p of people) if (typeof p === "string") count.set(p, (count.get(p) ?? 0) + 1);
+    }
+    // A Map keeps the order of first appearance; the sort is stable.
+    return [...count.entries()].sort((a, b) => b[1] - a[1]).slice(0, limit).map(([p]) => p);
   }
 
   // subjectCount reports how many subjects there are.

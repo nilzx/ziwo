@@ -5,7 +5,15 @@
 import { type Append, KindSelf, KindSubject, StateErased, StateSuperseded, writeMemory } from "./content";
 import { bit, type Db, flag, num, text } from "./db";
 import { clampStrength, crossings, isCore, type Params } from "./decay";
-import { ErasedError, NoMemoryError, NoPreferenceError, NoSessionError, SupersededError, TooManyPreferencesError } from "./errors";
+import {
+  ErasedError,
+  IsSubjectError,
+  NoMemoryError,
+  NoPreferenceError,
+  NoSessionError,
+  SupersededError,
+  TooManyPreferencesError,
+} from "./errors";
 import { type AmendEvent, encodeAmend, encodeErase, type EraseEvent, kindAmend, kindErase } from "./events";
 import type { RememberInput } from "./types";
 
@@ -49,7 +57,9 @@ export function amendMemory(
   db: Db, append: Append, at: number, session: string, action: string, id: string, importance: number, reason: string,
 ): void {
   needSession(db, session);
-  const { state, stateBy } = standing(db, id);
+  const { kind, state, stateBy } = standing(db, id);
+  // A subject is not a memory: none of these apply to it.
+  if (kind === KindSubject) throw new IsSubjectError(id);
   switch (action) {
     case AmendRetract:
     case AmendRestore:
@@ -71,13 +81,16 @@ export function amendMemory(
 export function correctMemory(db: Db, append: Append, at: number, old: string, id: string, input: RememberInput): void {
   needSession(db, input.sessionId);
   const { kind, state, stateBy } = standing(db, old);
+  if (kind === KindSubject) throw new IsSubjectError(old);
   if (state === StateSuperseded) throw new SupersededError(stateBy);
+  // The correction is filed where the memory it corrects was.
+  const subject = text(db.first(`SELECT subject FROM memories WHERE id = ?`, old)?.subject);
   writeMemory(
     db, append, at,
     {
       id, session: input.sessionId, kind, moment: input.moment, source: input.source,
       importance: input.importance, intensity: input.intensity ?? 0, hash: "", corrects: old,
-      happened: input.happened ?? 0, from: [], ref: "", milestone: false,
+      happened: input.happened ?? 0, from: [], ref: "", milestone: false, subject,
     },
     {
       gist: input.gist, body: input.body, outcome: input.outcome, feeling: input.feeling,
@@ -88,18 +101,33 @@ export function correctMemory(db: Db, append: Append, at: number, old: string, i
 
 // eraseMemory deletes what a memory says, for good. The log keeps the fact
 // that the memory existed and that it was erased, and the memory keeps its
-// place in the count of what was lived through. It returns the memory's row
-// number.
-export function eraseMemory(db: Db, append: Append, at: number, session: string, id: string, reason: string): number {
+// place in the count of what was lived through. It returns the ids and row
+// numbers of what it erased, the memory last.
+//
+// A subject item that stands for its subject takes every other name and
+// description of the subject with it: the subject items whose head it is
+// (its earlier names, and those of the subjects merged into it), in the
+// order they were written, then itself. An earlier name goes alone.
+export function eraseMemory(db: Db, append: Append, at: number, session: string, id: string, reason: string): { id: string; n: number }[] {
   needSession(db, session);
-  const { n } = standing(db, id);
-  db.run(`DELETE FROM contents WHERE id = ?`, id);
-  append(at, kindErase, encodeErase({ session, id, reason }));
+  const { n, kind, state } = standing(db, id);
+  const gone: { id: string; n: number }[] = [];
+  if (kind === KindSubject && state === "") {
+    for (const r of db.all(`SELECT id, n FROM memories WHERE subject = ? AND kind = ? AND id <> ? ORDER BY n`, id, KindSubject, id)) {
+      gone.push({ id: text(r.id), n: num(r.n) });
+    }
+  }
+  gone.push({ id, n });
+  for (const g of gone) {
+    db.run(`DELETE FROM contents WHERE id = ?`, g.id);
+    append(at, kindErase, encodeErase({ session, id: g.id, reason }));
+  }
   // The keyword index keeps the words of a deleted row until its segments
   // are merged. Merge them now. There is no file to checkpoint here: the
   // platform keeps its own history (see the handbook).
-  db.run(`INSERT INTO memories_fts(memories_fts) VALUES('optimize')`);
-  return n;
+  const index = kind === KindSubject ? "subjects_fts" : "memories_fts";
+  db.run(`INSERT INTO ${index}(${index}) VALUES('optimize')`);
+  return gone;
 }
 
 // addPreference records a standing rule about what to remember, under the

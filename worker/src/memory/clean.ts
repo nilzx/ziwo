@@ -17,6 +17,12 @@ export const MaxBodyRunes = 6000;
 export const MaxFieldRunes = 1000;
 export const MaxPointerRunes = 500;
 export const MaxPeople = 16;
+// A subject's name; longer is cut, as people and about are. Its description
+// is a gist, and has the gist's limit.
+export const MaxSubjectRunes = 80;
+
+// unsortedWord, given as a subject, means no subject.
+export const unsortedWord = "unsorted";
 
 export const DefaultRecall = 5;
 export const MaxRecall = 20;
@@ -52,6 +58,8 @@ export interface RememberRequest {
   pointer?: string;
   // When it took place, in unix milliseconds; undefined is Go's zero time.
   happened?: number;
+  // The subject it belongs to, by name or id; empty for none.
+  subject?: string;
 }
 
 // runeCount counts code points, as utf8.RuneCountInString does.
@@ -129,7 +137,14 @@ export function clean(req: RememberRequest, now: number): RememberInput {
   }
   if (happened !== undefined && happened > now + 60 * 1000) throw invalid("happened_at is in the future");
   // Go's unixMilli: the zero time is 0, which the store reads as "now".
-  return { ...c, sessionId, happened: happened ?? 0 };
+  const subject = cleanSubject(req.subject);
+  return { ...c, sessionId, happened: happened ?? 0, ...(subject === "" ? {} : { subject }) };
+}
+
+// cleanSubject tidies a subject given by name or id: trimmed, kept on one
+// line (a name is shown in lines of its own), and cut to MaxSubjectRunes.
+export function cleanSubject(v: string | undefined): string {
+  return clip(trimSpace(oneLine(trimSpace(v ?? ""))), MaxSubjectRunes);
 }
 
 // CleanText is what cleanText returns: every field filled in.

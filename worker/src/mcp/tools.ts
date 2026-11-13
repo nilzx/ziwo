@@ -164,6 +164,10 @@ export const tools: ToolDef[] = [
       { name: "lesson", type: "string", description: "what you came to know, or would carry into next time" },
       { name: "people", type: "strings", description: "who or what was involved, by name" },
       { name: "pointer", type: "string", description: "where the related work lives, e.g. a repository URL; a location, not content" },
+      {
+        name: "subject", type: "string",
+        description: "the subject it belongs to, by name: one you already have if it fits, else a short new name; at most 80 characters",
+      },
       { name: "source", type: "string", description: "lived (default), told, inferred or reconstructed", values: Sources },
       { name: "happened_at", type: "string", description: "only with source reconstructed: when it took place, such as 2026-03-14" },
       { name: "importance", type: "number", description: "0 to 1; default 0.5; 0.9 and above never fades" },
@@ -288,7 +292,7 @@ const faultKinds: [RegExp, Fault["kind"]][] = [
   [/ must be between /, "range"],
   [/^cannot read .* as a date| is in the future| is after until/, "date"],
   [/ needs | goes with /, "needs"],
-  [/ has been (erased|replaced)| is a [a-z]+: only /, "state"],
+  [/ has been (erased|replaced)| is a [a-z]+: only | is a subject: /, "state"],
 ];
 
 export function faultOf(def: ToolDef, text: string): Fault {
@@ -431,7 +435,7 @@ function callOf(tool: ToolName, a: Args, client: string): ToolCall {
           sessionId: text(a, "session_id"), gist: text(a, "gist"), body: text(a, "body"), moment: text(a, "moment"),
           outcome: text(a, "outcome"), feeling: text(a, "feeling"), intensity: num(a, "feeling_intensity"),
           lesson: text(a, "lesson"), people: list(a, "people"), pointer: text(a, "pointer"), source: text(a, "source"),
-          happenedAt: text(a, "happened_at"), importance: num(a, "importance"),
+          happenedAt: text(a, "happened_at"), importance: num(a, "importance"), subject: text(a, "subject"),
         },
       };
     case "recall":

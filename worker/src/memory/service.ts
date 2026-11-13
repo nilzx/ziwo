@@ -6,11 +6,21 @@
 // caller (the object searches its vectors; see embedding.ts).
 
 import { type Report } from "../store/check";
-import { KindImpression, KindLesson, StateErased } from "../store/content";
+import { KindImpression, KindLesson, KindSubject, StateErased } from "../store/content";
 import { retentionOf, type Tier, type TierCounts, tierOf } from "../store/decay";
 import { covered, searchTerms } from "../store/segment";
 import { NoSessionError, type Store } from "../store/store";
-import { type CarrierNote, isLive, type Memory, type Preference, type RestoreNote, type Session, type Span } from "../store/types";
+import { SubjectError } from "../store/errors";
+import {
+  type CarrierNote,
+  isLive,
+  type Memory,
+  type Preference,
+  type RestoreNote,
+  type Session,
+  type Span,
+  type SubjectFigures,
+} from "../store/types";
 import {
   amend,
   type AmendRequest,
@@ -43,6 +53,9 @@ const parallelWindow = 15 * minute; // how recently another session must have be
 // restoreNotice is how long after a restore new sessions are told of it.
 const restoreNotice = 7 * 24 * 60 * minute;
 
+// peopleShown is how many names expand shows for a subject.
+const peopleShown = 8;
+
 // relevanceFloor drops results whose relevance is below this share of the
 // best result's. Being listed restarts a memory's decay, so a memory that
 // only brushes the query must not be listed.
@@ -74,7 +87,23 @@ export interface Result extends Memory {
   // Filled in by expand alone.
   sources: string[]; // ids of the memories it is built on
   readings: Memory[]; // later understandings of it
-  replaced: string[]; // ids of the earlier lessons or impressions it took the place of
+  replaced: string[]; // ids of the earlier lessons, impressions or subjects it took the place of
+  // Filled in by expand alone: the subject an item is filed under, by its
+  // head and the head's name.
+  subjectOf?: { id: string; name: string };
+  // Filled in by expand alone, for a subject's head: its figures, when it
+  // was last active, and who its memories name.
+  held?: { figures: SubjectFigures; activeAt: number; people: string[] };
+}
+
+// subjectRefusal is what the model is told when a subject given to a write
+// cannot be used.
+export function subjectRefusal(err: SubjectError): InvalidInput {
+  return new InvalidInput(
+    err.reason === "no-letter"
+      ? `subject ${goQuote(err.value)} has no letter or digit: give the subject a name`
+      : `subject ${goQuote(err.value)} names no subject: give a subject's name, or an id that get_context or recall shows for one`,
+  );
 }
 
 // MeaningHit is a memory found by meaning: its row number and the cosine
@@ -137,8 +166,9 @@ export class Service {
 
   // remember validates and stores one memory and returns its id. dup is
   // true when the same memory had just been written and nothing new was
-  // stored.
-  remember(req: RememberRequest): { id: string; dup: boolean } {
+  // stored. subject says which subject it was filed under, by its head, and
+  // whether its name started that subject.
+  remember(req: RememberRequest): { id: string; dup: boolean; subject?: { id: string; started: boolean } } {
     const now = this.now();
     const input = clean(req, now);
     try {
@@ -147,6 +177,7 @@ export class Service {
       if (err instanceof NoSessionError) {
         throw new InvalidInput(`unknown session_id ${goQuote(input.sessionId)}: call get_context and pass the session id it returns`);
       }
+      if (err instanceof SubjectError) throw subjectRefusal(err);
       throw err;
     }
   }
@@ -318,12 +349,32 @@ export class Service {
     const clock = this.st.clock();
     const out: Result[] = [];
     const read: string[] = [];
+    // The subjects the items are filed under, by their heads' names.
+    const heads = new Map(
+      this.st.subjects(ms.filter((m) => m.kind !== KindSubject && m.subject !== "").map((m) => m.subject)).map((s) => [s.id, s]),
+    );
     for (const m of ms) {
       const r: Result = {
         ...m, tier: tierOf(m, clock), score: 0, byKeyword: false, byMeaning: false, sources: [], readings: [], replaced: [],
       };
       out.push(r);
       if (m.state === StateErased) continue; // there is nothing left to read
+      if (m.kind === KindSubject) {
+        // A subject is not a memory: reading it is not logged, and it does
+        // not fade. Its head shows what it holds.
+        r.replaced = this.st.replacedBy(m.id);
+        const self = m.state === "" ? this.st.subjects([m.id])[0] : undefined;
+        if (self !== undefined) {
+          r.held = {
+            figures: this.st.subjectFigures([m.id]).get(m.id)!,
+            activeAt: self.activeAt,
+            people: this.st.subjectPeople(m.id, peopleShown),
+          };
+        }
+        continue;
+      }
+      const head = heads.get(m.subject);
+      if (head !== undefined) r.subjectOf = { id: head.id, name: head.name };
       r.sources = this.st.sources(m.id);
       r.readings = this.st.readings(m.id);
       if (m.kind === KindLesson || m.kind === KindImpression) r.replaced = this.st.replacedBy(m.id);

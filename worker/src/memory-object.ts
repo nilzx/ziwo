@@ -404,7 +404,7 @@ export class Memory extends DurableObject<Env> {
     return asked !== "" && known === undefined ? { view, zone, unknownZone: asked } : { view, zone };
   }
 
-  remember(args: RememberArgs): { id: string; dup: boolean } | Invalid {
+  remember(args: RememberArgs): { id: string; dup: boolean; subject?: { id: string; started: boolean } } | Invalid {
     return outcome(() => {
       const { happenedAt, ...req } = args;
       let happened: number | undefined;
@@ -469,7 +469,7 @@ export class Memory extends DurableObject<Env> {
         case "remember": {
           const r = this.remember(call.args);
           if ("invalid" in r) return r;
-          return { text: (r.dup ? "already remembered as " : "remembered as ") + r.id };
+          return { text: rememberedText(r) };
         }
         case "recall": {
           const results = this.recallWith(call);
@@ -721,6 +721,16 @@ export class Memory extends DurableObject<Env> {
         .toArray().length > 0
     );
   }
+}
+
+// rememberedText is the answer to remember: the id, and the subject it was
+// put under, saying so when the name started a new one, so that a slip is
+// noticed while it can still be mended.
+export function rememberedText(r: { id: string; dup: boolean; subject?: { id: string; started: boolean } }): string {
+  if (r.dup) return "already remembered as " + r.id;
+  if (r.subject === undefined) return "remembered as " + r.id;
+  if (!r.subject.started) return `remembered as ${r.id} under subject ${r.subject.id}`;
+  return `remembered as ${r.id} under a new subject, ${r.subject.id}. If it is one you already have under another name, merge the two in your next round of reflection.`;
 }
 
 // maxEventsInOneGo is the most events a rebuild, an export or an import

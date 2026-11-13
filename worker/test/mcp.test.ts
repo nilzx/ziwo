@@ -80,6 +80,12 @@ const rememberFields: Record<string, [string, string]> = {
   lesson: ["what you would carry into next time", "what you came to know, or would carry into next time"],
 };
 
+// The subject a moment belongs to, new on remember.
+const rememberSubject = {
+  type: "string",
+  description: "the subject it belongs to, by name: one you already have if it fits, else a short new name; at most 80 characters",
+};
+
 // What reflect says beyond Go: a lesson or an impression can take the place
 // of earlier ones, and a lesson is also what was come to know.
 const reflectChanges: [string, string][] = [
@@ -156,6 +162,9 @@ function expectedListing(): { instructions: string; tools: Map<string, Omit<Tool
         expect(props[field]!.description).toBe(was);
         props[field]!.description = is;
       }
+      // subject is new.
+      expect(props.subject).toBeUndefined();
+      (props as Record<string, unknown>).subject = rememberSubject;
     }
     if (t.name === "reflect") {
       for (const [was, is] of reflectChanges) {

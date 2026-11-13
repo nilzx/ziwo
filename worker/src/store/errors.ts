@@ -96,3 +96,12 @@ export class SubjectError extends Error {
     super(reason === "no-letter" ? "a subject's name needs a letter or a digit" : "no such subject");
   }
 }
+
+// IsSubjectError is thrown when an amendment names a subject item: a subject
+// is changed in a round of reflection, and erased with erase.
+export class IsSubjectError extends Error {
+  override name = "IsSubjectError";
+  constructor(readonly id: string) {
+    super("the memory is a subject");
+  }
+}

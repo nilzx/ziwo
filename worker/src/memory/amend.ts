@@ -11,10 +11,11 @@
 // The messages are read by the model: each is Go's text word for word,
 // without the "invalid input: " prefix the Go server strips.
 
-import { KindEpisode, KindFragment, KindImpression, KindLesson, KindReading, KindSelf, StateErased } from "../store/content";
+import { KindEpisode, KindFragment, KindImpression, KindLesson, KindReading, KindSelf, KindSubject, StateErased } from "../store/content";
 import {
   EntryError,
   ErasedError,
+  IsSubjectError,
   NoBatchError,
   NoMemoryError,
   NoPreferenceError,
@@ -94,6 +95,9 @@ export function amend(st: Store, now: number, req: AmendRequest): string {
   const asked = { sessionId, id };
 
   try {
+    // A subject is changed in a round of reflection: no action of amend
+    // applies to it. This comes before what any action checks.
+    if (action !== "prefer" && action !== "unprefer" && st.get([id])[0]?.kind === KindSubject) throw new IsSubjectError(id);
     switch (action) {
       case "prefer": {
         if (text === "") throw invalid("text is required for prefer: the rule, in one or two sentences");
@@ -151,12 +155,25 @@ export function erase(st: Store, now: number, req: EraseRequest): string {
   const n = runeCount(reason);
   if (n > MaxReasonRunes) throw invalid(`reason is ${n} characters, the limit is ${MaxReasonRunes}`);
   if (id === "") throw invalid("id is required for erase");
+  // A subject that stands: what its memories are is said before they are
+  // let go of.
+  const m = st.get([id])[0];
+  const head = m !== undefined && m.kind === KindSubject && m.state === "";
+  const figures = head ? st.subjectFigures([id]).get(id) : undefined;
+  const earlier = head ? st.subjectEarlier(id) : [];
   try {
     st.erase(now, sessionId, id, reason);
   } catch (err) {
     throw amendError(err, { sessionId, id });
   }
-  return "erased " + id + ": what it said is gone for good. The record keeps only that it existed and that it was erased";
+  if (!head) return "erased " + id + ": what it said is gone for good. The record keeps only that it existed and that it was erased";
+  const held = figures === undefined ? 0 : figures.fragments + figures.episodes + figures.lessons;
+  const stay = `The ${held} memories under it stay, and belong to no subject now`;
+  if (earlier.length === 0) {
+    return `erased ${id}: what it said is gone for good. The record keeps only that it existed and that it was erased. ${stay}`;
+  }
+  return `erased ${id}: what it said is gone for good, and so are the ${earlier.length} earlier names and descriptions of its subject (${earlier.join(", ")}). ` +
+    `The record keeps only that they existed and that they were erased. ${stay}`;
 }
 
 // correct writes a memory that takes the place of an old one. What the
@@ -191,6 +208,9 @@ function amendError(err: unknown, req: Asked): unknown {
     return invalid(`unknown session_id ${goQuote(req.sessionId)}: call get_context and pass the session id it returns`);
   }
   if (err instanceof NoMemoryError) return invalid(`no memory with id ${goQuote(req.id)}`);
+  if (err instanceof IsSubjectError) {
+    return invalid(`${err.id} is a subject: a subject is changed in a round of reflection, with a subject entry`);
+  }
   if (err instanceof ErasedError) return invalid(`${req.id} has been erased; there is nothing left to amend`);
   if (err instanceof SupersededError) return invalid(`${req.id} has been replaced by a correction (${err.by}): amend that one`);
   if (err instanceof NoPreferenceError) return invalid(`no preference in force with id ${goQuote(req.id)}`);

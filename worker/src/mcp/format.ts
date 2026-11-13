@@ -8,7 +8,7 @@ import { goG } from "../memory/amend";
 import { goQuote, oneLine } from "../memory/clean";
 import type { ReflectView } from "../memory/amend";
 import type { ContextView, Result } from "../memory/service";
-import { KindFragment, KindImpression, KindReading, KindSelf, StateAbsorbed, StateErased, StateSuperseded } from "../store/content";
+import { KindFragment, KindImpression, KindReading, KindSelf, KindSubject, StateAbsorbed, StateErased, StateSuperseded } from "../store/content";
 import { type Tier, tierOf } from "../store/decay";
 import type { Memory } from "../store/types";
 import { formatDate, formatDateTime } from "../zone";
@@ -123,7 +123,32 @@ export function formatRecall(results: Result[], deep: boolean, zone: string, lis
 // formatExpand lays out memories read in full.
 export function formatExpand(results: Result[], zone: string): string {
   if (results.length === 0) return "no memories with those ids";
-  return results.map((r) => writeFull(r, r.tier, r.sources, r.readings, zone, r.replaced)).join("\n") + zoneLine(zone);
+  return results
+    .map((r) => (r.kind === KindSubject && r.state !== StateErased
+      ? writeSubject(r, zone)
+      : writeFull(r, r.tier, r.sources, r.readings, zone, r.replaced, r.subjectOf)))
+    .join("\n") + zoneLine(zone);
+}
+
+// writeSubject writes a subject item in full: its name and description, and
+// for the head, what the subject holds and who its memories name, and the
+// earlier subject items it took the place of.
+export function writeSubject(r: Result, zone: string): string {
+  let b = `[${r.id}] ${formatDateTime(r.createdAt, zone)} · subject ${oneLine(r.about)}`;
+  if (r.state === StateSuperseded) b += ` · replaced by ${r.stateBy}`;
+  if (r.model !== "") b += ` · as ${r.model}`;
+  if (r.client !== "") b += ` · via ${r.client}`;
+  b += "\n";
+  if (r.gist !== "") b += `gist: ${oneLine(r.gist)}\n`;
+  if (r.held !== undefined) {
+    const f = r.held.figures;
+    b += `holds: ${f.fragments + f.episodes + f.lessons} memories (${f.fragments} fragments, ${f.episodes} episodes, ${f.lessons} lessons)`;
+    if (f.waiting > 0) b += `, ${f.waiting} waiting`;
+    b += `; last active ${formatDate(r.held.activeAt, zone)}\n`;
+    if (r.held.people.length > 0) b += `people: ${r.held.people.join(", ")}\n`;
+  }
+  if (r.replaced.length > 0) b += `replaces: ${r.replaced.join(", ")}\n`;
+  return b;
 }
 
 // formatBatch lays out a batch of fragments to reflect on.
@@ -193,7 +218,11 @@ export function writeGist(m: Memory, tier: Tier, zone: string): string {
 // writeFull writes everything a memory holds, leaving out empty fields.
 // replaced are the ids of the earlier lessons or impressions it took the
 // place of.
-export function writeFull(m: Memory, tier: Tier, sources: string[], readings: Memory[], zone: string, replaced: string[] = []): string {
+// subject, for an item filed under one, names it, by its head.
+export function writeFull(
+  m: Memory, tier: Tier, sources: string[], readings: Memory[], zone: string, replaced: string[] = [],
+  subject?: { id: string; name: string },
+): string {
   if (m.state === StateErased) {
     return `[${m.id}] ${formatDate(m.createdAt, zone)} · erased: what it said was deleted for good\n`;
   }
@@ -213,6 +242,7 @@ export function writeFull(m: Memory, tier: Tier, sources: string[], readings: Me
     ["lesson", m.lesson],
     ["people", m.people.join(", ")],
     ["pointer", m.pointer],
+    ["subject", subject === undefined ? "" : `${oneLine(subject.name)} (${subject.id})`],
     ["corrects", m.corrects],
     ["revises", m.kind === KindSelf ? m.ref : ""],
     ["replaces", replaced.join(", ")],
