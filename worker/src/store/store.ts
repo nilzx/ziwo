@@ -766,6 +766,20 @@ export class Store {
       .map((r) => text(r.dst));
   }
 
+  // replacedBy returns the ids of the memories that the one with the given
+  // id took the place of, other than the one it corrects, oldest first: the
+  // earlier lessons or impressions it replaced.
+  replacedBy(id: string): string[] {
+    return this.db
+      .all(
+        `SELECT m.id FROM memories m INDEXED BY memories_by_state_by
+          WHERE m.state_by = ? AND m.state_by <> '' AND m.state = '${StateSuperseded}'
+            AND m.id <> (SELECT corrects FROM memories WHERE id = ?) ORDER BY m.n`,
+        id, id,
+      )
+      .map((r) => text(r.id));
+  }
+
   // preferences returns the preferences in force, oldest first.
   preferences(): Preference[] {
     return this.db

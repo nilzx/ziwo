@@ -22,7 +22,7 @@ import {
   SupersededError,
   TooManyPreferencesError,
 } from "../store/errors";
-import type { Entry } from "../store/reflect";
+import { type Entry, maxFrom } from "../store/reflect";
 import type { Store } from "../store/store";
 import type { Memory } from "../store/types";
 import { clip, cleanText, goQuote, InvalidInput, oneLine, runeCount, trimSpace } from "./clean";
@@ -33,7 +33,8 @@ export const MaxPreferenceRunes = 300;
 export const MaxPreferences = 30;
 export const MaxContextRunes = 200;
 export const MaxEntries = 20;
-export const MaxFrom = 20;
+export const MaxFrom = maxFrom;
+export const MaxReplaces = 10;
 
 export const DefaultReflect = 12;
 export const MaxReflect = 20;
@@ -307,6 +308,7 @@ export function cleanEntry(req: EntryRequest): Entry {
   }
   const from = tidyIDs(req.from ?? []);
   if (from.length > MaxFrom) throw invalid(`at most ${MaxFrom} ids in from`);
+  const replaces = cleanReplaces(kind, req.replaces ?? []);
   if (kind === KindImpression && about === "") throw invalid("about is required for an impression: the person or thing, by name");
   if (kind === KindReading && ref === "") throw invalid("ref is required for a reading: the id of the memory it is about");
   if (kind !== KindImpression) about = "";
@@ -315,8 +317,28 @@ export function cleanEntry(req: EntryRequest): Entry {
   return {
     kind, gist: c.gist, body: c.body, outcome: c.outcome, feeling: c.feeling, intensity: c.intensity,
     lesson: c.lesson, people: c.people, pointer: c.pointer, importance: c.importance,
-    about, context, from, ref, milestone: kind === KindEpisode && (req.milestone ?? false),
+    about, context, from, ref, milestone: kind === KindEpisode && (req.milestone ?? false), replaces,
   };
+}
+
+// cleanReplaces checks the ids an entry names in replaces, trimmed, the
+// empty ones left out. Unlike from, an id named twice is refused, not
+// dropped: naming one twice is likely a slip for another id.
+function cleanReplaces(kind: string, ids: string[]): string[] {
+  const out: string[] = [];
+  for (let id of ids) {
+    id = trimSpace(id);
+    if (id === "") continue;
+    if (out.includes(id)) throw invalid(`${id} is named twice in replaces`);
+    out.push(id);
+  }
+  if (out.length === 0) return out;
+  if (kind === KindSelf) {
+    throw invalid("replaces is not for a statement about yourself: to revise one, name it in ref");
+  }
+  if (kind !== KindLesson && kind !== KindImpression) throw invalid("replaces goes with a lesson or an impression only");
+  if (out.length > MaxReplaces) throw invalid(`at most ${MaxReplaces} ids in replaces`);
+  return out;
 }
 
 // goG is Go's %.{prec}g of a finite number: prec significant digits, an

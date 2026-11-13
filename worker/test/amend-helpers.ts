@@ -31,7 +31,7 @@ export function begin(s: Store, sess: string): string {
 export function entry(e: Partial<Entry> & { kind: string; gist: string }): Entry {
   return {
     body: "", outcome: "", feeling: "", intensity: 0, lesson: "", people: [], pointer: "", importance: 0,
-    about: "", context: "", from: [], ref: "", milestone: false, ...e,
+    about: "", context: "", from: [], ref: "", milestone: false, ...e, replaces: e.replaces ?? [],
   };
 }
 

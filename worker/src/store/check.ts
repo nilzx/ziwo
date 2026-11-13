@@ -205,7 +205,9 @@ function checkTables(c: Checker, db: Db): void {
     `SELECT m.id FROM memories m WHERE (m.state_by <> '' AND m.state_by NOT IN (SELECT id FROM memories))
         OR (m.corrects <> '' AND m.corrects NOT IN (SELECT id FROM memories))
         OR (m.ref <> '' AND m.ref NOT IN (SELECT id FROM memories))
-     UNION SELECT l.src FROM links l WHERE l.dst NOT IN (SELECT id FROM memories) OR l.src NOT IN (SELECT id FROM memories)`);
+     UNION SELECT l.src FROM links l WHERE l.dst NOT IN (SELECT id FROM memories) OR l.src NOT IN (SELECT id FROM memories)
+     UNION SELECT json_extract(e.payload, '$.id') FROM events e, json_each(e.payload, '$.replaces') r
+      WHERE e.kind = ? AND r.value NOT IN (SELECT id FROM memories)`, kindRemember);
   c.flag(LevelWarning, "nothing-in-its-place", "memories were replaced or absorbed by one that no longer stands",
     `SELECT m.id FROM memories m JOIN memories by ON by.id = m.state_by
       WHERE m.state IN (?1, ?2) AND m.retracted = 0 AND (by.retracted = 1 OR by.state = ?3)`,

@@ -6,7 +6,7 @@
 // caller (the object searches its vectors; see embedding.ts).
 
 import { type Report } from "../store/check";
-import { StateErased } from "../store/content";
+import { KindImpression, KindLesson, StateErased } from "../store/content";
 import { retentionOf, type Tier, type TierCounts, tierOf } from "../store/decay";
 import { covered, searchTerms } from "../store/segment";
 import { NoSessionError, type Store } from "../store/store";
@@ -74,6 +74,7 @@ export interface Result extends Memory {
   // Filled in by expand alone.
   sources: string[]; // ids of the memories it is built on
   readings: Memory[]; // later understandings of it
+  replaced: string[]; // ids of the earlier lessons or impressions it took the place of
 }
 
 // MeaningHit is a memory found by meaning: its row number and the cosine
@@ -260,6 +261,7 @@ export class Service {
         byMeaning: best.byMeaning,
         sources: [],
         readings: [],
+        replaced: [],
       });
     }
     results.sort((a, b) => (a.score !== b.score ? b.score - a.score : b.n - a.n));
@@ -280,7 +282,7 @@ export class Service {
   private list(span: Span | undefined, limit: number, deep: boolean): Result[] {
     const clock = this.st.clock();
     return this.st.inSpanList(clock, span ?? {}, deep, limit).map((m) => ({
-      ...m, tier: tierOf(m, clock), score: 0, byKeyword: false, byMeaning: false, sources: [], readings: [],
+      ...m, tier: tierOf(m, clock), score: 0, byKeyword: false, byMeaning: false, sources: [], readings: [], replaced: [],
     }));
   }
 
@@ -317,11 +319,14 @@ export class Service {
     const out: Result[] = [];
     const read: string[] = [];
     for (const m of ms) {
-      const r: Result = { ...m, tier: tierOf(m, clock), score: 0, byKeyword: false, byMeaning: false, sources: [], readings: [] };
+      const r: Result = {
+        ...m, tier: tierOf(m, clock), score: 0, byKeyword: false, byMeaning: false, sources: [], readings: [], replaced: [],
+      };
       out.push(r);
       if (m.state === StateErased) continue; // there is nothing left to read
       r.sources = this.st.sources(m.id);
       r.readings = this.st.readings(m.id);
+      if (m.kind === KindLesson || m.kind === KindImpression) r.replaced = this.st.replacedBy(m.id);
       if (!m.retracted) read.push(m.id);
     }
     if (read.length > 0) {

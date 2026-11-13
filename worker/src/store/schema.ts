@@ -20,8 +20,9 @@ export const logFormat = 3;
 // 7 added the indexes a new session's load reads; 8 projects amend, erase and
 // reflect events, and replays an erasure the way it was lived (see
 // applyRemember and applyErase); 9 keeps the time zone a session reported;
-// 10 keys a carrier by one spelling of its name (see carrierKey).
-export const derivedVersion = "10";
+// 10 keys a carrier by one spelling of its name (see carrierKey); 11 indexes
+// what replaced a memory (state_by), which expand shows with the new memory.
+export const derivedVersion = "11";
 
 // appendOnlyTriggers make the database itself refuse to change or remove an
 // event.
@@ -161,6 +162,9 @@ CREATE INDEX memories_standing_core ON memories(pinned DESC, importance DESC, in
   WHERE core = 1 AND state = '' AND retracted = 0 AND kind NOT IN ('self', 'reading');
 CREATE INDEX memories_pending ON memories(core, fade_at, n)
   WHERE kind = 'fragment' AND state = '' AND retracted = 0 AND reviewed IS NULL;
+
+-- What replaced or absorbed a memory, looked up from the new memory.
+CREATE INDEX memories_by_state_by ON memories(state_by) WHERE state_by <> '';
 
 -- What a memory is built on: src cites dst.
 CREATE TABLE links (

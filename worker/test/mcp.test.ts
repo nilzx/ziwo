@@ -25,11 +25,16 @@ interface ToolListing {
 const eraseLine =
   "\nerase: delete what a memory says, for good. Only when a person explicitly asks for it to be deleted. It cannot be undone.";
 
-// What remember says beyond Go: an ordinary conversation leaves a memory too.
+// What remember says beyond Go: an ordinary conversation leaves a memory too,
+// and a memory is the AI's own account, its own part in it included.
 const rememberChanges: [string, string][] = [
   [
     "Most turns need no memory.\n\n",
-    "Most turns need no memory.\n\nA conversation can matter without any such moment. When a person brings up something they care about or keep coming back to, or the two of you leave something open (an idea to try, something one of you said you would do), write it down while the conversation is going on: you cannot tell which turn is the last, and what you have not written is gone when it ends. What the conversation was about and where it was left is what you will be asked about next time.\n\n",
+    "Most turns need no memory.\n\nA conversation can matter without any such moment. When a person brings up something they care about or keep coming back to, or the two of you leave something open (an idea to try, something one of you said you would do), write it down while the conversation is going on: you cannot tell which turn is the last, and what you have not written is gone when it ends. Write it as what you lived through, from where you stand, not as notes for picking a task up again: what you went through, what you came to know, what it was like if it was like anything, how you now stand with the people and things in it. What the conversation was about and where it was left will be in that.\n\n",
+  ],
+  [
+    "what you would carry into next time. Fill feeling",
+    "what you would carry into next time. Your own part belongs in the account: what you thought, said and settled on. Fill feeling",
   ],
   [
     "put its location in pointer.\n",
@@ -66,6 +71,37 @@ const recallFields = {
 };
 
 // The fields with fixed values, shown as an enum.
+// What remember's fields say beyond Go.
+const rememberFields: Record<string, [string, string]> = {
+  body: [
+    "the account: how it began, what happened along the way, how it ended",
+    "the account, from where you stand: how it began, what happened along the way, your own part in it, how it ended",
+  ],
+  lesson: ["what you would carry into next time", "what you came to know, or would carry into next time"],
+};
+
+// What reflect says beyond Go: a lesson or an impression can take the place
+// of earlier ones, and a lesson is also what was come to know.
+const reflectChanges: [string, string][] = [
+  [
+    "lesson: something to carry into next time; from lists the experiences it comes from.\n",
+    "lesson: something you came to know, or would carry into next time; from lists the experiences it comes from. If it says what earlier lessons of yours say, or you see it differently now, name those in replaces: they stay in your record and leave ordinary recall.\n",
+  ],
+  [
+    "It takes the place of your earlier impression of them.\n",
+    "It takes the place of your earlier impression of them; if you hold one of them under another name, name it in replaces.\n",
+  ],
+];
+const entryLesson: [string, string] = [
+  "episode: what you would carry into next time",
+  "episode: what you came to know, or would carry into next time",
+];
+const entryReplaces = {
+  type: "array",
+  items: { type: "string" },
+  description: "lesson, impression: ids of earlier ones this takes the place of",
+};
+
 const enums: Record<string, Record<string, string[]>> = {
   remember: {
     moment: ["start", "blocked", "corrected", "breakthrough", "finished", "emotion", "other"],
@@ -115,6 +151,17 @@ function expectedListing(): { instructions: string; tools: Map<string, Omit<Tool
         expect(copy.description).toContain(was);
         copy.description = copy.description.replace(was, is);
       }
+      const props = copy.inputSchema.properties as Record<string, { description: string }>;
+      for (const [field, [was, is]] of Object.entries(rememberFields)) {
+        expect(props[field]!.description).toBe(was);
+        props[field]!.description = is;
+      }
+    }
+    if (t.name === "reflect") {
+      for (const [was, is] of reflectChanges) {
+        expect(copy.description).toContain(was);
+        copy.description = copy.description.replace(was, is);
+      }
     }
     if (t.name === "recall") {
       for (const [was, is] of recallChanges) {
@@ -144,6 +191,10 @@ function expectedListing(): { instructions: string; tools: Map<string, Omit<Tool
     if (t.name === "reflect") {
       const entry = (props.entries!.items as { properties: Record<string, Record<string, unknown>> }).properties;
       entry.kind!.enum = entryKinds;
+      expect(entry.lesson!.description).toBe(entryLesson[0]);
+      entry.lesson!.description = entryLesson[1];
+      expect(entry.replaces).toBeUndefined();
+      entry.replaces = entryReplaces;
       expect(entry.gist!.description).toBe("one sentence; for self, the statement itself");
       entry.gist!.description = "one sentence, at most 200 characters; for self, the statement itself";
     }

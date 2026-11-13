@@ -86,22 +86,31 @@ export type Append = (at: number, kind: string, payload: string) => number;
 
 // writeMemory stores what a new memory says and appends the event that records
 // it. The event carries the content's hash, not the content.
+//
+// e.replaces, for a lesson or an impression, names what the new memory takes
+// the place of, as the caller checked it; an impression also takes the place
+// of the earlier impressions of what it is about.
 export function writeMemory(db: Db, append: Append, at: number, e: RememberEvent, c: Content): void {
   const { data, hash } = encodeContent(c);
   const ev: RememberEvent = { ...e, hash, kind: e.kind === KindFragment ? "" : e.kind, replaces: undefined };
+  const named = (ev.kind === KindImpression || ev.kind === KindLesson) && ev.corrects === "" ? (e.replaces ?? []) : [];
+  const ids: string[] = [];
   if (ev.kind === KindImpression && ev.corrects === "") {
     // Name what it takes the place of now, while what they are about can
     // still be read: a replay must replace the same ones even if one of them,
     // or this one, is erased later. These are the rows the match on about in
     // applyRemember would reach.
-    const ids = db
-      .all(
-        `SELECT id FROM memories WHERE kind = ? AND about = ? AND state = '' AND id <> ? ORDER BY n`,
-        KindImpression, c.about ?? "", ev.id,
-      )
-      .map((r) => text(r.id));
-    if (ids.length > 0) ev.replaces = ids;
+    ids.push(
+      ...db
+        .all(
+          `SELECT id FROM memories WHERE kind = ? AND about = ? AND state = '' AND id <> ? ORDER BY n`,
+          KindImpression, c.about ?? "", ev.id,
+        )
+        .map((r) => text(r.id)),
+    );
   }
+  for (const id of named) if (!ids.includes(id)) ids.push(id);
+  if (ids.length > 0) ev.replaces = ids;
   db.run(`INSERT INTO contents(id, data) VALUES(?, ?)`, ev.id, data);
   append(at, kindRemember, encodeRemember(ev));
 }
@@ -194,9 +203,9 @@ export function applyRemember(db: Db, p: Params, seq: number, at: number, e: Rem
     replace(`id = ?`, e.corrects);
   } else if (kind === KindSelf && e.ref !== "") {
     replace(`id = ? AND kind = ?`, e.ref, KindSelf);
-  } else if (kind === KindImpression && e.replaces !== undefined) {
-    // The + keeps the planner on the ids rather than every impression.
-    replace(`+kind = ? AND id IN ${inList}`, KindImpression, JSON.stringify(e.replaces));
+  } else if ((kind === KindImpression || kind === KindLesson) && e.replaces !== undefined) {
+    // The + keeps the planner on the ids rather than every memory of the kind.
+    replace(`+kind = ? AND id IN ${inList}`, kind, JSON.stringify(e.replaces));
   } else if (kind === KindImpression && kept) {
     // A log the Go build wrote: what it replaces is found by what it is about.
     replace(`kind = ? AND about = ?`, KindImpression, c.about);

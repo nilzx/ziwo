@@ -91,6 +91,7 @@ export function recallBefore(st: Store, query: string, limit: number, deep: bool
         byMeaning: c.byMeaning,
         sources: [],
         readings: [],
+        replaced: [],
       },
     });
   }

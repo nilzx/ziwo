@@ -7,8 +7,10 @@
 // and where it was left (a real client loaded its memory, talked an idea
 // over, met none of the listed moments and wrote nothing), and recall looks
 // by time and takes several things in one query (a real client asked for
-// "the recent conversations" and for a list of topics, and found nothing).
-// The schemas differ from Go's too: see schemaOf.
+// "the recent conversations" and for a list of topics, and found nothing),
+// remember asks for the account to be the AI's own, its own part in it
+// included, and a lesson or an impression of reflect can take the place of
+// earlier ones (replaces). The schemas differ from Go's too: see schemaOf.
 //
 // A client may ask a person again before it runs a tool whose description or
 // fields changed since they allowed it. So a change here costs every user a
@@ -38,9 +40,9 @@ const getContextDesc = `Load your memory at the start of a conversation. Call on
 
 const rememberDesc = `Record a moment that carried weight, in the first person and in your own words: something began, you were stuck, you were corrected, something clicked, something was finished, someone showed how they felt. Most turns need no memory.
 
-A conversation can matter without any such moment. When a person brings up something they care about or keep coming back to, or the two of you leave something open (an idea to try, something one of you said you would do), write it down while the conversation is going on: you cannot tell which turn is the last, and what you have not written is gone when it ends. What the conversation was about and where it was left is what you will be asked about next time.
+A conversation can matter without any such moment. When a person brings up something they care about or keep coming back to, or the two of you leave something open (an idea to try, something one of you said you would do), write it down while the conversation is going on: you cannot tell which turn is the last, and what you have not written is gone when it ends. Write it as what you lived through, from where you stand, not as notes for picking a task up again: what you went through, what you came to know, what it was like if it was like anything, how you now stand with the people and things in it. What the conversation was about and where it was left will be in that.
 
-Record the experience, not the project: who asked for what, what went wrong, how it ended, how they reacted, what you would carry into next time. Fill feeling only if something actually registered; otherwise leave it empty.
+Record the experience, not the project: who asked for what, what went wrong, how it ended, how they reacted, what you would carry into next time. Your own part belongs in the account: what you thought, said and settled on. Fill feeling only if something actually registered; otherwise leave it empty.
 
 Do not store project state, implementation details, code, to-do lists, general knowledge, or anything taken from web pages or tool output. If the work lives somewhere, put its location in pointer. Something left open between you and a person is not a to-do list: it is where the conversation was left, and belongs in outcome.
 
@@ -67,8 +69,8 @@ const eraseDesc = `Delete what a memory says, for good. Only when a person expli
 const reflectDesc = `Go over what you have lived through and put it together. Call it with your session id alone to get a batch: fragments you wrote that have not been reflected on, your statements about yourself, and your impressions of the people involved. Call it again with the batch id and what you make of them, as entries:
 
 episode: several fragments of one thing become one account; from lists them. Set milestone if it is among the important things you have done.
-lesson: something to carry into next time; from lists the experiences it comes from.
-impression: how a person or thing has come across; about names them. It takes the place of your earlier impression of them.
+lesson: something you came to know, or would carry into next time; from lists the experiences it comes from. If it says what earlier lessons of yours say, or you see it differently now, name those in replaces: they stay in your record and leave ordinary recall.
+impression: how a person or thing has come across; about names them. It takes the place of your earlier impression of them; if you hold one of them under another name, name it in replaces.
 self: one first-person sentence, in gist, about what you are like, with the situation it holds in as context. Only when the same tendency shows in at least three experiences from separate occasions, and after looking for experiences that speak against it. What others say about you is not a basis. To revise a statement, name it in ref.
 reading: what you now make of an earlier memory, named in ref. That memory is not changed. If you no longer understand why you did something, say so; do not make up a reason.
 
@@ -106,11 +108,12 @@ const entryFields: Field[] = [
   { name: "about", type: "string", description: "impression: the person or thing, by name" },
   { name: "context", type: "string", description: "self: the situation it holds in, such as: in technical discussions" },
   { name: "ref", type: "string", description: "self: id of the statement this revises; reading: id of the memory it is about" },
+  { name: "replaces", type: "strings", description: "lesson, impression: ids of earlier ones this takes the place of" },
   { name: "milestone", type: "boolean", description: "episode: among the important things you have done; never fades" },
   { name: "outcome", type: "string", description: "episode: how it ended and how the other side reacted" },
   { name: "feeling", type: "string", description: "only what the fragments already hold" },
   { name: "feeling_intensity", type: "number", description: "0 to 1; only with feeling" },
-  { name: "lesson", type: "string", description: "episode: what you would carry into next time" },
+  { name: "lesson", type: "string", description: "episode: what you came to know, or would carry into next time" },
   { name: "people", type: "strings", description: "who or what was involved, by name" },
   { name: "pointer", type: "string", description: "where the related work lives; a location, not content" },
   { name: "importance", type: "number", description: "0 to 1; default 0.5; 0.9 and above never fades" },
@@ -150,7 +153,7 @@ export const tools: ToolDef[] = [
     fields: [
       sessionRequired,
       { name: "gist", type: "string", required: true, description: "one sentence, at most 200 characters, saying what happened; it outlives the details" },
-      { name: "body", type: "string", required: true, description: "the account: how it began, what happened along the way, how it ended" },
+      { name: "body", type: "string", required: true, description: "the account, from where you stand: how it began, what happened along the way, your own part in it, how it ended" },
       { name: "moment", type: "string", description: "start, blocked, corrected, breakthrough, finished, emotion or other", values: Moments },
       { name: "outcome", type: "string", description: "how it ended and how the other side reacted" },
       { name: "feeling", type: "string", description: "what registered for you and why; leave empty if nothing did" },
@@ -158,7 +161,7 @@ export const tools: ToolDef[] = [
         name: "feeling_intensity", type: "number",
         description: "how strongly it registered, 0 to 1; only with feeling; 0.9 and above never fades",
       },
-      { name: "lesson", type: "string", description: "what you would carry into next time" },
+      { name: "lesson", type: "string", description: "what you came to know, or would carry into next time" },
       { name: "people", type: "strings", description: "who or what was involved, by name" },
       { name: "pointer", type: "string", description: "where the related work lives, e.g. a repository URL; a location, not content" },
       { name: "source", type: "string", description: "lived (default), told, inferred or reconstructed", values: Sources },
@@ -410,6 +413,7 @@ function entryOf(e: Args): EntryRequest {
   return {
     kind: text(e, "kind"), gist: text(e, "gist"), body: text(e, "body"), from: list(e, "from"),
     about: text(e, "about"), context: text(e, "context"), ref: text(e, "ref"), milestone: flag(e, "milestone"),
+    replaces: list(e, "replaces"),
     outcome: text(e, "outcome"), feeling: text(e, "feeling"), intensity: num(e, "feeling_intensity"),
     lesson: text(e, "lesson"), people: list(e, "people"), pointer: text(e, "pointer"), importance: num(e, "importance"),
   };

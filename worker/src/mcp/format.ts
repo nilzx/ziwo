@@ -123,7 +123,7 @@ export function formatRecall(results: Result[], deep: boolean, zone: string, lis
 // formatExpand lays out memories read in full.
 export function formatExpand(results: Result[], zone: string): string {
   if (results.length === 0) return "no memories with those ids";
-  return results.map((r) => writeFull(r, r.tier, r.sources, r.readings, zone)).join("\n") + zoneLine(zone);
+  return results.map((r) => writeFull(r, r.tier, r.sources, r.readings, zone, r.replaced)).join("\n") + zoneLine(zone);
 }
 
 // formatBatch lays out a batch of fragments to reflect on.
@@ -191,7 +191,9 @@ export function writeGist(m: Memory, tier: Tier, zone: string): string {
 }
 
 // writeFull writes everything a memory holds, leaving out empty fields.
-export function writeFull(m: Memory, tier: Tier, sources: string[], readings: Memory[], zone: string): string {
+// replaced are the ids of the earlier lessons or impressions it took the
+// place of.
+export function writeFull(m: Memory, tier: Tier, sources: string[], readings: Memory[], zone: string, replaced: string[] = []): string {
   if (m.state === StateErased) {
     return `[${m.id}] ${formatDate(m.createdAt, zone)} · erased: what it said was deleted for good\n`;
   }
@@ -213,6 +215,7 @@ export function writeFull(m: Memory, tier: Tier, sources: string[], readings: Me
     ["pointer", m.pointer],
     ["corrects", m.corrects],
     ["revises", m.kind === KindSelf ? m.ref : ""],
+    ["replaces", replaced.join(", ")],
     ["built on", sources.join(", ")],
   ];
   for (const [name, value] of fields) if (value !== "") b += `${name}: ${value}\n`;

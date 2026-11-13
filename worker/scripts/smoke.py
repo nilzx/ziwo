@@ -30,7 +30,8 @@ one conversation continued by a second client with the same session id, under
 both protocol generations; time zones; token replacement; restart on the same
 persist directory (twice); writing and its validation messages; recall and
 expand; amending (each action); erasing (a tool of its own here); reflecting
-(both steps); reconstructed memories; the check tool.
+(both steps, and a lesson that takes the place of an earlier one);
+reconstructed memories; the check tool.
 
 New here: the admin secret set on the admin page. A second Worker, on a
 scratch directory of its own and with ADMIN_SECRET given empty (so that none
@@ -799,7 +800,18 @@ def run(w):
     has("and the same figure", again.tool("check"), "343 memories written")
     has("and the same backlog", again.tool("check"), "333 moments have not been reflected on")
     has("an old session can go on writing", again.tool("remember", session_id=sa, gist="重启后继续写", body="正文"), "remembered as")
-    has("reflection still works after a restart", again.tool("reflect", session_id=sa), "batch: b_")
+    out = again.tool("reflect", session_id=sa)
+    has("reflection still works after a restart", out, "batch: b_")
+    batch = first(r"b_[a-z2-9]{8}", out)
+    out = again.tool("reflect", session_id=sa, batch=batch, entries=[
+        {"kind": "lesson", "gist": "需求不清楚的时候，先问它要记住什么", "body": "两次经历合起来看。", "replaces": [made[1]]}])
+    newer = first(r"m_[a-z2-9]{8}", out)
+    check("a lesson takes the place of an earlier one", bool(newer) and "(lesson)" in out, shape(out))
+    out = again.tool("expand", ids=[newer])
+    has("it shows what it took the place of", out, f"replaces: {made[1]}")
+    has("and, with no from given, rests on what that one rested on", out, f"built on: {m1}, {m3}")
+    has("the earlier lesson stays in the record, marked", again.tool("expand", ids=[made[1]]), f"replaced by {newer}")
+    has("the check still finds no damage", again.tool("check"), "problems: none")
 
     elapsed = time.time() - t0
     print(f"   ({elapsed:.0f} s)")

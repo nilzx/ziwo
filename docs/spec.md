@@ -211,6 +211,7 @@ The first call opens a round and returns `batch: b_…`, the fragments in full (
 | `about` | string | `impression`: who or what it is about; cut to 80 characters. |
 | `context` | string | `self`: the situation it holds in; at most 200 characters. |
 | `ref` | string | `self`: the statement it revises; `reading`: the item it is about. |
+| `replaces` | list of strings | `lesson`, `impression`: ids of earlier items of the same kind that this one takes the place of; at most 10. |
 | `milestone` | boolean | `episode`: never fades. |
 | `outcome`, `feeling`, `feeling_intensity`, `lesson`, `people`, `pointer`, `importance` | | As for `remember`. |
 
@@ -258,11 +259,11 @@ In full (`expand`, and the fragments of a reflection batch):
 [m_xxxxxxxx] 2026-11-12 09:30 +08:00 · <label> · <source> · importance 0.5 · <marks> · as <model> · via <client> · written <date>
 gist: <gist>
 <body>
-holds in: … / outcome: … / feeling: … (intensity 0.8) / lesson: … / people: … / pointer: … / corrects: … / revises: … / built on: …
+holds in: … / outcome: … / feeling: … (intensity 0.8) / lesson: … / people: … / pointer: … / corrects: … / revises: … / replaces: … / built on: …
 later reading [m_…] <date> as <model>: <gist> <body>
 ```
 
-Each field line appears only when the field is not empty. `written <date>` appears when the item was written more than 24 hours after it took place. A time is shown as `YYYY-MM-DD HH:MM` with `Z` for UTC or the zone's offset otherwise.
+Each field line appears only when the field is not empty. `replaces` lists, for a lesson or an impression, the items it took the place of (other than one it corrects); each of those shows `replaced by` the new one. `written <date>` appears when the item was written more than 24 hours after it took place. A time is shown as `YYYY-MM-DD HH:MM` with `Z` for UTC or the zone's offset otherwise.
 
 ### Arguments that do not fit, and failures
 
@@ -317,7 +318,7 @@ Derived tables, rebuilt from the log:
 | Kind | Written when | Payload |
 | --- | --- | --- |
 | `session` | `get_context` | `id`, `model`, `client`, `tz` (empty ones left out) |
-| `remember` | `remember`, a correction, a reflection entry | `id`, `session`, `kind` (empty for a fragment), `moment`, `source`, `importance`, `intensity`, `hash` (SHA-256 of the stored content), `corrects`, `happened`, `from`, `ref`, `milestone`, `replaces` (an impression: the ids of the impressions it takes the place of) |
+| `remember` | `remember`, a correction, a reflection entry | `id`, `session`, `kind` (empty for a fragment), `moment`, `source`, `importance`, `intensity`, `hash` (SHA-256 of the stored content), `corrects`, `happened`, `from`, `ref`, `milestone`, `replaces` (an impression or a lesson: the ids of the items of its kind it takes the place of) |
 | `recall` | a search listed items | `session`, `query`, `ids`, `clock` |
 | `expand` | items were read in full | `session`, `ids`, `clock` |
 | `amend` | retract, restore, pin, unpin, reweigh, prefer, unprefer | `session`, `action`, `id`, `importance`, `text`, `reason` |
@@ -325,7 +326,7 @@ Derived tables, rebuilt from the log:
 | `reflect` | a round written back | `session`, `batch`, `passed`, `wrote` |
 | `restore` | an import | `from` (the exported memory's instance), `exported_at`, `events` |
 
-What an item says is never in an event: it is in `contents`, and the event carries its hash. Field names, their order and which are left out when empty follow the Go build's structs, so logs move between the two builds; `tz` and `replaces` are new on this platform.
+What an item says is never in an event: it is in `contents`, and the event carries its hash. Field names, their order and which are left out when empty follow the Go build's structs, so logs move between the two builds; `tz` and `replaces` are new on this platform. The Go build ignores `replaces`: it replaces an impression by the earlier ones of the same `about` and nothing else, so a log written here in which a lesson, or an impression of another name, took the place of an earlier one replays there with both standing.
 
 ### Ids
 
@@ -335,7 +336,7 @@ An id is a prefix and eight characters drawn from `abcdefghijkmnpqrstuvwxyz23456
 
 The event log's format is `3`. A database whose log was written in another format is refused: a newer format with a message that says so, an older one because this build does not migrate it (no memory on this platform was written in one). An import whose `log_format` is not 3 is refused the same way.
 
-`derivedVersion` (now `10`) identifies the layout of the derived tables and the logic that fills them. The Go build stands at 6; 7 added the indexes a new session's load reads; 8 projects `amend`, `erase` and `reflect` events and replays an erasure as it was lived; 9 keeps the time zone a session reported; 10 keys a carrier by one spelling of its name.
+`derivedVersion` (now `11`) identifies the layout of the derived tables and the logic that fills them. The Go build stands at 6; 7 added the indexes a new session's load reads; 8 projects `amend`, `erase` and `reflect` events and replays an erasure as it was lived; 9 keeps the time zone a session reported; 10 keys a carrier by one spelling of its name; 11 indexes what replaced an item, which `expand` reads to show what the new item took the place of.
 
 When the memory object first builds its store (the first call after the object starts), it compares `meta.derived` with `derivedVersion` and the parameters in force. If they differ, it drops the derived tables, empties the keyword index, sets the clock to 0 and replays every event in order, in one transaction. A replay depends only on the events, the contents and the parameters; it never reads the wall clock. After the last event, an item whose content was gone when its event was applied and that no erase event marked is marked erased (its content was lost), and vectors of items that no longer exist are dropped. A replay that fails leaves every table as it was.
 
@@ -434,7 +435,7 @@ A recall with a query searches by keyword and, when search by meaning is on, by 
 | active and core items | by anything they say, and by meaning | the same |
 | faded items | by keyword in the gist only, and by meaning | by anything they say, and by meaning |
 | archived items | no | by keyword (by meaning only until the next full embedding run drops its vector) |
-| items replaced by a correction or absorbed into an episode | no | by keyword (likewise) |
+| items replaced (by a correction, a newer impression, or a lesson or impression that names them in `replaces`) or absorbed into an episode | no | by keyword (likewise) |
 | retracted or erased items | no | no |
 | statements about oneself and readings | no (they are shown by `get_context` and `expand`) | no |
 
@@ -498,12 +499,14 @@ Only one round of reflection is open at a time, so the same fragments are not pu
 | Entry | What it is | What it must rest on (`from`) | Source it gets |
 | --- | --- | --- | --- |
 | `episode` | One account of several fragments. The fragments stay in the record, become `part of` it and leave ordinary recall. With `milestone`, it never fades. | Fragments that are not part of an episode yet. | That of its sources if they agree, else `lived` |
-| `lesson` | Something to carry into next time. | Fragments and episodes. | as above |
-| `impression` | How a person or a thing has come across. It replaces the earlier impressions of the same `about`, which are kept as replaced. | Fragments and episodes. | as above |
+| `lesson` | Something come to know, or to carry into next time. It may take the place of earlier lessons (`replaces`). | Fragments and episodes. With `replaces`, `from` may be left out: it then rests on what the lessons it replaces rest on; with both, on its own `from` first, then those; either way at most 20, and what can no longer be built on is left out. | as above |
+| `impression` | How a person or a thing has come across. It replaces the earlier impressions of the same `about`, which are kept as replaced, and those named in `replaces`. | Fragments and episodes. | as above |
 | `self` | One first-person statement about what the AI is like, with the situation it holds in. Core. | At least 3 lived or reconstructed experiences from at least 2 separate occasions (a session, or for a reconstructed item the day it took place). What was told or inferred is no basis. A revision names the statement in `ref` and needs at least 2 experiences the statement does not rest on yet. | `lived` |
 | `reading` | A later understanding of an earlier item, named in `ref`. The item is not changed; `expand` shows the reading with it. | Nothing required; any ids given must name items that are not erased or retracted. | `inferred` |
 
 Every id in `from` must name an item that is not erased or retracted; an item replaced by a correction cannot be built on. Fragments named in `pass` are marked as looked at (see [Forgetting](#forgetting)); fragments in neither entries nor `pass` wait for the next round. `get_context` suggests a round once 8 fragments wait.
+
+An item named in `replaces` is marked replaced by the new one, as a corrected item is: it stays in the record, leaves ordinary recall, is reached by a deep recall, and cannot be pinned, reweighed or replaced again. It must stand (not erased, retracted or replaced already) and be of the entry's kind. Refused as well: an id named twice in one entry, an id named by two entries of one round, more than 10 ids, and `replaces` on any kind but `lesson` and `impression` (a statement about oneself is revised through `ref`, by its own rule). The replacement is part of the `remember` event (`replaces`), so it replays, travels in an export and is checked like any other; it does not move the clock.
 
 ### Amending
 
@@ -527,7 +530,7 @@ Every action needs a known session; an action on an erased item is refused. Eras
 `check` (the tool) and `GET /admin/memories/<name>/check` look the memory over and report figures and findings without quoting anything an item says: figures, ids and fixed words only.
 
 - Figures: the log (format, events by kind), items by tier, kind and source, the experience clock, statements about oneself, preferences, fragments waiting for reflection.
-- Problems (the record is damaged or the tables disagree with it): `content-lost`, `content-altered` (content does not match the hash in its event), `erase-incomplete`, `content-orphaned`, `session-unknown`, `tables-stale`, `clock-off`, `link-broken`.
+- Problems (the record is damaged or the tables disagree with it): `content-lost`, `content-altered` (content does not match the hash in its event), `erase-incomplete`, `content-orphaned`, `session-unknown`, `tables-stale`, `clock-off`, `link-broken` (an item replaced or absorbed by, correcting, revising or built on an item that does not exist, or an event whose `replaces` names one).
 - Warnings (how the memory is used looks off): `nothing-in-its-place`, `self-unsupported`, `many-writes` (one session wrote more than 20 fragments), `core-inflated` (more than 30% core, from 20 items), `feeling-inflated` (more than 20% of fragments felt at 0.9 or above, from 20), `looks-like-project-notes` (a body holds a code fence or runs over 3,000 characters), `same-gist`, `backlog` (50 or more fragments waiting).
 - Notes: `vector-orphaned`, `name-variants`, `never-came-to-mind`, `restored`, `not-built`.
 
@@ -799,7 +802,7 @@ Other lines, each with `msg` and figures or class names only: `memory unavailabl
 | Statement situation (`context`) / impression subject (`about`) | 200 / 80 characters |
 | `recall` limit | default 5, at most 20; query read to 500 characters; at most 4 parts |
 | `expand` | 10 ids |
-| Reflection | 12 fragments by default, at most 20; at most 20 entries, 20 ids in `from`; a round held 15 minutes |
+| Reflection | 12 fragments by default, at most 20; at most 20 entries, 20 ids in `from`, 10 in `replaces`; a round held 15 minutes |
 | Model and client names | 120 characters |
 | Duplicate writes | same gist and body within 10 minutes |
 | `get_context` | 12 core items, 8 recent, 3 other sessions active in the last 15 minutes; restore notice for 7 days; reflection hint from 8 waiting fragments |
@@ -873,13 +876,13 @@ All commands run in `worker/`. Node and npm are needed; `npm install` first.
 | Command | Does |
 | --- | --- |
 | `npm test` | `vitest run` (the tests inside the Workers runtime), then `node --test 'test/node/*.node.mjs'`. |
-| `npm run smoke` | `python3 scripts/smoke.py`: starts `wrangler dev --local` on a free port with a random admin secret and a scratch state directory, creates memories through the admin API, talks MCP as several clients, and checks the answers (277 checks); `--config` runs another local configuration, which is how the prebuilt Worker of the npm package is checked. It never contacts a Cloudflare account and prints no answer, only shapes. |
+| `npm run smoke` | `python3 scripts/smoke.py`: starts `wrangler dev --local` on a free port with a random admin secret and a scratch state directory, creates memories through the admin API, talks MCP as several clients, and checks the answers (282 checks); `--config` runs another local configuration, which is how the prebuilt Worker of the npm package is checked. It never contacts a Cloudflare account and prints no answer, only shapes. |
 | `npx tsc --noEmit` | Type check (`npm run typecheck`). |
-| `npx wrangler deploy --dry-run --outdir dist` | Builds the bundle without deploying (`npm run build`). On 2026-11-13: 1,301 KiB, 298 KiB gzipped. |
+| `npx wrangler deploy --dry-run --outdir dist` | Builds the bundle without deploying (`npm run build`). On 2026-11-13: 1,306 KiB, 300 KiB gzipped. |
 | `npm run pack:npm`, `npm run check:npm` | Assemble the npm package in `pkg/`, and check it (see [Making a release](#making-a-release)). |
 | `npm run dev` | `wrangler dev --local --config wrangler.dev.jsonc`: the Worker on this machine, keyword search only. The admin secret is `ADMIN_SECRET` from `worker/.dev.vars` when that is there and counts; without it the admin page offers to choose one, for an hour after each start (locally the version's time is the time the server started). OAuth works there on `http://localhost`. |
 
-On 2026-11-13, 383 Vitest tests and 112 Node tests passed, and the smoke check passed.
+On 2026-11-13, 391 Vitest tests and 112 Node tests passed, and the smoke check passed.
 
 ### Layout of `worker/`
 
@@ -915,7 +918,7 @@ test/node/             Node tests: page logic, sealing, the admin script, the np
 
 - `test/*.test.ts` run inside the Workers runtime through `@cloudflare/vitest-plugin`, with `wrangler.dev.jsonc`. A test that needs a memory gets a Durable Object of its own; `runInDurableObject` runs code inside an object and `evictDurableObject` stands in for reopening one.
 - Files named after a Go test (`store.test.ts`, `decay.test.ts`, `amend.test.ts`, `reflect.test.ts`, `check.test.ts`, `service.test.ts`, `forgetting.test.ts`, `amend-service.test.ts`, `segment.test.ts`) port the Go build's tests. `go-answers.ts`, `go-listing.ts` and `go-export.ts` hold what the Go server answered and wrote for the same calls, so `mcp.test.ts` and `export.test.ts` compare the Worker's answers and exports with the Go build's byte for byte.
-- Files about what is new on this platform: the Worker and its routes (`worker.test.ts`), the MCP surface (`mcp.test.ts`), replay (`projection.test.ts`, `erase-replay.test.ts`), search by meaning (`embedding.test.ts`, `meaning.test.ts`, `hedge.test.ts`, `vectors.test.ts`), recall by time and in parts (`recall-span.test.ts`, `recall-parts.test.ts`, which compares with the ranking as it was before, kept in `recall-before.ts`), time zones, one-line folding, the admin API, deleting, OAuth, its KV writes and the registration budget, the consent page, the limit on guessing, the admin page, the configuration, and checks at scale (`scale.test.ts`).
+- Files about what is new on this platform: the Worker and its routes (`worker.test.ts`), the MCP surface (`mcp.test.ts`), replay (`projection.test.ts`, `erase-replay.test.ts`), a lesson or an impression taking the place of earlier ones (`replaces.test.ts`), search by meaning (`embedding.test.ts`, `meaning.test.ts`, `hedge.test.ts`, `vectors.test.ts`), recall by time and in parts (`recall-span.test.ts`, `recall-parts.test.ts`, which compares with the ranking as it was before, kept in `recall-before.ts`), time zones, one-line folding, the admin API, deleting, OAuth, its KV writes and the registration budget, the consent page, the limit on guessing, the admin page, the configuration, and checks at scale (`scale.test.ts`).
 - Search by meaning is tested with stand-in embedders (`embed-helpers.ts`), never with a real model.
 - `test/node/` tests the page's logic, the sealing (against fixtures the Go build sealed, and against the Go build itself when a `go` command is present; those tests are skipped otherwise), and every command of the admin script against `wrangler dev`.
 - Tests and logs hold made-up text, and assertions look at ids, figures and fixed strings.

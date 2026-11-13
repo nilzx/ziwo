@@ -38,10 +38,12 @@ export interface RememberEvent {
   from: string[]; // ids of the memories it is built on
   ref: string; // self: the statement it revises; reading: the memory it reads
   milestone: boolean;
-  // Impression: the ids of the impressions it takes the place of, worked out
-  // when it was written. New on this platform; absent in logs the Go build
-  // wrote, and when there are none. Absent, the impressions it replaces are
-  // found by what they are about, as Go does.
+  // Impression or lesson: the ids of the memories of its kind it takes the
+  // place of, worked out when it was written (for an impression, the earlier
+  // impressions of what it is about, then those named in the entry). New on
+  // this platform; absent in logs the Go build wrote, and when there are
+  // none. Absent on an impression, the impressions it replaces are found by
+  // what they are about, as Go does.
   replaces?: string[];
 }
 

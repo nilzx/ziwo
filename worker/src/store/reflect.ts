@@ -8,6 +8,7 @@ import {
   type Append,
   KindEpisode,
   KindFragment,
+  KindLesson,
   KindReading,
   KindSelf,
   SourceReconstructed,
@@ -39,7 +40,14 @@ export interface Entry {
   from: string[]; // ids of the memories it is built on
   ref: string; // self: the statement it revises; reading: the memory it reads
   milestone: boolean; // episode: a milestone, kept for good
+  // lesson, impression: ids of earlier ones of the same kind this takes the
+  // place of. Each is marked replaced by it, as a corrected memory is.
+  replaces: string[];
 }
+
+// maxFrom is how many ids an entry may rest on: the limit on from, which
+// also caps what a lesson takes over from the lessons it replaces.
+export const maxFrom = 20;
 
 // Rules for a statement about oneself. They are starting values.
 export const selfMinSources = 3; // experiences a new statement must rest on
@@ -83,8 +91,15 @@ export function finishReflect(
   if (cur === undefined || cur.batch !== batch || cur.session !== session) throw new NoBatchError();
   // Check everything against the memory as it stands before any of it is
   // written.
-  const sources = entries.map((e, i) => {
+  const named = new Set<string>();
+  const checked = entries.map((e, i) => {
     try {
+      // An item can take the place of another once: two entries of one
+      // round may not both name it.
+      for (const id of e.replaces) {
+        if (named.has(id)) throw new EntryError(`${id} is named in replaces by an earlier entry of this round`);
+        named.add(id);
+      }
       return checkEntry(db, e);
     } catch (err) {
       if (err instanceof EntryError) throw new EntryError(err.msg, i);
@@ -95,8 +110,9 @@ export function finishReflect(
     writeMemory(
       db, append, at,
       {
-        id: ids[i]!, session, kind: e.kind, moment: "", source: sources[i]!, importance: e.importance,
-        intensity: e.intensity, hash: "", corrects: "", happened: 0, from: e.from, ref: e.ref, milestone: e.milestone,
+        id: ids[i]!, session, kind: e.kind, moment: "", source: checked[i]!.source, importance: e.importance,
+        intensity: e.intensity, hash: "", corrects: "", happened: 0, from: checked[i]!.from, ref: e.ref, milestone: e.milestone,
+        replaces: e.replaces,
       },
       {
         gist: e.gist, body: e.body, outcome: e.outcome, feeling: e.feeling, lesson: e.lesson,
@@ -147,20 +163,31 @@ function origin(b: { source: string; session: string; happened: number }): strin
   return b.session;
 }
 
+// Checked is what the checks of an entry give the memory it becomes: its
+// source, and the ids it rests on.
+export interface Checked {
+  source: string;
+  from: string[];
+}
+
 // checkEntry checks an entry against the memory as it stands and returns the
-// source the new memory is to carry. It throws EntryError with index 0.
-export function checkEntry(db: Db, e: Entry): string {
+// source the new memory is to carry and what it rests on. It throws
+// EntryError with index 0.
+export function checkEntry(db: Db, e: Entry): Checked {
   if (e.kind === KindReading) {
     loadBasis(db, e.ref);
     // Go does not look at what a reading says it is built on, and so links
     // it to ids that name nothing; check then reports a broken link.
     for (const id of new Set(e.from)) loadBasis(db, id);
-    return "inferred"; // an understanding of an experience, not the experience
+    // An understanding of an experience, not the experience.
+    return { source: "inferred", from: e.from };
   }
 
+  checkReplaces(db, e);
+  const ids = e.kind === KindLesson && e.replaces.length > 0 ? inherited(db, e) : e.from;
   const from: Basis[] = [];
   const seen = new Set<string>();
-  for (const id of e.from) {
+  for (const id of ids) {
     if (seen.has(id)) continue;
     seen.add(id);
     const b = loadBasis(db, id);
@@ -178,7 +205,7 @@ export function checkEntry(db: Db, e: Entry): string {
   if (from.length === 0) throw new EntryError("from is required: the ids of the memories this rests on");
   let source = from[0]!.source;
   for (const b of from) if (b.source !== source) source = "lived";
-  if (e.kind !== KindSelf) return source;
+  if (e.kind !== KindSelf) return { source, from: ids };
 
   // A statement about oneself rests on what was lived through, on several
   // separate occasions. What others said, and what was inferred, is no basis.
@@ -204,7 +231,7 @@ export function checkEntry(db: Db, e: Entry): string {
           `this rests on ${from.length} from ${origins.size}. Leave it until it has shown up more often`,
       );
     }
-    return "lived";
+    return { source: "lived", from: ids };
   }
   const revised = db.first(`SELECT kind, state FROM memories WHERE id = ? AND retracted = 0`, e.ref);
   if (revised === undefined || text(revised.kind) !== KindSelf || text(revised.state) !== "") {
@@ -217,7 +244,46 @@ export function checkEntry(db: Db, e: Entry): string {
   if (fresh < selfMinNew) {
     throw new EntryError(`a revision needs at least ${selfMinNew} experiences the statement does not already rest on; this adds ${fresh}`);
   }
-  return "lived";
+  return { source: "lived", from: ids };
+}
+
+// checkReplaces checks that each item an entry names in replaces stands and
+// is of the entry's kind. Which kinds may name any is checked before (see
+// cleanEntry in memory/amend.ts).
+function checkReplaces(db: Db, e: Entry): void {
+  for (const id of e.replaces) {
+    const r = db.first(`SELECT kind, state, state_by, retracted FROM memories WHERE id = ?`, id);
+    if (r === undefined) throw new EntryError(`${id} in replaces names no memory`);
+    const kind = text(r.kind);
+    const state = text(r.state);
+    if (state === StateErased) throw new EntryError(`${id} in replaces has been erased`);
+    if (flag(r.retracted)) throw new EntryError(`${id} in replaces has been retracted: restore it first, or leave it out`);
+    if (kind !== e.kind) throw new EntryError(`${id} in replaces is a ${kind}: a ${e.kind} takes the place of earlier ${e.kind}s only`);
+    if (state !== "") throw new EntryError(`${id} in replaces has already been replaced, by ${text(r.state_by)}: name that one`);
+  }
+}
+
+// inherited returns what a lesson with replaces rests on: the ids in its from,
+// then what the lessons it replaces rest on, in the order they were written,
+// without repeats, cut at maxFrom. What those lessons rest on and can no
+// longer be built on (erased, retracted, replaced by a correction) is left
+// out, since the entry did not name it.
+function inherited(db: Db, e: Entry): string[] {
+  const out = [...e.from];
+  const rows = db.all(
+    `SELECT l.dst AS id, m.kind, m.state, m.retracted FROM links l JOIN memories m ON m.id = l.dst
+      WHERE l.src IN ${inList} ORDER BY m.n`,
+    JSON.stringify(e.replaces),
+  );
+  for (const r of rows) {
+    const id = text(r.id);
+    const kind = text(r.kind);
+    const state = text(r.state);
+    if (out.includes(id) || flag(r.retracted) || state === StateErased || state === StateSuperseded) continue;
+    if (kind !== KindFragment && kind !== KindEpisode) continue;
+    out.push(id);
+  }
+  return out.slice(0, maxFrom);
 }
 
 // applyReflect marks the fragments a round passed over. Having been looked at

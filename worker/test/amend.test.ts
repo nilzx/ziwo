@@ -75,7 +75,7 @@ describe("stored forms of amend, erase and reflect", () => {
         .toBe(`{"batch":"${batch}","session":"${sess}","until":${t0 + 15 * minute}}`);
       const [made] = s.finishReflect(t0, sess, batch, [
         { kind: "lesson", gist: "g", body: "b", outcome: "", feeling: "", intensity: 0, lesson: "", people: [], pointer: "",
-          importance: 0.5, about: "", context: "", from: [id], ref: "", milestone: false },
+          importance: 0.5, about: "", context: "", from: [id], ref: "", milestone: false, replaces: [] },
       ], [id]);
       s.amend(t0, sess, AmendReweigh, id, 0.25, "");
       s.erase(t0, sess, made!, "why");
