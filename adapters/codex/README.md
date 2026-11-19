@@ -54,3 +54,5 @@ The original fixed-token/OAuth MCP endpoint remains a legacy single-memory conne
 For an experimental migration, preserve existing backups and native chats, disable the legacy Ziwo connection in the client used for the experiment, and create a new host-owned conversation. Establish the stable identity and explicitly approve its persona using the N1/N2 flows. Never relabel an already injected A conversation as B. This client automatically disables inherited MCP entries for its own process; it does not edit the user's global configuration or migrate production data.
 
 Native Codex desktop/CLI per-turn interception, a full coding workspace adapter, recovery from arbitrary missing host history, and interoperability with other hosts remain separate integration work. A successful reference-client experiment does not establish those capabilities.
+
+For separate offline extraction and held-out A/B/C comparisons, see [continuity evaluation](../../docs/continuity-evaluation.md). Those experiments do not bind a live identity or adopt their candidates.

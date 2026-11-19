@@ -72,8 +72,11 @@ export class AppServer {
     const open = async flags => {
       const child = spawn(binary, ['app-server', ...baseFlags, ...flags], { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
       const rpc = new AppServer(child, cwd);
-      await rpc.request('initialize', { clientInfo: { name: 'ziwo-codex-reference', version: '0.1.0' }, capabilities: { experimentalApi: true } });
-      rpc.send({ method: 'initialized', params: {} }); return rpc;
+      try {
+        const initialized = await rpc.request('initialize', { clientInfo: { name: 'ziwo-codex-reference', version: '0.1.0' }, capabilities: { experimentalApi: true } });
+        rpc.runtimeInfo = { userAgent: initialized.userAgent ?? 'unknown' };
+        rpc.send({ method: 'initialized', params: {} }); return rpc;
+      } catch (error) { await rpc.close(); throw error; }
     };
     let rpc;
     try {
