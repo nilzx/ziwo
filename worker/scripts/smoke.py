@@ -340,7 +340,7 @@ def relive(base, secret, name, ms):
     lines, prev = [], ""
     header = raw.split("\n", 1)[0]
     version = json.loads(header).get("ziwo_export")
-    if version in (2, 3):
+    if version in (2, 3, 4):
         prev = hashlib.sha256((f"ziwo-export-v{version}\n" + header).encode()).hexdigest()
     for line in raw.split("\n"):
         m = EVENT_LINE.match(line)

@@ -44,7 +44,9 @@ export async function loadBoundPersona(request: Request, env: Env, hostHash: str
   const b = bound.value;
   const result = await env.MEMORY.getByName(b.memory).loadPersona(b.identityId, b.instance);
   if ('error' in result) return reply(result);
-  return json(200, { ...result.value, canRun: false, bindingState: b.state });
+  const init = await env.MEMORY.getByName(b.memory).activationRequest(b, 'status', undefined);
+  const canRun = 'value' in init && init.value.canRun === true;
+  return json(200, { ...result.value, canRun, bindingState: canRun ? 'ready' : 'bound_initializing' });
 }
 export async function serveEvaluation(request: Request, env: Env, path: string, note: Note): Promise<Response> {
   const parts = path.split('/');

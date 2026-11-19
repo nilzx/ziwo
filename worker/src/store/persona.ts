@@ -63,10 +63,10 @@ function versionDigest(v: Pick<PersonaVersion, 'identityId' | 'version' | 'baseV
   return digest([v.identityId, v.version, v.baseVersion, v.document, v.loadText, v.sources]);
 }
 // Recall, decay and ordinary session activity are deliberately excluded.
-const sourceSelect = `SELECT m.id, m.created_at, m.written_at, m.kind, m.source, m.state, m.state_by, m.retracted, c.data
- FROM memories m JOIN contents c ON c.id = m.id`;
+const sourceSelect = `SELECT m.id, m.created_at, m.written_at, m.kind, m.source, m.state, m.state_by, m.retracted, c.data, json_extract(e.payload, '$.time_precision') AS time_precision, json_extract(e.payload, '$.happened_on') AS happened_on
+ FROM memories m JOIN contents c ON c.id = m.id JOIN events e ON e.seq = m.n`;
 function sourceRef(r: Row): SourceRef {
-  return { id: text(r.id), fingerprint: digest([r.id, r.created_at, r.written_at, r.kind, r.source, r.state, r.state_by, r.retracted, r.data]) };
+  return { id: text(r.id), fingerprint: digest([r.id, r.created_at, r.written_at, r.kind, r.source, r.state, r.state_by, r.retracted, r.data, ...(r.time_precision === null ? [] : [r.time_precision, r.happened_on])]) };
 }
 function sourcesValid(db: Db, refs: SourceRef[]): boolean {
   return refs.every(ref => {
@@ -177,7 +177,7 @@ export class Personas {
     if (!Number.isSafeInteger(offset) || offset < 0 || offset > job.sources.length || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) fail('invalid evaluation page', 400);
     const items = job.sources.slice(offset, offset + limit).map(ref => {
       const r = this.db.first(sourceSelect + ' WHERE m.id = ?', ref.id)!;
-      return { id: ref.id, kind: r.kind, source: r.source, occurredAt: r.created_at, writtenAt: r.written_at,
+      return { id: ref.id, kind: r.kind, source: r.source, occurredAt: r.time_precision === 'unknown' ? null : r.created_at, occurrencePrecision: r.time_precision ?? 'instant', occurredOn: r.happened_on, writtenAt: r.written_at,
         state: r.state, stateBy: r.state_by, retracted: r.retracted === 1, content: JSON.parse(text(r.data)) as unknown };
     });
     const base = job.baseVersion === null ? null : this.version(job.baseVersion);

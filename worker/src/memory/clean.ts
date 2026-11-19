@@ -63,6 +63,8 @@ export interface RememberRequest {
   pointer?: string;
   // When it took place, in unix milliseconds; undefined is Go's zero time.
   happened?: number;
+  timePrecision?: "instant" | "day" | "unknown";
+  happenedOn?: string;
   // The subject it belongs to, by name or id; empty for none.
   subject?: string;
 }
@@ -137,13 +139,15 @@ export function clean(req: RememberRequest, now: number): RememberInput {
   if (c.source !== SourceReconstructed && happened !== undefined) {
     throw invalid(`happened_at goes with source ${goQuote(SourceReconstructed)} only: a memory written as it happens is dated now`);
   }
-  if (c.source === SourceReconstructed && happened === undefined) {
+  if (c.source === SourceReconstructed && happened === undefined && req.timePrecision !== "unknown") {
     throw invalid(`happened_at is required with source ${goQuote(SourceReconstructed)}: the day it took place, as the record shows it`);
   }
+  if (req.timePrecision !== undefined && c.source !== SourceReconstructed) throw invalid("occurrence precision requires reconstructed source");
+  if (req.timePrecision === "unknown" && happened !== undefined) throw invalid("unknown occurrence cannot carry a timestamp");
   if (happened !== undefined && happened > now + 60 * 1000) throw invalid("happened_at is in the future");
   // Go's unixMilli: the zero time is 0, which the store reads as "now".
   const subject = cleanSubject(req.subject);
-  return { ...c, sessionId, happened: happened ?? 0, ...(subject === "" ? {} : { subject }) };
+  return { ...c, sessionId, happened: happened ?? 0, ...(req.timePrecision === undefined ? {} : { timePrecision: req.timePrecision }), ...(req.happenedOn === undefined ? {} : { happenedOn: req.happenedOn }), ...(subject === "" ? {} : { subject }) };
 }
 
 // cleanSubject tidies a subject given by name or id: trimmed, kept on one
@@ -153,7 +157,7 @@ export function cleanSubject(v: string | undefined): string {
 }
 
 // CleanText is what cleanText returns: every field filled in.
-export type CleanText = Required<Omit<RememberInput, "sessionId" | "happened" | "subject">>;
+export type CleanText = Required<Omit<RememberInput, "sessionId" | "happened" | "timePrecision" | "happenedOn" | "subject">>;
 
 // cleanText checks what a memory says and fills in defaults.
 export function cleanText(req: RememberRequest): CleanText {

@@ -1,3 +1,5 @@
+import { Activations } from "./store/activation";
+import type { ThreadBinding } from "./bindings";
 import { Personas, PersonaError, personaOutcome } from "./store/persona";
 import { DurableObject } from "cloudflare:workers";
 import { clip, InvalidInput, parseSpan, parseWhen, queryParts, type RememberRequest, trimSpace } from "./memory/clean";
@@ -15,7 +17,7 @@ import {
 import { Db, type Usage } from "./store/db";
 import { defaultParams, InvalidParamsError, type Params } from "./store/decay";
 import { ExportError, FormatRefusal, type ParsedExport, parseExport, TooLargeError, writeExport } from "./store/export";
-import { logFormat, metaInstance, metaParams, metaTokenHash, metaZone } from "./store/schema";
+import { latestLogFormat, metaInstance, metaParams, metaTokenHash, metaZone } from "./store/schema";
 import { LogFormatError, parseParams, readLogStats, ReplayError, Store } from "./store/store";
 import type { LogStats } from "./store/types";
 import { type Identity, readIdentity, validSource } from "./store/identity";
@@ -44,6 +46,7 @@ export interface RecallArgs {
   sessionId?: string;
   since?: string;
   until?: string;
+  includeUnknownTime?: boolean;
   meaning?: QueryVector;
   subject?: string; // only the memories of this subject, by name or id, or unsorted
 }
@@ -166,6 +169,20 @@ export class Memory extends DurableObject<Env> {
   adoptPersona(id: string, input: unknown) { return personaOutcome(() => this.personas.adopt(id, input, this.now())); }
   loadPersona(identityId: string, instance: string) { return personaOutcome(() => this.personas.load(identityId, instance)); }
 
+  activationRequest(binding: ThreadBinding, operation: string, input: unknown) {
+    return personaOutcome(() => {
+      if (this.identityInfo() === 'unknown') throw new PersonaError(409, 'bound subject is unavailable');
+      const a = new Activations(new Db(this.ctx.storage.sql), this.ctx.storage, this.store, this.service);
+      if (operation === 'status') return a.status(binding);
+      if (operation === 'begin') return a.begin(binding, input, this.now());
+      if (operation === 'context') return a.context(binding);
+      if (operation === 'history') return a.history(binding, input);
+      const result = a.operate(binding, operation, input, this.now());
+      if (operation === 'batch') this.wake();
+      return result;
+    });
+  }
+
   private get emb(): Embedding | null {
     if (this.embedding === undefined) {
       const s = embedSettings(this.env);
@@ -280,7 +297,8 @@ export class Memory extends DurableObject<Env> {
     const query = args.query ?? "";
     const limit = args.limit ?? 0;
     const deep = args.deep ?? false;
-    const span = parseSpan(args.since, args.until, this.zoneFor(args.sessionId));
+    const range = parseSpan(args.since, args.until, this.zoneFor(args.sessionId));
+    const span = range === undefined ? undefined : { ...range, includeUnknownTime: args.includeUnknownTime === true };
     const subject = trimSpace(args.subject ?? "") === "" ? undefined : this.service.recallSubject(args.subject ?? "");
     let among: Set<number> | undefined;
     if (trimSpace(query) !== "" && args.meaning !== undefined && this.emb !== null) {
@@ -477,8 +495,15 @@ export class Memory extends DurableObject<Env> {
     return outcome(() => {
       const { happenedAt, ...req } = args;
       let happened: number | undefined;
-      if (happenedAt !== undefined && trimSpace(happenedAt) !== "") happened = parseWhen(happenedAt, this.zoneFor(req.sessionId));
-      const r = this.service.remember({ ...req, happened });
+      let timePrecision: RememberRequest['timePrecision'];
+      let happenedOn: string | undefined;
+      const value = trimSpace(happenedAt ?? '');
+      if (value === 'unknown') timePrecision = 'unknown';
+      else if (value !== '') {
+        happened = parseWhen(value, this.zoneFor(req.sessionId));
+        if (happened !== undefined && /^\d{4}-\d{2}-\d{2}$/.test(value)) { timePrecision = 'day'; happenedOn = value; }
+      }
+      const r = this.service.remember({ ...req, happened, timePrecision, happenedOn });
       if (!r.dup) this.wake();
       return r;
     });
@@ -753,7 +778,7 @@ export class Memory extends DurableObject<Env> {
     if (this.hasLog()) return { exists: true };
     let parsed: ParsedExport;
     try {
-      parsed = parseExport(file, maxEventsInOneGo, (f) => new LogFormatError(f, f > logFormat).message);
+      parsed = parseExport(file, maxEventsInOneGo, (f) => new LogFormatError(f, f > latestLogFormat).message);
     } catch (err) {
       if (err instanceof TooLargeError) return { tooLarge: err.message };
       if (err instanceof ExportError || err instanceof FormatRefusal) return { invalid: err.message };

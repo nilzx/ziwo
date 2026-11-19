@@ -148,10 +148,10 @@ describe("time zones through the tools", () => {
       });
     });
     const shown = await c.ok("expand", { ids: [day, gap], session_id: sh });
-    expect(shown).toContain(`[${day}] 2026-03-14 00:00 +08:00 · other · reconstructed`);
+    expect(shown).toContain(`[${day}] 2026-03-14 (date only) · other · reconstructed`);
     expect(shown).toContain(`[${gap}] 2026-03-08 15:30 +08:00 · other · reconstructed`);
     const inUTC = await c.ok("expand", { ids: [day], session_id: utc });
-    expect(inUTC).toContain(`[${day}] 2026-03-13 16:00Z · other · reconstructed`);
+    expect(inUTC).toContain(`[${day}] 2026-03-14 (date only) · other · reconstructed`);
   });
 
   it("does not keep a zone it does not know, and says so", async () => {

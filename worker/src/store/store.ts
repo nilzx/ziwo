@@ -1,3 +1,7 @@
+import { Activations } from "./activation";
+import { Service } from "../memory/service";
+import { activationSchema } from "./activation-schema";
+import { latestLogFormat } from "./schema";
 import { personaSchema } from "./persona-schema";
 import { Personas } from "./persona";
 // The append-only event log and the tables derived from it. Port of store.go.
@@ -152,7 +156,7 @@ export class LogFormatError extends Error {
   ) {
     super(
       newer
-        ? `written by a newer version of ziwo: its log format is ${format}, this build reads up to ${logFormat}`
+        ? `written by a newer version of ziwo: its log format is ${format}, this build reads up to ${latestLogFormat}`
         : `log format ${format} is older than ${logFormat} and is not migrated on this platform`,
     );
   }
@@ -172,7 +176,7 @@ export class ReplayError extends Error {
 // How many times a write is retried when a freshly drawn id collides.
 const idRetries = 3;
 
-const memorySelect = `SELECT m.n, m.id, m.created_at, m.written_at, m.session_id, COALESCE(s.model, '') AS model,
+const memorySelect = `SELECT m.n, m.id, m.created_at, m.time_precision, m.happened_on, m.written_at, m.session_id, COALESCE(s.model, '') AS model,
   COALESCE(s.client, '') AS client, m.moment, m.source, m.importance, m.intensity, m.gist, m.body, m.outcome,
   m.feeling, m.lesson, m.people, m.pointer, m.last_recalled_at, m.recall_count, m.ord, m.touched_ord, m.read_ord,
   m.core, m.strength, m.fade_at, m.archive_at, m.kind, m.state, m.state_by, m.retracted, m.pinned, m.corrects,
@@ -183,17 +187,12 @@ const memoryJoin = ` LEFT JOIN sessions s ON s.id = m.session_id `;
 // spanCond is the condition on memories m that keeps them to span, with its
 // arguments. created_at is when a memory took place.
 function spanCond(span: Span): { cond: string; args: number[] } {
-  let cond = "";
+  const terms = ["m.time_precision <> 'unknown'"];
   const args: number[] = [];
-  if (span.since !== undefined) {
-    cond += " AND m.created_at >= ?";
-    args.push(span.since);
-  }
-  if (span.until !== undefined) {
-    cond += " AND m.created_at <= ?";
-    args.push(span.until);
-  }
-  return { cond, args };
+  if (span.since !== undefined) { terms.push('m.created_at >= ?'); args.push(span.since); }
+  if (span.until !== undefined) { terms.push('m.created_at <= ?'); args.push(span.until); }
+  if (args.length === 0) return { cond: '', args };
+  return { cond: ` AND ((${terms.join(' AND ')})${span.includeUnknownTime === true ? " OR m.time_precision = 'unknown'" : ''})`, args };
 }
 
 // Hot is a session that wrote a fragment within ripeAfter, with the row
@@ -285,6 +284,7 @@ export class Store {
   private init(): void {
     this.db.run(logSchema);
     this.db.run(personaSchema);
+    this.db.run(activationSchema);
     this.checkLogFormat();
     if (this.db.getMeta(metaInstance) === undefined) this.db.setMeta(metaInstance, newID("i_"));
     const stored = this.db.getMeta(metaParams);
@@ -308,7 +308,7 @@ export class Store {
     }
     if (!/^[+-]?\d+$/.test(have)) throw new Error(`unreadable log format ${JSON.stringify(have)}`);
     const format = Number(have);
-    if (format !== logFormat) throw new LogFormatError(format, format > logFormat);
+    if (format !== logFormat && format !== latestLogFormat) throw new LogFormatError(format, format > latestLogFormat);
   }
 
   // derivedMark identifies what the derived tables were built from, apart
@@ -583,7 +583,7 @@ export class Store {
         {
           id, session: input.sessionId, kind: "", moment: input.moment, source: input.source,
           importance: input.importance, intensity: input.intensity ?? 0, hash: "", corrects: "",
-          happened: input.happened ?? 0, from: [], ref: "", milestone: false, subject,
+          happened: input.happened ?? 0, timePrecision: input.timePrecision, happenedOn: input.happenedOn, from: [], ref: "", milestone: false, subject,
         },
         {
           gist: input.gist, body: input.body, outcome: input.outcome, feeling: input.feeling,
@@ -596,6 +596,23 @@ export class Store {
         out.moments = num(this.db.first(`SELECT wrote_n FROM sessions WHERE id = ?`, input.sessionId)?.wrote_n);
       }
       return out;
+    });
+  }
+
+  // Only initialization uses this path. Persistent source receipts provide
+  // deduplication; distinct source items must not collapse by text similarity.
+  rememberHistory(at: number, input: RememberInput, historySource: { key: string; fingerprint: string; material: 'original' | 'summary' }): string {
+    return this.retry(() => {
+      if (this.session(input.sessionId) === undefined) throw new NoSessionError(input.sessionId);
+      const id = newID('m_');
+      writeMemory(this.db, this.append, at, {
+        id, session: input.sessionId, kind: '', moment: input.moment, source: SourceReconstructed,
+        importance: input.importance, intensity: input.intensity ?? 0, hash: '', corrects: '',
+        happened: input.happened ?? 0, timePrecision: input.timePrecision, happenedOn: input.happenedOn,
+        historySource, from: [], ref: '', milestone: false,
+      }, { gist: input.gist, body: input.body, outcome: input.outcome, feeling: input.feeling,
+        lesson: input.lesson, people: input.people, pointer: input.pointer });
+      return id;
     });
   }
 
@@ -1208,6 +1225,7 @@ export class Store {
     this.tx(() => {
       if (num(this.db.first(`SELECT count(*) AS c FROM events`)?.c) !== 0) throw new Error("restore: the log is not empty");
       if (readIdentity(this.db) !== undefined) throw new Error("restore: identity already assigned");
+      this.db.setMeta(metaLogFormat, String(x.logFormat));
       if (x.identity !== undefined) insertIdentity(this.db, x.identity);
       else this.db.setMeta(metaLegacySource, x.legacySourceInstance ?? x.instance);
       if (settings !== undefined) {
@@ -1223,6 +1241,7 @@ export class Store {
       this.appendEvent(at, kindRestore, encodeRestore({ from: x.instance, exportedAt: x.exportedAt, events: x.events.length }));
       this.rebuildInTx();
       if (x.persona !== undefined) new Personas(this.db, this.storage).restore(x.persona);
+      if (x.activation !== undefined) new Activations(this.db, this.storage, this, new Service(this, () => at)).restore(x.activation);
     });
   }
 
@@ -1490,6 +1509,8 @@ function toMemory(r: Row): Memory {
     n: num(r.n),
     id: text(r.id),
     createdAt: num(r.created_at),
+    ...(text(r.time_precision) === "instant" ? {} : { timePrecision: text(r.time_precision) as "day" | "unknown" }),
+    ...(text(r.happened_on) === "" ? {} : { happenedOn: text(r.happened_on) }),
     writtenAt: num(r.written_at),
     sessionId: text(r.session_id),
     model: text(r.model),

@@ -24,7 +24,9 @@ export interface CarrierNote {
 export interface Memory {
   n: number;
   id: string;
-  createdAt: number; // when it happened
+  createdAt: number; // zero only when timePrecision is unknown
+  timePrecision?: 'instant' | 'day' | 'unknown';
+  happenedOn?: string;
   writtenAt: number; // when it was written; later, for what was reconstructed
   sessionId: string;
   model: string; // carrier at the time of writing
@@ -91,6 +93,8 @@ export interface RememberInput {
   // When it took place, for a memory reconstructed afterwards. Absent or 0
   // means when it was written.
   happened?: number;
+  timePrecision?: "instant" | "day" | "unknown";
+  happenedOn?: string;
   // The subject it belongs to, by name or id, already cleaned; absent or ""
   // for none.
   subject?: string;
@@ -138,6 +142,7 @@ export interface RecallNote {
 // Span is the time a recall is kept to, by when its memories took place,
 // both ends included, in unix milliseconds. An end left out is open.
 export interface Span {
+  includeUnknownTime?: boolean;
   since?: number;
   until?: number;
 }

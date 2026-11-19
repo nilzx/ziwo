@@ -208,10 +208,20 @@ export class Service {
   // count as coming to mind. tz is the time zone the model reported, already
   // checked, or "".
   context(model: string, client: string, tz = ""): ContextView {
-    model = clip(model, 120);
-    client = clip(client, 120);
+    const { session, note } = this.beginSession(model, client, tz);
+    return this.contextFor(session.id, note);
+  }
+
+  // Establish a write association without reading autobiographical content.
+  beginSession(model: string, client: string, tz = '') {
+    return this.st.startSession(this.now(), clip(model, 120), clip(client, 120), tz);
+  }
+
+  // Initialization calls this only after persona and history gates pass.
+  contextFor(sessionId: string, note: CarrierNote = { first: false, earlier: [] }): ContextView {
+    const session = this.st.session(sessionId);
+    if (session === undefined) throw new NoSessionError(sessionId);
     const now = this.now();
-    const { session, note } = this.st.startSession(now, model, client, tz);
     const clock = this.st.clock();
     const selves = this.st.selves();
     const prefs = this.st.preferences();
@@ -479,7 +489,7 @@ export class Service {
       // The same goes for a memory that no longer stands. One that was
       // replaced or put into an episode is still reached by a deep search.
       if (m.retracted || m.state === StateErased || (!isLive(m) && !deep)) continue;
-      if (more.span !== undefined && !within(m.createdAt, more.span)) continue;
+      if (more.span !== undefined && (m.timePrecision === "unknown" ? more.span.includeUnknownTime !== true : !within(m.createdAt, more.span))) continue;
       // A subject is shown in a line of its own, never among memories.
       if (m.kind === KindSubject || (more.subject !== undefined && m.subject !== more.subject)) continue;
       const by = searches.map((s, i) => {

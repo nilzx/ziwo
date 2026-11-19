@@ -1,6 +1,6 @@
 # Persona initialization and revision
 
-This describes the unreleased N2 service foundation. It separates adopted persona data from autobiographical memory and provides scoped evaluation, exact-proposal confirmation, atomic adoption, and current-version loading. It does not yet provide the Codex adapter or complete activation/history-backfill workflow. Bound conversations still report `canRun: false`.
+This describes the unreleased N2 service foundation. It separates adopted persona data from autobiographical memory and provides scoped evaluation, exact-proposal confirmation, atomic adoption, and current-version loading. The [N3 activation service](activation.md) now supplies gated history backfill and initialization readiness. The Codex adapter and reliable per-turn synchronization remain pending.
 
 ## Ownership and capabilities
 
@@ -41,7 +41,7 @@ Use the evaluation token for:
 
 The snapshot fixes the current persona base and ordered memory IDs/material fingerprints at one event upper bound. New memories do not enlarge it. Every read checks the material fingerprint, including content and standing, before returning data. A changed/deleted source requires a fresh evaluation. Recall counts, decay strength and ordinary session activity do not change material fingerprints.
 
-The response separates the base persona from memory items, with their IDs, kind, source, recorded times, standing and content. It returns `nextOffset: null` at completion. Legacy recorded occurrence dates are returned as stored; unknown-time migration is a separate stage. Snapshots exceeding 5,000 memories are rejected explicitly, never silently truncated. The snapshot holds references and fingerprints, not duplicate memory bodies. These reads do not create autobiographical sessions, append experiences, or reinforce recalled memories.
+The response separates the base persona from memory items, with their IDs, kind, source, recorded times, standing and content. It returns `nextOffset: null` at completion. Legacy recorded occurrence dates are returned as stored. N3 records explicit precision; unknown occurrence time returns null and day-only records retain their civil date. Snapshots exceeding 5,000 memories are rejected explicitly, never silently truncated. The snapshot holds references and fingerprints, not duplicate memory bodies. These reads do not create autobiographical sessions, append experiences, or reinforce recalled memories.
 
 ## Propose, review, confirm, adopt
 
@@ -88,13 +88,13 @@ After the user reviews the exact proposal, the private channel calls `POST …/c
 
 `GET /harness/v1/persona?threadId=<bound-thread>` uses the registered host credential and the original binding. It returns the current `identityId`, data `instance`, `version`, `digest`, `document` and stored `loadText`. The same adopted version yields the same loading text, including after a verified restore. Missing, damaged, wrong-owner or invalid-evidence personas fail explicitly; there is no default persona fallback.
 
-Two conversations bound to identity A receive A's newly adopted version on their next load. They remain bound to A, and A→B attempts still fail. This endpoint provides the persona side of future per-turn synchronization. The adapter must eventually check persona **and memory** before each user turn, load persona first, then memory, and only then respond. N2 does not yet enforce that client workflow or finish initialization.
+Two conversations bound to identity A receive A's newly adopted version on their next load. They remain bound to A, and A→B attempts still fail. This endpoint provides the persona side of future per-turn synchronization. The adapter must eventually check persona **and memory** before each user turn, load persona first, then memory, and only then respond. N3 finishes the service initialization gates; N4 must enforce that client workflow.
 
 Every snapshot input is conservatively treated as a dependency, even if the model cites only a subset. A valid base persona's source dependencies also propagate to revisions. Erasing a source, including cascaded erasure, atomically invalidates affected evaluations and proposals, revokes their tokens, and removes derived proposal documents and adopted loading text from all affected versions. Minimal IDs, fingerprints, digests and decision receipts remain for audit. Current loading then requires a newly confirmed repair; it does not fall back to an older version. Ordinary material changes also fail validity checks. Previously downloaded backups and already-delivered client context cannot be remotely erased.
 
 ## Backup version 3
 
-A store with adopted persona history exports v3. Its header includes the stable identity and a `persona` bundle: owner, current version and sequential adopted versions, fixed loading text, digests and source references. Invalidated versions retain no document or loading text. Draft proposals, evaluation tokens, and executable confirmations are omitted. The chain begins with:
+A store with adopted persona history and no activation records exports v3. Stores with initialization records use [v4](activation.md#backup-and-limits), which also preserves backfill progress. Its header includes the stable identity and a `persona` bundle: owner, current version and sequential adopted versions, fixed loading text, digests and source references. Invalidated versions retain no document or loading text. Draft proposals, evaluation tokens, and executable confirmations are omitted. The chain begins with:
 
 ```text
 SHA256("ziwo-export-v3\n" + goCompact(header))

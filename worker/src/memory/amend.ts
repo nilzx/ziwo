@@ -201,7 +201,7 @@ function correct(st: Store, now: number, req: AmendRequest & Asked): string {
     gist: instead(old.gist, gist), body: instead(old.body, body), outcome: instead(old.outcome, outcome),
     feeling: old.feeling, lesson: instead(old.lesson, lesson), people: old.people, pointer: old.pointer,
   });
-  const id = st.correct(now, req.id, { ...c, sessionId: req.sessionId, happened: old.createdAt });
+  const id = st.correct(now, req.id, { ...c, sessionId: req.sessionId, happened: old.createdAt, timePrecision: old.timePrecision, happenedOn: old.happenedOn });
   return `corrected: ${id} now stands in place of ${req.id}, which stays in the record marked as replaced`;
 }
 

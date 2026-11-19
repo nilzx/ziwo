@@ -86,7 +86,8 @@ describe("log format", () => {
           return err;
         }
       };
-      const newer = open("4");
+      expect(open("4")).toBeUndefined();
+      const newer = open("5");
       expect(newer).toBeInstanceOf(LogFormatError);
       expect((newer as LogFormatError).newer).toBe(true);
       expect((newer as Error).message).toMatch(/written by a newer version of ziwo/);

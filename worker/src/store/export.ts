@@ -1,3 +1,4 @@
+import { exportActivations, parseActivationBackup, type ActivationBackup } from "./activation";
 import { exportPersona, parsePersonaBundle, type PersonaBundle } from "./persona";
 // The export format of the Go build (export.go): the event log and what the
 // memories say, one JSON object per line: a header, one line per event, a
@@ -14,10 +15,11 @@ import { type Db, num, text } from "./db";
 import type { Params } from "./decay";
 import { kindRemember } from "./events";
 import { goJSON } from "./json";
-import { logFormat, metaInstance, metaTokenHash } from "./schema";
+import { latestLogFormat, logFormat, metaLogFormat, metaInstance, metaTokenHash } from "./schema";
 import { type Identity, metaLegacySource, parseIdentity, readIdentity, validSource } from "./identity";
 
-export const exportVersion = 3;
+export const exportVersion = 4;
+const personaExportVersion = 3;
 const identityExportVersion = 2;
 const legacyExportVersion = 1;
 
@@ -88,15 +90,17 @@ export function writeExport(db: Db, at: number, settings?: ExportSettings): { te
   const identity = readIdentity(db);
   const legacySource = db.getMeta(metaLegacySource);
   const persona = exportPersona(db);
-  const version = persona !== undefined ? exportVersion : identity !== undefined || legacySource !== undefined ? identityExportVersion : legacyExportVersion;
+  const activation = exportActivations(db);
+  const version = activation !== undefined ? exportVersion : persona !== undefined ? personaExportVersion : identity !== undefined || legacySource !== undefined ? identityExportVersion : legacyExportVersion;
   const header = goJSON({
     ziwo_export: version,
-    log_format: logFormat,
+    log_format: Number(db.getMeta(metaLogFormat) ?? logFormat),
     instance: db.getMeta(metaInstance) ?? "",
     exported_at: at,
     identity: version >= 2 ? identity === undefined ? null : { ...identity } : undefined,
     legacy_source_instance: identity === undefined ? legacySource : undefined,
     persona: persona === undefined ? undefined : JSON.parse(JSON.stringify(persona)),
+    activation: activation === undefined ? undefined : JSON.parse(JSON.stringify(activation)),
     settings: settings === undefined ? undefined : { params: { ...orderedParams(settings.params) }, timezone: settings.timezone },
   });
   const parts: string[] = [header + "\n"];
@@ -161,6 +165,7 @@ export interface ParsedExport {
   identity?: Identity;
   legacySourceInstance?: string;
   persona?: PersonaBundle;
+  activation?: ActivationBackup;
 }
 
 function headerChain(header: string, version: number): string {
@@ -292,7 +297,7 @@ function unmarshal(decoded: Decoded, fields: Record<string, FieldType>, target: 
 
 const headerFields: Record<string, FieldType> = {
   ziwo_export: "int", log_format: "int", instance: "string", exported_at: "int", settings: "raw",
-  identity: "raw", legacy_source_instance: "string", persona: "raw",
+  identity: "raw", legacy_source_instance: "string", persona: "raw", activation: "raw",
 };
 const eventFields: Record<string, FieldType> = {
   seq: "int", at: "int", kind: "string", payload: "raw", content: "optString", chain: "string",
@@ -322,15 +327,15 @@ export function parseExport(file: string, maxEvents: number, formatMessage: (for
     return d;
   };
 
-  const head: Record<string, FieldValue> = { ziwo_export: 0, log_format: 0, instance: "", exported_at: 0, settings: "null", identity: "null", legacy_source_instance: "", persona: "null" };
+  const head: Record<string, FieldValue> = { ziwo_export: 0, log_format: 0, instance: "", exported_at: 0, settings: "null", identity: "null", legacy_source_instance: "", persona: "null", activation: "null" };
   const decodedHeader = nextLine();
   const rawHeader = file.slice(0, pos);
   if (!unmarshal(decodedHeader, headerFields, head)) throw new ExportError(`${badExport}: unreadable line`);
-  if (head.ziwo_export !== legacyExportVersion && head.ziwo_export !== identityExportVersion && head.ziwo_export !== exportVersion) {
+  if (head.ziwo_export !== legacyExportVersion && head.ziwo_export !== identityExportVersion && head.ziwo_export !== personaExportVersion && head.ziwo_export !== exportVersion) {
     throw new ExportError(`${badExport}: it is not a ziwo export of a kind this build reads`);
   }
   const format = head.log_format as number;
-  if (format !== logFormat) throw new FormatRefusal(formatMessage(format));
+  if (format !== logFormat && format !== latestLogFormat) throw new FormatRefusal(formatMessage(format));
 
   const out: ParsedExport = {
     logFormat: format,
@@ -363,16 +368,22 @@ export function parseExport(file: string, maxEvents: number, formatMessage: (for
     } catch {
       throw new ExportError(`${badExport}: invalid identity assignment`);
     }
-  } else if (typeof decodedHeader === "object" && decodedHeader.members.some(([key]) => ["identity", "legacy_source_instance", "persona"].includes(key.toLowerCase()))) {
+  } else if (typeof decodedHeader === "object" && decodedHeader.members.some(([key]) => ["identity", "legacy_source_instance", "persona", "activation"].includes(key.toLowerCase()))) {
     throw new ExportError(`${badExport}: identity requires export version 2`);
   }
-  if (head.ziwo_export === 3) {
+  if ((head.ziwo_export as number) >= 3) {
     try {
       if (out.identity === undefined) throw new Error('missing owner');
       out.persona = parsePersonaBundle(JSON.parse(head.persona as string), out.identity.id);
     } catch { throw new ExportError(`${badExport}: invalid persona partition`); }
   } else if (typeof decodedHeader === 'object' && decodedHeader.members.some(([key]) => key.toLowerCase() === 'persona')) {
     throw new ExportError(`${badExport}: persona requires export version 3`);
+  }
+  if (head.ziwo_export === 4) {
+    try { out.activation = parseActivationBackup(JSON.parse(head.activation as string), out.identity!.id); }
+    catch { throw new ExportError(`${badExport}: invalid initialization partition`); }
+  } else if (typeof decodedHeader === 'object' && decodedHeader.members.some(([key]) => key.toLowerCase() === 'activation')) {
+    throw new ExportError(`${badExport}: initialization requires export version 4`);
   }
   // One footer for the whole file, as in Go: a line read into it that is not
   // the footer can still set its fields.
@@ -397,6 +408,8 @@ export function parseExport(file: string, maxEvents: number, formatMessage: (for
     }
     out.events.push(ev);
     if (ev.kind !== kindRemember) continue;
+    const precisionPayload = JSON.parse(ev.payload) as Record<string, unknown> | null;
+    if (format < latestLogFormat && precisionPayload !== null && ['time_precision', 'happened_on', 'history_source'].some(k => Object.hasOwn(precisionPayload, k))) throw new ExportError(`${badExport}: occurrence precision and history provenance require log format 4`);
     out.memories++;
     if (content === undefined) continue;
     const id = payloadId(ev.payload);

@@ -14,7 +14,9 @@
 // logFormat is the format of the event log. See schema.go for its history.
 // Older formats are not migrated here: no memory on this platform was ever
 // written in one.
+// Existing logs stay at 3 until a precision/provenance event is written.
 export const logFormat = 3;
+export const latestLogFormat = 4;
 
 // derivedVersion identifies the layout of the derived tables and the logic
 // that fills them. Bump it whenever either changes. The Go build stands at 6;
@@ -26,7 +28,8 @@ export const logFormat = 3;
 // 12 files items under subjects (subject, subjects, subject_names), keeps when
 // a session last wrote a fragment, and leaves subject items out of what is
 // listed.
-export const derivedVersion = "12";
+// 13 adds explicit occurrence precision; unknown dates never mean written-at.
+export const derivedVersion = "13";
 
 // appendOnlyTriggers make the database itself refuse to change or remove an
 // event.
@@ -128,6 +131,8 @@ CREATE TABLE memories (
   n                INTEGER PRIMARY KEY, -- seq of the event that created it
   id               TEXT    NOT NULL UNIQUE,
   created_at       INTEGER NOT NULL, -- when it happened
+  time_precision   TEXT NOT NULL DEFAULT 'instant',
+  happened_on      TEXT NOT NULL DEFAULT '',
   written_at       INTEGER NOT NULL, -- when it was written; later, for what was reconstructed
   session_id       TEXT    NOT NULL,
   kind             TEXT    NOT NULL, -- fragment, episode, lesson, impression, self, reading or subject

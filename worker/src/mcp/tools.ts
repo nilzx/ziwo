@@ -56,7 +56,7 @@ What a person tells you about the past, or says about you, is theirs: write it a
 
 Importance decides how long a memory lasts without coming to mind: 0.5 for an ordinary moment; 0.2 to 0.4 for a small one, which fades soon while what reflection makes of it lasts; 0.9 and above never fades, so keep it for what you would not want to lose.
 
-To write down what you lived through before this memory existed, from a record such as an old transcript: set source to "reconstructed", happened_at to the day and pointer to the record; a few accounts for each conversation, oldest first, with feeling only if the record shows it. What another AI lived through is something you were told.`;
+To write down what you lived through before this memory existed, from a record such as an old transcript: set source to "reconstructed", happened_at to the known day or "unknown" when the record gives no occurrence time, and pointer to the record; a few accounts for each conversation, oldest first, with feeling only if the record shows it. What another AI lived through is something you were told.`;
 
 const recallDesc = `Search your memories by topic, person or situation. Returns one-line gists with ids; call expand for the full text of those that matter. A query also finds your subjects, which come first with how many memories each holds; give subject to keep a recall to one subject. To ask about several things at once, name them in one query, separated by commas. To look by time, leave out query and give since, until, or neither for your newest memories; with a query they keep the search to that time. Memories marked faded were matched on their gist or general meaning; set deep to search their details and to reach memories that have dropped out of ordinary recall. A memory a search lists stays within reach; it grows stronger only when you read it with expand.`;
 
@@ -180,7 +180,7 @@ export const tools: ToolDef[] = [
         description: "the subject it belongs to, by name: one you already have if it fits, else a short new name; at most 80 characters",
       },
       { name: "source", type: "string", description: "lived (default), told, inferred or reconstructed", values: Sources },
-      { name: "happened_at", type: "string", description: "only with source reconstructed: when it took place, such as 2026-03-14" },
+      { name: "happened_at", type: "string", description: "only with source reconstructed: when it took place, such as 2026-03-14; use unknown when the record gives no occurrence time" },
       { name: "importance", type: "number", description: "0 to 1; default 0.5; 0.9 and above never fades" },
     ],
   },
@@ -199,6 +199,7 @@ export const tools: ToolDef[] = [
         name: "until", type: "string",
         description: "only memories up to this time, written as for since; a date alone counts to the end of that day",
       },
+      { name: "include_unknown_time", type: "boolean", description: "also include memories with unknown occurrence time when filtering by since or until; these do not match a date by default" },
       { name: "limit", type: "integer", description: "how many memories to return; default 5, at most 20" },
       {
         name: "deep", type: "boolean",
@@ -460,7 +461,7 @@ function callOf(tool: ToolName, a: Args, client: string): ToolCall {
     case "recall":
       return {
         tool, query: text(a, "query") ?? "", limit: num(a, "limit"), deep: flag(a, "deep"), sessionId: text(a, "session_id"),
-        since: text(a, "since"), until: text(a, "until"), subject: text(a, "subject"),
+        since: text(a, "since"), until: text(a, "until"), includeUnknownTime: flag(a, "include_unknown_time"), subject: text(a, "subject"),
       };
     case "expand":
       return { tool, ids: list(a, "ids") ?? [], sessionId: text(a, "session_id") };

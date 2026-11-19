@@ -266,9 +266,15 @@ function standing(m: Memory, tier: Tier): string[] {
   return marks;
 }
 
+function occurrence(m: Memory, zone: string, full = false): string {
+  if (m.timePrecision === 'unknown') return 'unknown occurrence time';
+  if (m.timePrecision === 'day') return `${m.happenedOn} (date only)`;
+  return full ? formatDateTime(m.createdAt, zone) : formatDate(m.createdAt, zone);
+}
+
 // writeGist writes the one-line form of a memory.
 export function writeGist(m: Memory, tier: Tier, zone: string): string {
-  let b = `[${m.id}] ${formatDate(m.createdAt, zone)} ${label(m)}: ${oneLine(m.gist)}`;
+  let b = `[${m.id}] ${occurrence(m, zone)} ${label(m)}: ${oneLine(m.gist)}`;
   const marks = standing(m, tier);
   if (marks.length > 0) b += ` (${marks.join(", ")})`;
   return b + "\n";
@@ -283,13 +289,13 @@ export function writeFull(
   subject?: { id: string; name: string },
 ): string {
   if (m.state === StateErased) {
-    return `[${m.id}] ${formatDate(m.createdAt, zone)} · erased: what it said was deleted for good\n`;
+    return `[${m.id}] ${occurrence(m, zone)} · erased: what it said was deleted for good\n`;
   }
-  let b = `[${m.id}] ${formatDateTime(m.createdAt, zone)} · ${label(m)} · ${m.source} · importance ${goG(m.importance, 2)}`;
+  let b = `[${m.id}] ${occurrence(m, zone, true)} · ${label(m)} · ${m.source} · importance ${goG(m.importance, 2)}`;
   for (const mark of standing(m, tier)) if (mark !== m.source) b += ` · ${mark}`;
   if (m.model !== "") b += ` · as ${m.model}`;
   if (m.client !== "") b += ` · via ${m.client}`;
-  if (m.writtenAt - m.createdAt > 24 * 60 * minute) b += ` · written ${formatDate(m.writtenAt, zone)}`;
+  if (m.timePrecision === "unknown" || m.writtenAt - m.createdAt > 24 * 60 * minute) b += ` · written ${formatDate(m.writtenAt, zone)}`;
   b += `\ngist: ${oneLine(m.gist)}\n`;
   if (m.body !== "") b += m.body + "\n";
   let feeling = m.feeling;

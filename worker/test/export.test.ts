@@ -254,7 +254,7 @@ describe("import", () => {
       changed: good.replace("third body", "third bodx"),
       footer: good.replace(footer, footer.replace(`"end":true,"events":`, `"end":true,"events":1`)),
       version: good.replace(`"ziwo_export":1`, `"ziwo_export":999`),
-      newer: good.replace(`"log_format":3`, `"log_format":4`),
+      newer: good.replace(`"log_format":3`, `"log_format":5`),
       empty: "",
       garbage: "hello\n",
     };
@@ -262,7 +262,7 @@ describe("import", () => {
       const name = freshName();
       const res = await importAs(name, file);
       expect(res.status, what).toBe(400);
-      expect(await res.json(), what).toEqual({ error: go.errors[what] });
+      expect(await res.json(), what).toEqual({ error: what === "newer" ? "written by a newer version of ziwo: its log format is 5, this build reads up to 4" : go.errors[what] });
       expect(await tablesOf(name), what).toEqual([]);
       expect((await admin(`/admin/memories/${name}`)).status, what).toBe(404);
     }

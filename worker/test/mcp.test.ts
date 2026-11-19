@@ -57,7 +57,7 @@ const rememberText = [
   "",
   "Importance decides how long a memory lasts without coming to mind: 0.5 for an ordinary moment; 0.2 to 0.4 for a small one, which fades soon while what reflection makes of it lasts; 0.9 and above never fades, so keep it for what you would not want to lose.",
   "",
-  "To write down what you lived through before this memory existed, from a record such as an old transcript: set source to \"reconstructed\", happened_at to the day and pointer to the record; a few accounts for each conversation, oldest first, with feeling only if the record shows it. What another AI lived through is something you were told.",
+  "To write down what you lived through before this memory existed, from a record such as an old transcript: set source to \"reconstructed\", happened_at to the known day or \"unknown\" when the record gives no occurrence time, and pointer to the record; a few accounts for each conversation, oldest first, with feeling only if the record shows it. What another AI lived through is something you were told.",
 ].join("\n");
 
 const recallText = [
@@ -175,6 +175,7 @@ function expectedListing(): { instructions: string; tools: Map<string, Omit<Tool
         expect(props[field]!.description).toBe(was);
         props[field]!.description = is;
       }
+      props.happened_at!.description = "only with source reconstructed: when it took place, such as 2026-03-14; use unknown when the record gives no occurrence time";
       // subject is new.
       expect(props.subject).toBeUndefined();
       (props as Record<string, unknown>).subject = rememberSubject;
@@ -187,7 +188,7 @@ function expectedListing(): { instructions: string; tools: Map<string, Omit<Tool
       // query is no longer required; since and until are new.
       expect(copy.inputSchema.required).toEqual(["query"]);
       delete copy.inputSchema.required;
-      Object.assign(copy.inputSchema.properties as Record<string, unknown>, recallFields);
+      Object.assign(copy.inputSchema.properties as Record<string, unknown>, recallFields, { include_unknown_time: { type: "boolean", description: "also include memories with unknown occurrence time when filtering by since or until; these do not match a date by default" } });
     }
     if (t.name === "check") copy.description = checkText;
     if (t.name === "get_context") {
@@ -419,7 +420,10 @@ describe.each(generations)("%s protocol generation", (gen) => {
     };
     expect(Object.keys(got).sort()).toEqual(Object.keys(goAnswers).sort());
     for (const [step, text] of Object.entries(got)) {
-      const want = (changed[step] ?? ((s: string) => s))(goAnswers[step]!);
+      const want = (changed[step] ?? ((s: string) => s))(goAnswers[step]!)
+        .replaceAll("2026-03-14 00:00Z", "2026-03-14 (date only)")
+        .replaceAll("2026-03-14 other:", "2026-03-14 (date only) other:")
+        .replace("log: format 3", "log: format 4");
       expect(template(text, ids), step).toBe(want);
     }
   });
