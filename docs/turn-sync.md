@@ -37,3 +37,5 @@ Tool request IDs are scoped to the binding and instance, across snapshots. A com
 ## Codex reference integration
 
 See [the reference client](../adapters/codex/README.md). It is an explicit host implementation with a separate user control path. It does not install a desktop plugin or claim that a Skill/hook can enforce every turn in an arbitrary native Codex chat.
+
+The optional [native CLI workspace gateway](../adapters/codex/native/README.md) uses the original terminal UI. Because built-in code tools can run as soon as generation starts, it persists the complete synchronization context and acknowledges it before `turn/start`. It fixes the workspace permission profile, rejects alternate generation/input paths, and creates clean assistance on a separate service. Its desktop integration and broader network/permission modes are outside the current scope.

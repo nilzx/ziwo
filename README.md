@@ -54,6 +54,7 @@ The admin page at your address backs up a memory to an encrypted file, restores 
 - [Persona initialization and revision](docs/persona.md): scoped evaluation, exact-proposal confirmation, adopted versions, and the remaining adapter work.
 - [Activation and history backfill](docs/activation.md): fixed history boundaries, resumable processing, explicit occurrence time, and initialization readiness.
 - [Per-turn synchronization](docs/turn-sync.md): fixed change ranges, exact loading acknowledgments, and bound tools; includes an optional [Codex reference client](adapters/codex/README.md).
+- [Native Codex CLI workspace](adapters/codex/native/README.md): an optional development gateway for the original terminal UI, code editing, offline tests, and local Git with bound persona/memory synchronization.
 - [Continuity evaluation](docs/continuity-evaluation.md): traceable offline extraction, held-out A/B/C comparisons, blind judgments, and the limits of synthetic evidence.
 - [Formation and environment comparisons](docs/persona-evolution.md): evidence-aware review suggestions, explicit change kinds, and frozen cross-model synthetic experiments.
 

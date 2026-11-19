@@ -1,0 +1,8 @@
+{
+  "name": "ziwo-codex-native",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "dependencies": { "ws": "8.23.0" }
+}

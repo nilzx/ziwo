@@ -1,6 +1,6 @@
 # Activation and history backfill
 
-The unreleased N3 service implements the initialization sequence: bind one identity, load and acknowledge its current persona, establish a write session without reading autobiographical memory, process the available pre-activation history, then retrieve relevant memory. It builds on [identity bindings](identity-bindings.md) and [persona adoption](persona.md). A real Codex adapter and reliable per-turn persona/memory synchronization remain N4 work.
+The unreleased N3 service implements the initialization sequence: bind one identity, load and acknowledge its current persona, establish a write session without reading autobiographical memory, process the available pre-activation history, then retrieve relevant memory. It builds on [identity bindings](identity-bindings.md) and [persona adoption](persona.md). The optional [Codex hosts](../adapters/codex/README.md) implement explicit activation and [per-turn persona/memory synchronization](turn-sync.md); the native CLI workspace release activates new conversations only.
 
 ## Authority and readiness
 
@@ -8,7 +8,7 @@ Every endpoint below requires a registered host credential. The request names it
 
 Initialization records live beside the memory log so that a backfill write, source receipt and processing progress commit in one transaction. Directory retains the immutable conversation association. Binding responses derive `ready` and `canRun` from the initialization record and current persona validity, rather than trusting a cached Directory flag. Here `canRun` means the initialization gates pass; it does not prove that a client implements the future per-turn synchronization protocol.
 
-A trusted host must establish real user activation, authenticate the source conversation, retrieve completed history, and actually load the supplied persona text before acknowledging it. The server checks credentials, versions, digests, instances, boundaries and persistent receipts. It cannot inspect a client's full context or prove that its history attestation is true. Never expose host credentials to the model; N4 must verify these adapter guarantees.
+A trusted host must establish real user activation, authenticate the source conversation, retrieve completed history, and actually load the supplied persona text before acknowledging it. The server checks credentials, versions, digests, instances, boundaries and persistent receipts. It cannot inspect a client's full context or prove that its history attestation is true. Never expose host credentials to the model; each adapter must verify these guarantees.
 
 The existing fixed-token/OAuth MCP interface retains its legacy behavior and is not automatically routed through these new conversation gates.
 

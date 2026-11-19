@@ -39,6 +39,7 @@ jobs:
           node-version: 24
           package-manager-cache: false
       - run: npm ci
+      - run: npm ci --prefix ../adapters/codex/native --ignore-scripts
       - name: The tag is the version
         if: github.ref_type == 'tag'
         run: |

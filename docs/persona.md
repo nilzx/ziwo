@@ -1,6 +1,6 @@
 # Persona initialization and revision
 
-This describes the unreleased N2 service foundation. It separates adopted persona data from autobiographical memory and provides scoped evaluation, exact-proposal confirmation, atomic adoption, and current-version loading. The [activation service](activation.md) supplies gated history backfill and initialization readiness. [Per-turn synchronization](turn-sync.md) and an optional [Codex reference client](../adapters/codex/README.md) are implemented; native client and full coding-workspace integration remain separate work. [Offline formation reviews](persona-evolution.md) complement this service without granting adoption authority.
+This describes the unreleased N2 service foundation. It separates adopted persona data from autobiographical memory and provides scoped evaluation, exact-proposal confirmation, atomic adoption, and current-version loading. The [activation service](activation.md) supplies gated history backfill and initialization readiness. [Per-turn synchronization](turn-sync.md), the optional [conversation reference client](../adapters/codex/README.md), and a [native Codex CLI workspace gateway](../adapters/codex/native/README.md) are implemented. Desktop integration remains separate work. [Offline formation reviews](persona-evolution.md) complement this service without granting adoption authority.
 
 ## Ownership and capabilities
 

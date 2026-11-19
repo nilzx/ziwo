@@ -83,7 +83,7 @@ Only `codex-app-server` has an installed runnable adapter here. An unsupported h
 
 The programmatic `runMatrix` factory is the extension point for a trusted future adapter. It must implement `open`, `run`, `close`, exact operation accounting, model/Harness receipts, identical frozen inputs, fresh isolated trials and evaluators, no inherited writable memory, observed compaction/resume, and private artifacts. Contract tests or mocked factories do not validate a real new harness. Adapter metadata is a trust boundary, not cryptographic attestation.
 
-Real cross-Harness integration, native Codex workspace support, real-subject continuity and long-term personality formation require their own scoped evidence. Short synthetic conversations and invented timelines leave those goals open.
+Real cross-Harness integration, real-subject continuity and long-term personality formation require their own scoped evidence. Short synthetic conversations and invented timelines leave those goals open. The separate [native Codex CLI workspace adapter](../adapters/codex/native/README.md) concerns live synchronization and code execution; it does not establish those continuity outcomes.
 
 ## Synthetic pilot, 2026-11-19
 
