@@ -96,6 +96,19 @@ export class Bindings {
     const row = this.row(host, thread);
     return { value: row === undefined ? null : binding(row) };
   }
+  replayRestore(hash: string, thread: string, target: BindingTarget, previous: string, request: string): BindingResult<ThreadBinding | null> {
+    const host = this.harness(hash);
+    if (host === undefined) return unauthorized();
+    const receipt = this.sql.exec<{ fingerprint: string }>(
+      `SELECT fingerprint FROM restore_requests WHERE harness_id = ? AND request_id = ?`, host, request,
+    ).toArray()[0];
+    if (receipt === undefined) return { value: null };
+    const fingerprint = JSON.stringify([thread, target.identityId, target.memory, target.instance, previous]);
+    if (receipt.fingerprint !== fingerprint) return conflict("restore request was reused with different arguments");
+    const row = this.row(host, thread);
+    if (row === undefined) throw new Error("restore receipt has no binding");
+    return { value: binding(row) };
+  }
   bind(hash: string, thread: string, target: BindingTarget, activation: string, source: string, at: number): BindingResult<ThreadBinding> {
     return this.storage.transactionSync(() => {
       const host = this.harness(hash);
@@ -147,13 +160,11 @@ export class Bindings {
       const b = binding(row);
       if (b.identityId !== target.identityId) return conflict("restore cannot change the bound subject");
       const fingerprint = JSON.stringify([thread, target.identityId, target.memory, target.instance, previous]);
-      const receipt = this.sql.exec<{ fingerprint: string }>(
-        `SELECT fingerprint FROM restore_requests WHERE harness_id = ? AND request_id = ?`, host, request,
-      ).toArray()[0];
       // An old successful request never rolls a later restore back. Return
       // the current binding, and reject reuse for a different operation.
-      if (receipt !== undefined) return receipt.fingerprint === fingerprint
-        ? { value: b } : conflict("restore request was reused with different arguments");
+      const replay = this.replayRestore(hash, thread, target, previous, request);
+      if ("error" in replay) return replay;
+      if (replay.value !== null) return { value: replay.value };
       if (b.instance !== previous || b.instance === target.instance) return conflict("the previous instance does not match");
       this.sql.exec(`UPDATE thread_bindings SET memory = ?, instance = ?, state = 'bound_initializing',
         updated_at = ?, restore_request = ?, previous_instance = ? WHERE harness_id = ? AND thread_id = ?`,

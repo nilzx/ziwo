@@ -153,6 +153,9 @@ describe("N1 synthetic identities and bindings", () => {
     await evictDurableObject(env.DIRECTORY.getByName(directoryName));
     const retry = await host(h.token, "restore", r1); expect(retry.status).toBe(200);
     expect((await retry.json() as { binding: { instance: string } }).binding.instance).toBe(tc.instance);
+    expect((await admin(`/admin/memories/${b}?confirm=${b}`, "DELETE")).status).toBe(200);
+    const retryDeletedTarget = await host(h.token, "restore", r1); expect(retryDeletedTarget.status).toBe(200);
+    expect((await retryDeletedTarget.json() as { binding: { instance: string } }).binding.instance).toBe(tc.instance);
     expect((await host(h.token, "restore", { ...r1, ...tc })).status).toBe(409);
     const current = await (await host(h.token, `binding?threadId=${thread}`)).json() as { binding: { instance: string } };
     expect(current.binding.instance).toBe(tc.instance);

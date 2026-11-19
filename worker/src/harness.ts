@@ -115,6 +115,11 @@ export async function serveHarness(request: Request, env: Env, path: string, not
   const parsed = restoreInput.safeParse(body);
   if (!parsed.success) return json(400, { error: "invalid restore association" });
   const p = parsed.data;
+  // A committed request is a receipt, not a fresh attempt to use its old
+  // target. That target may have been deleted after a later restoration.
+  const replay = await registry.replayThreadRestore(hash, p.threadId, p, p.previousInstance, p.requestId);
+  if ("error" in replay) return json(replay.status, { error: replay.error });
+  if (replay.value !== null) return reply(env, replay.value);
   if (!await targetAvailable(env, p)) return json(409, { error: "restored subject or instance is unavailable" });
   const result = await registry.restoreThread(hash, p.threadId, p, p.previousInstance, p.requestId, Date.now());
   return "error" in result ? json(result.status, { error: result.error }) : reply(env, result.value);

@@ -83,6 +83,9 @@ export class Directory extends DurableObject<Env> {
   restoreThread(hash: string, thread: string, target: BindingTarget, previous: string, request: string, at: number) {
     return this.bindings.restore(hash, thread, target, previous, request, at);
   }
+  replayThreadRestore(hash: string, thread: string, target: BindingTarget, previous: string, request: string) {
+    return this.bindings.replayRestore(hash, thread, target, previous, request);
+  }
 
   // register records a memory. A name already listed keeps its first time.
   // A memory registered closes setting the admin secret from the page.
