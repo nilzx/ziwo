@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import type { Env } from "./index";
+import { Bindings, bindingSchema, type BindingTarget } from "./bindings";
 
 // The one object of the directory: its name within its namespace.
 export const directoryName = "directory";
@@ -36,11 +37,15 @@ export type ClosedBy = "page" | "dashboard" | "memory";
 //
 // It also keeps the admin secret set on the admin page, while no dashboard
 // secret counts (admin.ts, adminSecretState), and the record that setting
-// one from the page is closed for good. Only the admin API and the consent
-// page reach it, never a request to a memory.
+// one from the page is closed for good. A separate registry is authoritative
+// for trusted host/thread bindings. Admin, consent and host-binding routes
+// reach it; the legacy MCP path still does not.
 export class Directory extends DurableObject<Env> {
+  private readonly bindings: Bindings;
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    ctx.storage.sql.exec(bindingSchema);
+    this.bindings = new Bindings(ctx.storage);
     ctx.storage.sql.exec(
       `CREATE TABLE IF NOT EXISTS memories (
          name       TEXT PRIMARY KEY,
@@ -63,6 +68,20 @@ export class Directory extends DurableObject<Env> {
          closed_by TEXT NOT NULL
        ) STRICT`,
     );
+  }
+
+  registerHarness(name: string, hash: string, at: number) { return this.bindings.register(name, hash, at); }
+  revokeHarness(id: string) { return this.bindings.revoke(id); }
+  rotateHarness(id: string, hash: string) { return this.bindings.rotate(id, hash); }
+  threadBinding(hash: string, thread: string) { return this.bindings.read(hash, thread); }
+  bindThread(hash: string, thread: string, target: BindingTarget, activation: string, source: string, at: number) {
+    return this.bindings.bind(hash, thread, target, activation, source, at);
+  }
+  forkThread(hash: string, parent: string, child: string, source: string, at: number) {
+    return this.bindings.fork(hash, parent, child, source, at);
+  }
+  restoreThread(hash: string, thread: string, target: BindingTarget, previous: string, request: string, at: number) {
+    return this.bindings.restore(hash, thread, target, previous, request, at);
   }
 
   // register records a memory. A name already listed keeps its first time.

@@ -79,6 +79,7 @@ import {
 import { NoSessionError, SubjectError } from "./errors";
 import type { ParsedExport } from "./export";
 import { contentHash, newID } from "./ids";
+import { type Identity, insertIdentity, legacyID, metaLegacySource, readIdentity, validSource } from "./identity";
 import { abandonReflect, applyReflect, beginReflect, type Entry, finishReflect, notePrompted, prompted, readLease } from "./reflect";
 import { matchQuery } from "./segment";
 import { resolveSubject, type Resolved, writeSubjectItem } from "./subjects";
@@ -1202,6 +1203,9 @@ export class Store {
   restore(x: ParsedExport, at: number, tokenHash: string, settings?: { params: Params; timeZone?: string }): void {
     this.tx(() => {
       if (num(this.db.first(`SELECT count(*) AS c FROM events`)?.c) !== 0) throw new Error("restore: the log is not empty");
+      if (readIdentity(this.db) !== undefined) throw new Error("restore: identity already assigned");
+      if (x.identity !== undefined) insertIdentity(this.db, x.identity);
+      else this.db.setMeta(metaLegacySource, x.legacySourceInstance ?? x.instance);
       if (settings !== undefined) {
         this.p = { ...settings.params };
         this.db.setMeta(metaParams, paramsJSON(this.p));
@@ -1221,6 +1225,41 @@ export class Store {
   // undefined when none is set.
   tokenHash(): string | undefined {
     return this.db.getMeta(metaTokenHash);
+  }
+
+  identity(): Identity | undefined {
+    return readIdentity(this.db);
+  }
+
+  // Called only for a new memory, together with its initial credential.
+  createWithIdentity(hash: string, at: number): void {
+    this.tx(() => {
+      if (this.db.getMeta(metaTokenHash) !== undefined || readIdentity(this.db) !== undefined) throw new Error("memory already created");
+      insertIdentity(this.db, {
+        id: "zi_" + crypto.randomUUID().replaceAll("-", ""), origin: "created",
+        sourceInstance: this.db.getMeta(metaInstance)!, establishedAt: at,
+      });
+      this.db.setMeta(metaTokenHash, hash);
+    });
+  }
+
+  // Explicit, idempotent migration. A restored legacy export with no source
+  // remains unassigned until the owner supplies a provenance identifier.
+  migrateIdentity(at: number, sourceInstance?: string, missingSource = false): Identity {
+    return this.tx(() => {
+      const existing = readIdentity(this.db);
+      if (existing !== undefined) {
+        if (sourceInstance !== undefined && sourceInstance !== existing.sourceInstance) throw new Error("identity source conflict");
+        return existing;
+      }
+      const known = missingSource ? "" : this.db.getMeta(metaLegacySource) ?? this.db.getMeta(metaInstance)!;
+      if (sourceInstance !== undefined && known !== "" && sourceInstance !== known) throw new Error("identity source conflict");
+      const source = sourceInstance ?? known;
+      if (!validSource(source)) throw new Error("a verified legacy source instance is required");
+      const identity: Identity = { id: legacyID(source), origin: "legacy", sourceInstance: source, establishedAt: at };
+      insertIdentity(this.db, identity);
+      return identity;
+    });
   }
 
   // setTokenHash replaces the hash of this memory's access token. Only the

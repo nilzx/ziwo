@@ -1,6 +1,6 @@
 # ziwo on Cloudflare Workers: specification
 
-This document describes how the Worker implementation of ziwo behaves, for a developer or an AI agent who wants to operate, extend or audit a deployment. It describes the code in `worker/` as of 2026-11-12. Where it states a figure that was measured, it says when and under what conditions; where something has not been measured, it says so.
+This document describes how the Worker implementation of ziwo behaves, for a developer or an AI agent who wants to operate, extend or audit a deployment. It describes the development code in `worker/` as of 2026-11-19. The stable-identity and host-binding foundation is unreleased; its API and limitations are detailed in [Identity and bindings](identity-bindings.md). Where it states a figure that was measured, it says when and under what conditions; where something has not been measured, it says so.
 
 ziwo is an autobiographical memory for an AI: it records what the AI lived through, felt and learned, not the state of a project. It is served over MCP (the Model Context Protocol). Several formats here come from an earlier implementation in Go, which was removed from the repository on 2026-11-13 and is in its history up to commit `a4a8bab`; logs and exports it wrote are still read. OAuth is described in more depth, with its sources, in [worker/docs/oauth-notes.md](../worker/docs/oauth-notes.md).
 
@@ -13,11 +13,11 @@ Contents: [Terms](#terms) · [Architecture](#architecture) · [MCP surface](#mcp
 | memory | Everything one AI remembers, under one name. A deployment holds any number of memories. Each has its own address, `/<name>/mcp`, and its own token. |
 | item | One remembered thing inside a memory, with an id such as `m_abcd2345`: a fragment, an episode, a lesson, an impression, a statement about oneself or a reading. The tools' own texts call items "memories"; this document says "item" to keep the two apart. Items are the rows of the derived table `memories`. |
 | memory object | The Durable Object that holds one memory: a SQLite database with the event log, the contents and the derived tables. |
-| session | One conversation. `get_context` starts it and returns its id (`s_…`). Every write names the session it belongs to. |
+| session | One legacy memory session. `get_context` starts it and returns its id (`s_…`). Every write names the session it belongs to. This is distinct from a host thread or its durable subject binding. |
 | fragment | What `remember` writes: one moment, as it happened. Reflection turns fragments into episodes, lessons, impressions, statements about oneself and readings. |
 | subject | What a run of items is about: a name of the AI's and a description. Fragments, episodes and lessons belong to at most one; one that belongs to none is unsorted. A subject is recorded by subject items (kind `subject`, not items in the sense above: never listed, never counted); its head is the one that stands for it now. |
 | ripe | A fragment waiting for reflection is ripe once the burst it was written in is over: its session has written no fragment for 30 minutes, or has started a new burst since (a fragment written 30 minutes or more after the session's previous one, or its first, starts a burst). The session that asks is no exception. Only ripe fragments are handed out by `reflect` and counted for its prompt. |
-| event log | The table `events`: every write, listing, reading, amendment, erasure, round of reflection and restore, in order. It is append-only and is the only source of truth. |
+| event log | The table `events`: every autobiographical write, listing, reading, amendment, erasure, round of reflection and restore, in order. It is append-only. Stable identity assignments and host-binding authority are stored separately. |
 | derived tables | Tables computed from the event log, the contents and the forgetting parameters. They can be dropped and rebuilt at any time (replay). |
 | experience clock | The number of moments written as they happened. Forgetting is measured against it, not against the calendar. |
 | tier | How reachable an item is: core, active, faded or archived. |
@@ -25,6 +25,8 @@ Contents: [Terms](#terms) · [Architecture](#architecture) · [MCP surface](#mcp
 | reading | An item returned in full by `expand`. It restarts its decay and strengthens it. |
 | grant | An OAuth approval of one client for one memory, kept in KV. |
 | instance | An id (`i_…`) drawn when a memory is created or imported. It tells a memory apart from an earlier one of the same name. |
+| identity | The stable owner (`zi_…`) of a memory. New memories receive one; legacy memories require explicit migration. Restore preserves it while replacing the data instance. |
+| host binding | An immutable association of an authenticated host namespace and a thread with one identity; its pinned data instance changes only by explicit restore association. N1 bindings cannot yet run memory operations. |
 | admin secret | The password of whoever owns a deployment: the Worker secret `ADMIN_SECRET` when it is set and counts, else one chosen on the admin page while the deployment was new (see [The admin secret](#the-admin-secret)). It opens the admin API and the admin page, and can approve OAuth grants. |
 
 ## Architecture
@@ -35,7 +37,7 @@ Contents: [Terms](#terms) · [Architecture](#architecture) · [MCP surface](#mcp
 | --- | --- | --- | --- |
 | Worker (`src/index.ts`) | Stateless Worker | nothing | Routes requests, checks credentials, serves MCP (including long-lived streams), the OAuth endpoints and the consent page, the admin API, the admin page; embeds the query of a recall. |
 | `Memory` (`src/memory-object.ts`) | SQLite-backed Durable Object, one per memory name | The event log, the contents, the derived tables, the keyword index, the vectors, the token's hash, the settings | Carries out every tool call and admin action on one memory. Embeds what was written, in an alarm. |
-| `Directory` (`src/directory.ts`) | SQLite-backed Durable Object, one for the deployment | The names of the memories and when each was created or imported | Lists memories for the admin API. It is a list, not an authority: whether a memory exists is decided by its own object. |
+| `Directory` (`src/directory.ts`) | SQLite-backed Durable Object, one for the deployment | Memory names, admin setup, trusted host credentials, conversation bindings and their audit records | The memory list is not existence authority; each memory object decides that. The separate binding registry is the cross-memory authority for host/thread ownership. |
 | `Guard` (`src/guard.ts`) | SQLite-backed Durable Object, one per client address and one for all addresses | Recent wrong credentials of one address; counts of client registrations | The limit on guessing at the consent page and the admin API; the budget on OAuth client registrations. |
 | `OAUTH_KV` | Workers KV namespace | OAuth clients, grants and tokens, written by `@cloudflare/workers-oauth-provider` | Read when an OAuth access token is presented. |
 | `AI` | Workers AI binding | nothing | Embeddings for search by meaning. Optional: without it, search is by keyword only. |
@@ -48,10 +50,10 @@ Every method of the memory object is synchronous inside, and every write is one 
 
 | Request | Fixed token | OAuth access token |
 | --- | --- | --- |
-| Any request to `/<name>/mcp` | `Memory.authorize` (one call to the object), with the SHA-256 of the token | KV, through the OAuth library, to validate the token; no call to the object |
-| `tools/call` | then `Memory.answer` (a second call to the object) | then `Memory.answer`, which also checks the grant's instance |
+| Any request to `/<name>/mcp` | `Memory.authorizeInstance` (one call to the object), checks the token hash and captures the data instance together | KV, through the OAuth library, to validate the token; no call to the object |
+| `tools/call` | then `Memory.answer`, which rechecks the captured instance (a second call to the object) | then `Memory.answer`, which also checks the grant's instance |
 | `recall` with a query, when search by meaning is on | Workers AI, from the Worker, to embed the query, before `Memory.answer` | the same |
-| `server/discover`, `tools/list`, `subscriptions/listen` | answered by the Worker after `authorize` | answered by the Worker; the object is not called |
+| `server/discover`, `tools/list`, `subscriptions/listen` | answered by the Worker after `authorizeInstance` | answered by the Worker; the object is not called |
 
 Not on the path of an MCP request: the `Directory`, the `Guard`, the admin API, and, for a fixed token, KV. A long-lived stream such as `subscriptions/listen` is held by the Worker, never by the object. Embedding what was written happens after the call: `remember` sets the object's alarm, and the alarm calls Workers AI.
 
@@ -63,6 +65,7 @@ Not on the path of an MCP request: the `Directory`, the `Guard`, the admin API, 
 | `/` and `/_page/*` | Worker | The admin page: static files, `GET` and `HEAD` only. Reaches no Durable Object. |
 | `/<name>/mcp` | Worker, then the memory's object | MCP over Streamable HTTP. A path whose name breaks the name rule is `404`. |
 | `/admin/...` | Worker | The admin API. `404` unless the deployment has an admin secret; `/admin/setup` alone needs none. |
+| `/harness/v1/...` | Worker and Directory, with target metadata checked in Memory | Registered-host binding API; see [Identity and bindings](identity-bindings.md). No memory access or ready transition in N1. |
 | `/oauth/authorize` | Worker | The consent page (`GET`) and its form (`POST`). |
 | `/oauth/token`, `/oauth/register` | Worker, OAuth library | Token and registration endpoints. |
 | `/.well-known/oauth-authorization-server` | Worker, OAuth library | RFC 8414 metadata. |
@@ -309,6 +312,7 @@ Log tables, kept for good:
 | `events` | `seq` (autoincrement), `at` (unix milliseconds), `kind`, `payload` (JSON). Triggers refuse every `UPDATE` and `DELETE`. |
 | `contents` | `id` (an item's id), `data` (JSON: `gist`, `body`, `outcome`, `feeling`, `lesson`, `people`, `pointer`, `about`, `context`, empty ones left out). Written once with the event that records the item; a trigger refuses `UPDATE`. A row can be deleted: that is how `erase` works. |
 | `meta` | Key-value pairs; see below. |
+| `identity_assignment` | One immutable ownership assignment, independent of autobiographical sessions/events. Preserved by replay and included in v2 exports. |
 | `vector_rows` | Embeddings, packed: up to 256 vectors a row, each as signed 8-bit integers (the unit vector times 127, rounded), with the items' row numbers beside them, labelled with the model and the number of dimensions. Kept because they are expensive to recompute; not in the export. |
 
 Keys of `meta`:
@@ -319,6 +323,7 @@ Keys of `meta`:
 | `derived` | `derivedVersion` and the forgetting parameters the derived tables were built with. |
 | `token_sha256` | The SHA-256 (hex) of the memory's fixed token. A memory exists once it has one. |
 | `instance` | The memory's instance id, `i_…`. |
+| `identity_legacy_source` | Source instance retained from a legacy import until explicit identity migration; empty means unknown. It travels in an unassigned v2 backup. |
 | `params` | The forgetting parameters, as JSON; absent means the defaults. |
 | `timezone` | The memory's default time zone; absent means UTC. |
 | `clock` | The experience clock. Derived: rebuilt by a replay. |
@@ -588,7 +593,7 @@ A memory's name is 1 to 32 characters: lower-case letters, digits, `-` and `_`, 
 
 A fixed token is `ziwo_` followed by 32 random bytes in base64url (43 characters). It is shown once, in the answer that created it; the memory object keeps only its SHA-256. Replacing it makes the old token stop working at once. Replacing a token does not revoke OAuth grants.
 
-The instance id is drawn when a memory is created or imported and is never carried by an export. An OAuth grant records the instance it was given for, and the object refuses a call whose grant names another instance: a grant left over from a memory that was deleted and created again under the same name opens nothing.
+The instance id is drawn when a memory is created or imported. An export records its source instance, but import generates a new current instance. OAuth grants and authenticated fixed-token requests capture an instance; tool execution rejects a different one. A stable identity is separate and survives a v2 restore. See [identity migration and binding](identity-bindings.md) for the unreleased N1 APIs and legacy compatibility boundary.
 
 ### The admin secret
 
@@ -659,7 +664,7 @@ The admin API sends and takes an export **in the clear**: the event log and what
 - `token_sha256` is the memory's token hash; an imported memory answers to the same token. Without it, the import draws a new token and shows it once.
 - Derived tables and vectors are not exported; they are rebuilt and re-embedded.
 
-The export is built inside one synchronous call to the object, so it describes one state of the memory. The format is the earlier Go implementation's, and a memory with default settings is written with no `settings` field, as it was; exports that implementation wrote are still imported (the tests import recordings of them).
+The export is built inside one synchronous call to the object, so it describes one state of the memory. The example above is legacy v1. Unassigned, unrestored legacy stores retain that format; new identities and restored legacy sources use v2. Its identity/provenance header seeds the hash chain, including for an empty log; see [Backup version 2](identity-bindings.md#backup-version-2). Default settings still omit `settings`. Go v1 exports remain readable; older releases cannot read v2 exports.
 
 An import checks the whole file before anything is written: the header, every line, the chain, unique `seq`s and content ids, the footer's count and head, the settings. It then stores the events with their `seq` and `at`, appends a `restore` event, and replays the log, in one transaction; if the replay fails, nothing is kept. For 7 days after a restore, `get_context` tells the model that the memory was brought back and from an export of when.
 

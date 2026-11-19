@@ -273,7 +273,7 @@ describe("subscriptions/listen", () => {
     const first = new TextDecoder().decode((await reader.read()).value);
     expect(first).toContain("notifications/subscriptions/acknowledged");
     await reader.cancel();
-    expect(calls).toEqual(["authorize"]);
+    expect(calls).toEqual(["authorizeInstance"]);
 
     // A tool call reaches the object once more, and once only.
     calls.length = 0;
@@ -291,7 +291,7 @@ describe("subscriptions/listen", () => {
       ),
     );
     expect(r.status).toBe(200);
-    expect(calls).toEqual(["authorize", "answer"]);
+    expect(calls).toEqual(["authorizeInstance", "answer"]);
   });
 });
 

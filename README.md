@@ -50,5 +50,6 @@ The admin page at your address backs up a memory to an encrypted file, restores 
 ## More
 
 - [Technical specification](docs/spec.md): the tools, the data model, forgetting, search, the admin API, sign-in, configuration and limits.
+- [Identity and conversation bindings](docs/identity-bindings.md): the unreleased N1 service foundation, migration, backup compatibility, and integration boundaries.
 
 MIT. See [LICENSE](LICENSE).

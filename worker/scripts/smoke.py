@@ -338,6 +338,9 @@ def relive(base, secret, name, ms):
     st, _, raw = http("GET", f"{base}/admin/memories/{name}/export", auth)
     check(f"{name} is exported to be moved back in time", st == 200, st)
     lines, prev = [], ""
+    header = raw.split("\n", 1)[0]
+    if json.loads(header).get("ziwo_export") == 2:
+        prev = hashlib.sha256(("ziwo-export-v2\n" + header).encode()).hexdigest()
     for line in raw.split("\n"):
         m = EVENT_LINE.match(line)
         if m is None:

@@ -17,6 +17,7 @@ import { ExportError, FormatRefusal, type ParsedExport, parseExport, TooLargeErr
 import { logFormat, metaInstance, metaParams, metaTokenHash, metaZone } from "./store/schema";
 import { LogFormatError, parseParams, readLogStats, ReplayError, Store } from "./store/store";
 import type { LogStats } from "./store/types";
+import { type Identity, readIdentity, validSource } from "./store/identity";
 import { knownZone, UTC } from "./zone";
 import type { Env } from "./index";
 
@@ -329,8 +330,14 @@ export class Memory extends DurableObject<Env> {
     return same ? "ok" : "rejected";
   }
 
+  // Capture authorization and the instance together, without an await.
+  authorizeInstance(hash: string): { access: Access; instance?: string } {
+    const access = this.authorize(hash);
+    return access === "ok" ? { access, instance: this.instance() } : { access };
+  }
+
   // instance names this memory as it was made: drawn when it was created or
-  // brought back, never carried by an export, and new when a name is used
+  // brought back, never reused from an export, and new when a name is used
   // again after a deletion. A grant records it (consent.ts), so that what
   // was granted for one memory is refused by the next under the same name.
   instance(): string | "unknown" {
@@ -376,8 +383,26 @@ export class Memory extends DurableObject<Env> {
   // create makes this memory with the given token hash, unless it exists.
   create(hash: string): "created" | "exists" {
     if (this.storedTokenHash() !== undefined) return "exists";
-    this.store.setTokenHash(hash);
+    this.store.createWithIdentity(hash, this.now());
     return "created";
+  }
+
+  identityInfo(): { identity: Identity | null; instance: string | null } | "unknown" {
+    if (!this.exists()) return "unknown";
+    const db = this.logDb();
+    return { identity: readIdentity(db) ?? null, instance: db.getMeta(metaInstance) ?? null };
+  }
+
+  migrateIdentity(expectedInstance: string | null, sourceInstance?: string): { identity: Identity; instance: string } | Invalid | Gone {
+    if (!this.exists() || (this.logDb().getMeta(metaInstance) ?? null) !== expectedInstance) return { gone: true };
+    if (expectedInstance === null && !validSource(sourceInstance)) return { invalid: "a verified legacy source instance is required" };
+    try {
+      const identity = this.store.migrateIdentity(this.now(), sourceInstance, expectedInstance === null);
+      return { identity, instance: this.instance() };
+    } catch (err) {
+      if (err instanceof Error && ["identity source conflict", "a verified legacy source instance is required"].includes(err.message)) return { invalid: err.message };
+      throw err;
+    }
   }
 
   // replaceToken gives an existing memory a new token hash; the old token
