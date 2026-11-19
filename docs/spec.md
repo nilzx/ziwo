@@ -1,6 +1,6 @@
 # ziwo on Cloudflare Workers: specification
 
-This document describes how the Worker implementation of ziwo behaves, for a developer or an AI agent who wants to operate, extend or audit a deployment. It describes the development code in `worker/` as of 2026-11-19. The identity, host-binding, persona and activation foundations are unreleased; their APIs and limitations are detailed in [Identity and bindings](identity-bindings.md), [Persona initialization and revision](persona.md), and [Activation and history backfill](activation.md). Where it states a figure that was measured, it says when and under what conditions; where something has not been measured, it says so.
+This document describes how the Worker implementation of ziwo behaves, for a developer or an AI agent who wants to operate, extend or audit a deployment. It describes the development code in `worker/` as of 2026-11-19. The identity, host-binding, persona, activation and turn-sync APIs are unreleased; see [Identity and bindings](identity-bindings.md), [Persona initialization and revision](persona.md), [Activation and history backfill](activation.md), and [Per-turn synchronization](turn-sync.md). Where it states a figure that was measured, it says when and under what conditions; where something has not been measured, it says so.
 
 ziwo is an autobiographical memory for an AI: it records what the AI lived through, felt and learned, not the state of a project. It is served over MCP (the Model Context Protocol). Several formats here come from an earlier implementation in Go, which was removed from the repository on 2026-11-13 and is in its history up to commit `a4a8bab`; logs and exports it wrote are still read. OAuth is described in more depth, with its sources, in [worker/docs/oauth-notes.md](../worker/docs/oauth-notes.md).
 
@@ -26,7 +26,7 @@ Contents: [Terms](#terms) · [Architecture](#architecture) · [MCP surface](#mcp
 | grant | An OAuth approval of one client for one memory, kept in KV. |
 | instance | An id (`i_…`) drawn when a memory is created or imported. It tells a memory apart from an earlier one of the same name. |
 | identity | The stable owner (`zi_…`) of a memory. New memories receive one; legacy memories require explicit migration. Restore preserves it while replacing the data instance. |
-| host binding | An immutable association of an authenticated host namespace and a thread with one identity; its pinned data instance changes only by explicit restore association. N3 derives initialization readiness from the current persona and persisted backfill progress; normal per-turn runtime integration remains N4. |
+| host binding | An immutable association of an authenticated host namespace and a thread with one identity; its pinned data instance changes only by explicit restore association. Initialization readiness is separate from the current turn's acknowledged synchronization capability. |
 | admin secret | The password of whoever owns a deployment: the Worker secret `ADMIN_SECRET` when it is set and counts, else one chosen on the admin page while the deployment was new (see [The admin secret](#the-admin-secret)). It opens the admin API and the admin page, and can approve OAuth grants. |
 
 ## Architecture
@@ -318,6 +318,7 @@ Log tables, kept for good:
 | `persona_versions`, `persona_current` | Adopted versions, fixed loading text, source references and current pointer; separate from autobiographical events and preserved by rebuild. |
 | `persona_evaluations`, `persona_proposals`, `persona_confirmations` | Scoped snapshot references, concrete proposals and immutable decisions; not exported as reusable authorization. |
 | `activations`, `history_receipts`, `activation_requests` | Initialization gates, fixed history manifests, immutable source decisions and request fingerprints; preserved by replay and v4 backups. |
+| `sync_threads`, `sync_snapshots`, `sync_calls` | Runtime cursors, fixed delivery ranges, loading receipts and tool request fingerprints. No copied memory content; retained across eviction, excluded from backups, reset on a restored instance. |
 | `identity_assignment` | One immutable ownership assignment, independent of autobiographical sessions/events. Preserved by replay and included in v2/v3/v4 exports. |
 | `vector_rows` | Embeddings, packed: up to 256 vectors a row, each as signed 8-bit integers (the unit vector times 127, rounded), with the items' row numbers beside them, labelled with the model and the number of dimensions. Kept because they are expensive to recompute; not in the export. |
 

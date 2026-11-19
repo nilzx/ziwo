@@ -49,6 +49,8 @@ ziwo 是一个小型服务,AI 的各个客户端都连到它。现成的运行�
 
 ## 更多
 
+- [逐轮同步与绑定工具](docs/turn-sync.md)：开发版的固定增量范围、加载确认，以及可选的 [Codex 参考入口](adapters/codex/README.md)；尚未发布。
+
 - [技术规格](docs/spec.md)(英文):工具、数据模型、遗忘、检索、管理接口、登录授权、配置和限制。
 
 MIT,见 [LICENSE](LICENSE)。

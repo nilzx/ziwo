@@ -1,4 +1,7 @@
 import { Activations } from "./store/activation";
+import { Sync } from "./store/sync";
+import { check as checkTool, tools as toolDefinitions } from "./mcp/tools";
+import { z } from "zod";
 import type { ThreadBinding } from "./bindings";
 import { Personas, PersonaError, personaOutcome } from "./store/persona";
 import { DurableObject } from "cloudflare:workers";
@@ -181,6 +184,30 @@ export class Memory extends DurableObject<Env> {
       if (operation === 'batch') this.wake();
       return result;
     });
+  }
+
+  syncRequest(binding: ThreadBinding, operation: string, input: unknown) {
+    return JSON.stringify(personaOutcome<Record<string, unknown>>(() => {
+      if (this.identityInfo() === 'unknown') throw new PersonaError(409, 'bound subject is unavailable');
+      void this.store;
+      const sync = new Sync(new Db(this.ctx.storage.sql), this.ctx.storage);
+      if (operation === 'status') return sync.status(binding);
+      if (operation === 'begin') return sync.begin(binding, input);
+      if (operation === 'page') return sync.page(binding, input);
+      if (operation === 'ack') return sync.ack(binding, input);
+      if (operation === 'end') return sync.end(binding, input);
+      const id = z.string().min(1).max(200).regex(/^[A-Za-z0-9_.:-]+$/);
+      const parsed = z.object({ threadId: id, snapshotId: z.string().regex(/^[a-f0-9]{64}$/), requestId: id,
+        tool: z.enum(['remember', 'recall', 'expand', 'reflect', 'amend', 'erase', 'check']), arguments: z.record(z.string(), z.unknown()) }).strict().safeParse(input);
+      if (!parsed.success || parsed.data.threadId !== binding.threadId) throw new PersonaError(400, 'invalid bound tool call');
+      const p = parsed.data, def = toolDefinitions.find(d => d.name === p.tool)!;
+      if (Object.keys(p.arguments).some(k => k === 'session_id' || !def.fields.some(f => f.name === k))) throw new PersonaError(400, 'bound tools do not accept caller-selected sessions, targets, or unknown arguments');
+      return { ...sync.run(binding, p.snapshotId, p.requestId, [p.tool, p.arguments], session => {
+        const checked = checkTool(def, { ...p.arguments, ...(def.fields.some(f => f.name === 'session_id') ? { session_id: session } : {}) }, 'ziwo-harness');
+        if ('invalid' in checked) throw new PersonaError(400, checked.invalid);
+        return this.answer(checked.ok, binding.instance);
+      }) };
+    }));
   }
 
   private get emb(): Embedding | null {

@@ -1,4 +1,5 @@
 import { activationRoute, serveActivation } from "./activation-api";
+import { syncRoute, serveSync } from "./sync-api";
 import { startEvaluation, loadBoundPersona } from "./persona-api";
 import { z } from "zod";
 import type { Note } from "./admin";
@@ -82,7 +83,7 @@ async function reply(env: Env, b: ThreadBinding | null, status = 200): Promise<R
 export async function serveHarness(request: Request, env: Env, path: string, note: Note): Promise<Response> {
   const read = ["/harness/v1/binding", "/harness/v1/persona"].includes(path) && request.method === "GET";
   const mutate = ["/harness/v1/bind", "/harness/v1/fork", "/harness/v1/restore", "/harness/v1/evaluations"].includes(path) && request.method === "POST";
-  if (!read && !mutate && !activationRoute(path, request.method)) return notFound();
+  if (!read && !mutate && !activationRoute(path, request.method) && !syncRoute(path, request.method)) return notFound();
   const token = bearer(request);
   note.cred = "harness";
   if (typeof token !== "string" || !/^zwh_[A-Za-z0-9_-]{43}$/.test(token)) {
@@ -95,6 +96,7 @@ export async function serveHarness(request: Request, env: Env, path: string, not
   const auth = await registry.threadBinding(hash, "");
   if ("error" in auth) { note.auth = "rejected"; return json(auth.status, { error: auth.error }); }
   note.auth = "ok";
+  if (syncRoute(path, request.method)) return serveSync(request, env, path, hash);
   if (activationRoute(path, request.method)) return serveActivation(request, env, path, hash);
   if (path === "/harness/v1/evaluations") return startEvaluation(request, env, hash);
   if (path === "/harness/v1/persona") return loadBoundPersona(request, env, hash);

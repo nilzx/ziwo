@@ -53,5 +53,6 @@ The admin page at your address backs up a memory to an encrypted file, restores 
 - [Identity and conversation bindings](docs/identity-bindings.md): the unreleased identity foundation, migration, backup compatibility, and integration boundaries.
 - [Persona initialization and revision](docs/persona.md): scoped evaluation, exact-proposal confirmation, adopted versions, and the remaining adapter work.
 - [Activation and history backfill](docs/activation.md): fixed history boundaries, resumable processing, explicit occurrence time, and initialization readiness.
+- [Per-turn synchronization](docs/turn-sync.md): fixed change ranges, exact loading acknowledgments, and bound tools; includes an optional [Codex reference client](adapters/codex/README.md).
 
 MIT. See [LICENSE](LICENSE).

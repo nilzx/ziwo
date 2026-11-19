@@ -140,9 +140,10 @@ export class Activations {
     try { this.loaded(b, a); } catch (e) { if (e instanceof PersonaError) personaReady = false; else throw e; }
     const processed = a.items.filter(i => this.receipt(a, i) !== undefined).length;
     const gaps = a.scope.gaps.filter(g => !a.resolvedGaps.includes(g.id));
-    const ready = personaReady && a.completed && a.sealed && processed === a.items.length;
+    const initializationComplete = a.completed && a.sealed && processed === a.items.length;
+    const ready = personaReady && initializationComplete;
     return { phase: !personaReady ? 'persona_required' : !a.sealed ? 'collecting_history' : (!a.completed || processed !== a.items.length) ? 'processing_history' : 'ready',
-      canRun: ready, sessionId: a.sessionId, loadedPersona: a.loaded, total: a.items.length, processed,
+      canRun: ready, initializationComplete, sessionId: a.sessionId, loadedPersona: a.loaded, total: a.items.length, processed,
       scope: a.scope, gaps, historyIncomplete: gaps.length > 0, noticePending: ready && gaps.length > 0 && !a.noticeAcknowledged };
   }
   begin(b: ThreadBinding, raw: unknown, at: number) {
