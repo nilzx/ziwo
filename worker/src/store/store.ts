@@ -1,3 +1,5 @@
+import { personaSchema } from "./persona-schema";
+import { Personas } from "./persona";
 // The append-only event log and the tables derived from it. Port of store.go.
 //
 // Every change to a memory is written as an event and then applied to the
@@ -282,6 +284,7 @@ export class Store {
 
   private init(): void {
     this.db.run(logSchema);
+    this.db.run(personaSchema);
     this.checkLogFormat();
     if (this.db.getMeta(metaInstance) === undefined) this.db.setMeta(metaInstance, newID("i_"));
     const stored = this.db.getMeta(metaParams);
@@ -644,6 +647,7 @@ export class Store {
       const gone = eraseMemory(this.db, this.append, at, session, id, reason);
       // Their vectors go in the same transaction, under every label.
       this.vec.remove(gone.map((g) => g.n));
+      new Personas(this.db, this.storage).eraseSources(gone.map(g => g.id));
       return gone[gone.length - 1]!.n;
     });
   }
@@ -1218,6 +1222,7 @@ export class Store {
       this.db.setMeta(metaTokenHash, x.tokenHash !== "" ? x.tokenHash : tokenHash);
       this.appendEvent(at, kindRestore, encodeRestore({ from: x.instance, exportedAt: x.exportedAt, events: x.events.length }));
       this.rebuildInTx();
+      if (x.persona !== undefined) new Personas(this.db, this.storage).restore(x.persona);
     });
   }
 

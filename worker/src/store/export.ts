@@ -1,3 +1,4 @@
+import { exportPersona, parsePersonaBundle, type PersonaBundle } from "./persona";
 // The export format of the Go build (export.go): the event log and what the
 // memories say, one JSON object per line: a header, one line per event, a
 // footer. Each event line carries a hash chained to the one before, and the
@@ -16,7 +17,8 @@ import { goJSON } from "./json";
 import { logFormat, metaInstance, metaTokenHash } from "./schema";
 import { type Identity, metaLegacySource, parseIdentity, readIdentity, validSource } from "./identity";
 
-export const exportVersion = 2;
+export const exportVersion = 3;
+const identityExportVersion = 2;
 const legacyExportVersion = 1;
 
 const badExport = "not a usable export";
@@ -85,18 +87,20 @@ export interface ExportSettings {
 export function writeExport(db: Db, at: number, settings?: ExportSettings): { text: string; events: number } {
   const identity = readIdentity(db);
   const legacySource = db.getMeta(metaLegacySource);
-  const version = identity !== undefined || legacySource !== undefined ? exportVersion : legacyExportVersion;
+  const persona = exportPersona(db);
+  const version = persona !== undefined ? exportVersion : identity !== undefined || legacySource !== undefined ? identityExportVersion : legacyExportVersion;
   const header = goJSON({
     ziwo_export: version,
     log_format: logFormat,
     instance: db.getMeta(metaInstance) ?? "",
     exported_at: at,
-    identity: version === 2 ? identity === undefined ? null : { ...identity } : undefined,
+    identity: version >= 2 ? identity === undefined ? null : { ...identity } : undefined,
     legacy_source_instance: identity === undefined ? legacySource : undefined,
+    persona: persona === undefined ? undefined : JSON.parse(JSON.stringify(persona)),
     settings: settings === undefined ? undefined : { params: { ...orderedParams(settings.params) }, timezone: settings.timezone },
   });
   const parts: string[] = [header + "\n"];
-  let head = version === 2 ? headerChain(header) : "";
+  let head = version >= 2 ? headerChain(header, version) : "";
   let events = 0;
   db.each(
     `SELECT e.seq, e.at, e.kind, e.payload, c.data
@@ -156,10 +160,11 @@ export interface ParsedExport {
   settings: unknown;
   identity?: Identity;
   legacySourceInstance?: string;
+  persona?: PersonaBundle;
 }
 
-function headerChain(header: string): string {
-  return createHash("sha256").update("ziwo-export-v2\n" + goCompact(header)).digest("hex");
+function headerChain(header: string, version: number): string {
+  return createHash("sha256").update(`ziwo-export-v${version}\n` + goCompact(header)).digest("hex");
 }
 
 // ---- Reading a line as Go's json.Unmarshal reads it into a struct.
@@ -287,7 +292,7 @@ function unmarshal(decoded: Decoded, fields: Record<string, FieldType>, target: 
 
 const headerFields: Record<string, FieldType> = {
   ziwo_export: "int", log_format: "int", instance: "string", exported_at: "int", settings: "raw",
-  identity: "raw", legacy_source_instance: "string",
+  identity: "raw", legacy_source_instance: "string", persona: "raw",
 };
 const eventFields: Record<string, FieldType> = {
   seq: "int", at: "int", kind: "string", payload: "raw", content: "optString", chain: "string",
@@ -317,11 +322,11 @@ export function parseExport(file: string, maxEvents: number, formatMessage: (for
     return d;
   };
 
-  const head: Record<string, FieldValue> = { ziwo_export: 0, log_format: 0, instance: "", exported_at: 0, settings: "null", identity: "null", legacy_source_instance: "" };
+  const head: Record<string, FieldValue> = { ziwo_export: 0, log_format: 0, instance: "", exported_at: 0, settings: "null", identity: "null", legacy_source_instance: "", persona: "null" };
   const decodedHeader = nextLine();
   const rawHeader = file.slice(0, pos);
   if (!unmarshal(decodedHeader, headerFields, head)) throw new ExportError(`${badExport}: unreadable line`);
-  if (head.ziwo_export !== legacyExportVersion && head.ziwo_export !== exportVersion) {
+  if (head.ziwo_export !== legacyExportVersion && head.ziwo_export !== identityExportVersion && head.ziwo_export !== exportVersion) {
     throw new ExportError(`${badExport}: it is not a ziwo export of a kind this build reads`);
   }
   const format = head.log_format as number;
@@ -336,7 +341,7 @@ export function parseExport(file: string, maxEvents: number, formatMessage: (for
     tokenHash: "",
     settings: (JSON.parse(head.settings as string) as unknown) ?? undefined,
   };
-  if (head.ziwo_export === 2) {
+  if ((head.ziwo_export as number) >= 2) {
     if (typeof decodedHeader !== "object") throw new ExportError(`${badExport}: unreadable header`);
     const keys = decodedHeader.members.map(([key]) => key);
     const raw = JSON.parse(rawHeader) as Record<string, unknown>;
@@ -358,15 +363,23 @@ export function parseExport(file: string, maxEvents: number, formatMessage: (for
     } catch {
       throw new ExportError(`${badExport}: invalid identity assignment`);
     }
-  } else if (typeof decodedHeader === "object" && decodedHeader.members.some(([key]) => ["identity", "legacy_source_instance"].includes(key.toLowerCase()))) {
+  } else if (typeof decodedHeader === "object" && decodedHeader.members.some(([key]) => ["identity", "legacy_source_instance", "persona"].includes(key.toLowerCase()))) {
     throw new ExportError(`${badExport}: identity requires export version 2`);
+  }
+  if (head.ziwo_export === 3) {
+    try {
+      if (out.identity === undefined) throw new Error('missing owner');
+      out.persona = parsePersonaBundle(JSON.parse(head.persona as string), out.identity.id);
+    } catch { throw new ExportError(`${badExport}: invalid persona partition`); }
+  } else if (typeof decodedHeader === 'object' && decodedHeader.members.some(([key]) => key.toLowerCase() === 'persona')) {
+    throw new ExportError(`${badExport}: persona requires export version 3`);
   }
   // One footer for the whole file, as in Go: a line read into it that is not
   // the footer can still set its fields.
   const foot: Record<string, FieldValue> = { end: false, events: 0, head: "", token_sha256: "" };
   const seqs = new Set<number>();
   const contentIds = new Set<string>();
-  let prev = head.ziwo_export === 2 ? headerChain(rawHeader) : "";
+  let prev = (head.ziwo_export as number) >= 2 ? headerChain(rawHeader, head.ziwo_export as number) : "";
   for (;;) {
     const d = nextLine();
     if (unmarshal(d, footerFields, foot) && foot.end === true) break;

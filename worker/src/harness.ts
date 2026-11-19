@@ -1,3 +1,4 @@
+import { startEvaluation, loadBoundPersona } from "./persona-api";
 import { z } from "zod";
 import type { Note } from "./admin";
 import type { BindingTarget, ThreadBinding } from "./bindings";
@@ -19,7 +20,7 @@ const bindInput = target.extend({ threadId: identifier, activationId: identifier
 const restoreInput = target.extend({ threadId: identifier, previousInstance: identifier, requestId: identifier }).strict();
 const forkInput = z.object({ threadId: identifier, parentThreadId: identifier, source: z.enum(["conversation", "temporary"]) }).strict();
 
-export async function readObject(request: Request): Promise<unknown> {
+export async function readObject(request: Request, maxBytes = 8192): Promise<unknown> {
   if (request.body === null) return undefined;
   const reader = request.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -28,7 +29,7 @@ export async function readObject(request: Request): Promise<unknown> {
     const { value, done } = await reader.read();
     if (done) break;
     size += value.byteLength;
-    if (size > 8192) { await reader.cancel(); return undefined; }
+    if (size > maxBytes) { await reader.cancel(); return undefined; }
     chunks.push(value);
   }
   const bytes = new Uint8Array(size);
@@ -75,8 +76,8 @@ async function reply(env: Env, b: ThreadBinding | null, status = 200): Promise<R
 }
 
 export async function serveHarness(request: Request, env: Env, path: string, note: Note): Promise<Response> {
-  const read = path === "/harness/v1/binding" && request.method === "GET";
-  const mutate = ["/harness/v1/bind", "/harness/v1/fork", "/harness/v1/restore"].includes(path) && request.method === "POST";
+  const read = ["/harness/v1/binding", "/harness/v1/persona"].includes(path) && request.method === "GET";
+  const mutate = ["/harness/v1/bind", "/harness/v1/fork", "/harness/v1/restore", "/harness/v1/evaluations"].includes(path) && request.method === "POST";
   if (!read && !mutate) return notFound();
   const token = bearer(request);
   note.cred = "harness";
@@ -90,6 +91,8 @@ export async function serveHarness(request: Request, env: Env, path: string, not
   const auth = await registry.threadBinding(hash, "");
   if ("error" in auth) { note.auth = "rejected"; return json(auth.status, { error: auth.error }); }
   note.auth = "ok";
+  if (path === "/harness/v1/evaluations") return startEvaluation(request, env, hash);
+  if (path === "/harness/v1/persona") return loadBoundPersona(request, env, hash);
   if (read) {
     const parsed = identifier.safeParse(new URL(request.url).searchParams.get("threadId"));
     if (!parsed.success) return json(400, { error: "a valid threadId is required" });

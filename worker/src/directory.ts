@@ -87,6 +87,13 @@ export class Directory extends DurableObject<Env> {
     return this.bindings.replayRestore(hash, thread, target, previous, request);
   }
 
+  reserveEvaluation(hash: string, thread: string, target: BindingTarget, source: string, at: number) {
+    return this.bindings.reserveEvaluation(hash, thread, target, source, at);
+  }
+  evaluationAccess(host: string, thread: string, target: BindingTarget) {
+    return this.bindings.evaluationAccess(host, thread, target);
+  }
+
   // register records a memory. A name already listed keeps its first time.
   // A memory registered closes setting the admin secret from the page.
   register(name: string, at: number): void {

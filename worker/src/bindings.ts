@@ -16,6 +16,15 @@ export interface BindingTarget { identityId: string; memory: string; instance: s
 export type BindingResult<T> = { value: T } | { error: string; status: 401 | 403 | 409 };
 
 export const bindingSchema = `
+CREATE TABLE IF NOT EXISTS evaluation_threads (
+  harness_id TEXT NOT NULL, thread_id TEXT NOT NULL, identity_id TEXT NOT NULL,
+  memory TEXT NOT NULL, instance TEXT NOT NULL, created_at INTEGER NOT NULL,
+  PRIMARY KEY(harness_id, thread_id)
+) STRICT, WITHOUT ROWID;
+CREATE TRIGGER IF NOT EXISTS evaluation_threads_no_update BEFORE UPDATE ON evaluation_threads
+BEGIN SELECT RAISE(ABORT, 'evaluation role is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS evaluation_threads_no_delete BEFORE DELETE ON evaluation_threads
+BEGIN SELECT RAISE(ABORT, 'evaluation role cannot be released'); END;
 CREATE TABLE IF NOT EXISTS harnesses (
   id TEXT PRIMARY KEY, name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE,
   created_at INTEGER NOT NULL, revoked INTEGER NOT NULL DEFAULT 0
@@ -96,6 +105,27 @@ export class Bindings {
     const row = this.row(host, thread);
     return { value: row === undefined ? null : binding(row) };
   }
+  private evaluator(host: string, thread: string): Row | undefined {
+    return this.sql.exec<Row>('SELECT * FROM evaluation_threads WHERE harness_id = ? AND thread_id = ?', host, thread).toArray()[0];
+  }
+  reserveEvaluation(hash: string, thread: string, target: BindingTarget, source: string, at: number): BindingResult<string> {
+    return this.storage.transactionSync(() => {
+      const host = this.harness(hash);
+      if (host === undefined) return unauthorized();
+      if (source !== 'fresh') return { error: 'evaluation requires a fresh, independent conversation', status: 403 };
+      if (this.row(host, thread) !== undefined) return conflict('a bound conversation cannot evaluate a persona');
+      const existing = this.evaluator(host, thread);
+      if (existing !== undefined) {
+        if (existing.identity_id !== target.identityId || existing.memory !== target.memory || existing.instance !== target.instance) return conflict('evaluation conversation is scoped to another target');
+      } else this.sql.exec('INSERT INTO evaluation_threads(harness_id, thread_id, identity_id, memory, instance, created_at) VALUES(?, ?, ?, ?, ?, ?)', host, thread, target.identityId, target.memory, target.instance, at);
+      return { value: host };
+    });
+  }
+  evaluationAccess(host: string, thread: string, target: BindingTarget): boolean {
+    if (this.sql.exec('SELECT id FROM harnesses WHERE id = ? AND revoked = 0', host).toArray().length === 0) return false;
+    const r = this.evaluator(host, thread);
+    return r !== undefined && r.identity_id === target.identityId && r.memory === target.memory && r.instance === target.instance;
+  }
   replayRestore(hash: string, thread: string, target: BindingTarget, previous: string, request: string): BindingResult<ThreadBinding | null> {
     const host = this.harness(hash);
     if (host === undefined) return unauthorized();
@@ -114,6 +144,7 @@ export class Bindings {
       const host = this.harness(hash);
       if (host === undefined) return unauthorized();
       if (source !== "conversation") return { error: "temporary agents cannot bind a subject", status: 403 };
+      if (this.evaluator(host, thread) !== undefined) return conflict("an evaluation conversation cannot bind a subject");
       const existing = this.row(host, thread);
       if (existing !== undefined) {
         const b = binding(existing);
@@ -135,6 +166,7 @@ export class Bindings {
       if (host === undefined) return unauthorized();
       if (source !== "conversation") return { error: "temporary agents cannot inherit a subject", status: 403 };
       if (parent === child) return conflict("a fork needs a distinct thread");
+      if (this.evaluator(host, parent) !== undefined || this.evaluator(host, child) !== undefined) return conflict("evaluation conversations cannot inherit or transfer subject context");
       const prior = this.row(host, child);
       const from = this.row(host, parent);
       if (prior !== undefined) {

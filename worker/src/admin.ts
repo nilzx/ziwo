@@ -1,9 +1,10 @@
+import { personaAdminRoute, servePersonaAdmin } from "./persona-api";
 // The admin API: what the owner of a deployment uses to run it. Every route
 // needs the bearer admin secret and is not there without one
 // (adminSecretState): ADMIN_SECRET when it counts (adminSecretOf), else one
 // set on the admin page. /admin/setup alone needs no credential: it says
 // which of the two there is, and sets the second while that is allowed. No
-// route but export returns what a memory says: figures, ids, names,
+// legacy memory route but export returns what a memory says: figures, ids, names,
 // settings, the check report and the clients granted access only.
 
 import { directoryName, type Listed, type StoredSecret } from "./directory";
@@ -26,7 +27,7 @@ export interface Note {
   auth?: "ok" | "missing" | "rejected";
   // Which credential was weighed: a memory's fixed token, an OAuth access
   // token, or, on the consent page, the token or the admin secret.
-  cred?: "token" | "oauth" | "admin" | "harness";
+  cred?: "token" | "oauth" | "admin" | "harness" | "evaluation";
   protocol?: string;
   // What an MCP request asked for, as one of a fixed list of words.
   rpc?: string;
@@ -332,7 +333,7 @@ export async function serveAdmin(request: Request, env: Env, parts: string[], no
   if (parts.length === 3 && parts[2] === "setup" && (request.method === "GET" || request.method === "POST")) {
     return serveSetup(request, env, note);
   }
-  let action: Action | "list" | "harness" | undefined;
+  let action: Action | "list" | "harness" | "persona" | undefined;
   let name = "";
   let grant = "";
   if (parts[2] === "memories") {
@@ -349,6 +350,7 @@ export async function serveAdmin(request: Request, env: Env, parts: string[], no
     }
   }
   if (harnessAdminRoute(parts, request.method)) action = "harness";
+  if (personaAdminRoute(parts, request.method)) action = "persona";
   if (action === undefined) return notFound();
   let state: AdminSecretState;
   try {
@@ -371,8 +373,9 @@ export async function serveAdmin(request: Request, env: Env, parts: string[], no
     }
   }
   if (note.auth !== "ok") return unauthorized();
-  if (action !== "list" && action !== "harness" && !validName(name)) return json(400, { error: invalidNameMessage(name) });
+  if (action !== "list" && action !== "harness" && action !== "persona" && !validName(name)) return json(400, { error: invalidNameMessage(name) });
   try {
+    if (action === "persona") return await servePersonaAdmin(request, env, parts);
     if (action === "harness") return await serveHarnessAdmin(request, env, parts);
     if (action === "list") return await list(env);
     if (action === "grants" || action === "revoke") return await serveGrants(request, env, name, grant);

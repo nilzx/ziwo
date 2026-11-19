@@ -1,6 +1,6 @@
 # ziwo on Cloudflare Workers: specification
 
-This document describes how the Worker implementation of ziwo behaves, for a developer or an AI agent who wants to operate, extend or audit a deployment. It describes the development code in `worker/` as of 2026-11-19. The stable-identity and host-binding foundation is unreleased; its API and limitations are detailed in [Identity and bindings](identity-bindings.md). Where it states a figure that was measured, it says when and under what conditions; where something has not been measured, it says so.
+This document describes how the Worker implementation of ziwo behaves, for a developer or an AI agent who wants to operate, extend or audit a deployment. It describes the development code in `worker/` as of 2026-11-19. The identity, host-binding and persona foundations are unreleased; their APIs and limitations are detailed in [Identity and bindings](identity-bindings.md) and [Persona initialization and revision](persona.md). Where it states a figure that was measured, it says when and under what conditions; where something has not been measured, it says so.
 
 ziwo is an autobiographical memory for an AI: it records what the AI lived through, felt and learned, not the state of a project. It is served over MCP (the Model Context Protocol). Several formats here come from an earlier implementation in Go, which was removed from the repository on 2026-11-13 and is in its history up to commit `a4a8bab`; logs and exports it wrote are still read. OAuth is described in more depth, with its sources, in [worker/docs/oauth-notes.md](../worker/docs/oauth-notes.md).
 
@@ -65,7 +65,9 @@ Not on the path of an MCP request: the `Directory`, the `Guard`, the admin API, 
 | `/` and `/_page/*` | Worker | The admin page: static files, `GET` and `HEAD` only. Reaches no Durable Object. |
 | `/<name>/mcp` | Worker, then the memory's object | MCP over Streamable HTTP. A path whose name breaks the name rule is `404`. |
 | `/admin/...` | Worker | The admin API. `404` unless the deployment has an admin secret; `/admin/setup` alone needs none. |
-| `/harness/v1/...` | Worker and Directory, with target metadata checked in Memory | Registered-host binding API; see [Identity and bindings](identity-bindings.md). No memory access or ready transition in N1. |
+| `/evaluation/v1/...` | Worker, Directory and Memory | Scoped persona evaluation snapshot reads and proposal submission; no autobiographical side effects. |
+| `/admin/persona/...` | Worker and Memory | Private user-facing proposal review, confirmation and adoption; see [Persona workflow](persona.md). |
+| `/harness/v1/...` | Worker and Directory, with target metadata checked in Memory | Registered-host binding API; see [Identity and bindings](identity-bindings.md). Binding and current-persona loading; no normal memory access or ready transition yet. |
 | `/oauth/authorize` | Worker | The consent page (`GET`) and its form (`POST`). |
 | `/oauth/token`, `/oauth/register` | Worker, OAuth library | Token and registration endpoints. |
 | `/.well-known/oauth-authorization-server` | Worker, OAuth library | RFC 8414 metadata. |
@@ -312,7 +314,9 @@ Log tables, kept for good:
 | `events` | `seq` (autoincrement), `at` (unix milliseconds), `kind`, `payload` (JSON). Triggers refuse every `UPDATE` and `DELETE`. |
 | `contents` | `id` (an item's id), `data` (JSON: `gist`, `body`, `outcome`, `feeling`, `lesson`, `people`, `pointer`, `about`, `context`, empty ones left out). Written once with the event that records the item; a trigger refuses `UPDATE`. A row can be deleted: that is how `erase` works. |
 | `meta` | Key-value pairs; see below. |
-| `identity_assignment` | One immutable ownership assignment, independent of autobiographical sessions/events. Preserved by replay and included in v2 exports. |
+| `persona_versions`, `persona_current` | Adopted versions, fixed loading text, source references and current pointer; separate from autobiographical events and preserved by rebuild. |
+| `persona_evaluations`, `persona_proposals`, `persona_confirmations` | Scoped snapshot references, concrete proposals and immutable decisions; not exported as reusable authorization. |
+| `identity_assignment` | One immutable ownership assignment, independent of autobiographical sessions/events. Preserved by replay and included in v2/v3 exports. |
 | `vector_rows` | Embeddings, packed: up to 256 vectors a row, each as signed 8-bit integers (the unit vector times 127, rounded), with the items' row numbers beside them, labelled with the model and the number of dimensions. Kept because they are expensive to recompute; not in the export. |
 
 Keys of `meta`:
@@ -593,7 +597,7 @@ A memory's name is 1 to 32 characters: lower-case letters, digits, `-` and `_`, 
 
 A fixed token is `ziwo_` followed by 32 random bytes in base64url (43 characters). It is shown once, in the answer that created it; the memory object keeps only its SHA-256. Replacing it makes the old token stop working at once. Replacing a token does not revoke OAuth grants.
 
-The instance id is drawn when a memory is created or imported. An export records its source instance, but import generates a new current instance. OAuth grants and authenticated fixed-token requests capture an instance; tool execution rejects a different one. A stable identity is separate and survives a v2 restore. See [identity migration and binding](identity-bindings.md) for the unreleased N1 APIs and legacy compatibility boundary.
+The instance id is drawn when a memory is created or imported. An export records its source instance, but import generates a new current instance. OAuth grants and authenticated fixed-token requests capture an instance; tool execution rejects a different one. A stable identity is separate and survives a v2/v3 restore. See [identity migration and binding](identity-bindings.md) for the unreleased N1 APIs and legacy compatibility boundary.
 
 ### The admin secret
 
@@ -664,7 +668,7 @@ The admin API sends and takes an export **in the clear**: the event log and what
 - `token_sha256` is the memory's token hash; an imported memory answers to the same token. Without it, the import draws a new token and shows it once.
 - Derived tables and vectors are not exported; they are rebuilt and re-embedded.
 
-The export is built inside one synchronous call to the object, so it describes one state of the memory. The example above is legacy v1. Unassigned, unrestored legacy stores retain that format; new identities and restored legacy sources use v2. Its identity/provenance header seeds the hash chain, including for an empty log; see [Backup version 2](identity-bindings.md#backup-version-2). Default settings still omit `settings`. Go v1 exports remain readable; older releases cannot read v2 exports.
+The export is built inside one synchronous call to the object, so it describes one state of the memory. The example above is legacy v1. Unassigned, unrestored legacy stores retain that format; new identities and restored legacy sources use v2. Its identity/provenance header seeds the hash chain, including for an empty log; see [Backup version 2](identity-bindings.md#backup-version-2). Default settings still omit `settings`. Go v1 exports remain readable; older releases cannot read v2 exports. Stores with adopted persona history use [v3](persona.md#backup-version-3), which protects and validates the identity and persona bundle together; v1/v2 imports remain persona-uninitialized.
 
 An import checks the whole file before anything is written: the header, every line, the chain, unique `seq`s and content ids, the footer's count and head, the settings. It then stores the events with their `seq` and `at`, appends a `restore` event, and replays the log, in one transaction; if the replay fails, nothing is kept. For 7 days after a restore, `get_context` tells the model that the memory was brought back and from an export of when.
 

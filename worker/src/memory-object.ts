@@ -1,3 +1,4 @@
+import { Personas, PersonaError, personaOutcome } from "./store/persona";
 import { DurableObject } from "cloudflare:workers";
 import { clip, InvalidInput, parseSpan, parseWhen, queryParts, type RememberRequest, trimSpace } from "./memory/clean";
 import type { AmendRequest, EntryRequest, EraseRequest, ReflectView } from "./memory/amend";
@@ -147,6 +148,23 @@ export class Memory extends DurableObject<Env> {
   get service(): Service {
     return this.parts.service;
   }
+
+  private get personas(): Personas {
+    if (this.identityInfo() === 'unknown') throw new PersonaError(404, 'subject is unavailable');
+    // Build the store before accessing its separate persona tables.
+    void this.store;
+    return new Personas(new Db(this.ctx.storage.sql), this.ctx.storage);
+  }
+  startEvaluation(input: { id: string; harnessId: string; threadId: string; requestId: string; identityId: string; instance: string }, tokenHash: string) {
+    return personaOutcome(() => this.personas.start(input, tokenHash, this.now()));
+  }
+  evaluationAuth(id: string, tokenHash: string) { return personaOutcome(() => this.personas.authenticate(id, tokenHash)); }
+  readEvaluation(id: string, tokenHash: string, offset: number, limit: number) { return personaOutcome(() => this.personas.read(id, tokenHash, offset, limit)); }
+  proposePersona(id: string, tokenHash: string, input: unknown) { return personaOutcome(() => this.personas.propose(id, tokenHash, input, this.now())); }
+  reviewPersona(id: string) { return personaOutcome(() => this.personas.review(id)); }
+  confirmPersona(id: string, input: unknown) { return personaOutcome(() => this.personas.confirm(id, input, this.now())); }
+  adoptPersona(id: string, input: unknown) { return personaOutcome(() => this.personas.adopt(id, input, this.now())); }
+  loadPersona(identityId: string, instance: string) { return personaOutcome(() => this.personas.load(identityId, instance)); }
 
   private get emb(): Embedding | null {
     if (this.embedding === undefined) {
@@ -757,6 +775,7 @@ export class Memory extends DurableObject<Env> {
       // On SQLite storage this empties the database at once and atomically;
       // the promise only reports that the write was confirmed.
       void this.ctx.storage.deleteAll();
+      if (err instanceof PersonaError) return { invalid: `not a usable export: ${err.message}` };
       if (err instanceof ReplayError) return { invalid: `not a usable export: ${err.message}` };
       throw err;
     }

@@ -1,6 +1,6 @@
 # Stable identities and host conversation bindings
 
-This describes the N1 foundation in the development branch. It has not been deployed or released. Persona initialization, history backfill, and a Codex adapter are separate stages. The new binding API always returns `canRun: false`; it does not grant access to autobiographical memory.
+This describes the N1 foundation in the development branch. It has not been deployed or released. The [N2 persona service](persona.md) adds independent initialization and version loading. History backfill and a Codex adapter remain separate stages. The new binding API always returns `canRun: false`; it does not grant access to autobiographical memory.
 
 ## Identity and instance
 
@@ -46,7 +46,7 @@ SHA256("ziwo-export-v2\n" + goCompact(header))
 
 Subsequent event links use the existing algorithm. The footer repeats the final link, including for an empty event log. Header fields therefore participate in the integrity check. Duplicate top-level header keys and noncanonical key casing are rejected. The hash chain detects corruption and modifications that do not recompute it; it is not a signature establishing who supplied a backup.
 
-Restoring a v2 backup preserves its identity assignment and generates a new data instance. A v1 restore retains its original source through subsequent v2 exports, even before migration. Settings retain their existing behavior. The encrypted `.ziwo-export` envelope is unchanged. Older releases that only accept v1 cannot import v2 backups; do not downgrade them by deleting identity fields.
+Restoring a v2 backup preserves its identity assignment and generates a new data instance. A v1 restore retains its original source through subsequent v2 exports, even before migration. Settings retain their existing behavior. Stores with adopted persona history use [v3](persona.md#backup-version-3); v2 remains the format for assigned stores without adopted persona history. The encrypted `.ziwo-export` envelope is unchanged. Older releases that only accept v1 cannot import v2 backups; do not downgrade them by deleting identity fields.
 
 Memory backups do not contain host credentials or conversation-binding authority. Those live in the deployment's Directory storage. Restoring data requires an explicit association for each affected binding; it never follows a reused name automatically. Recovering a lost registry is a separate administrative problem: registering a new host is not proof that an old conversation is unbound.
 
@@ -87,7 +87,7 @@ The target object is checked before binding/association and on every returned bi
 
 ## Initialization and compatibility limits
 
-N1 records `bound_initializing`. The schema reserves `ready`, but no public endpoint can set it; persona loading and required backfill must be implemented before that transition is available. A binding response always has `canRun: false` in this stage. No new endpoint reads memory contents or creates memory sessions.
+N1 records `bound_initializing`. The schema reserves `ready`, but no public endpoint can set it; persona initialization and required backfill must complete before that transition is available. N2 now provides [current persona loading](persona.md#loading-and-invalidation), while backfill and ready transition remain pending. A binding response always has `canRun: false` in this stage. The binding endpoints do not read memory contents or create memory sessions. N2 has separate scoped evaluation endpoints that read a fixed snapshot without autobiographical side effects.
 
 Existing fixed-token/OAuth MCP connections keep their previous per-memory behavior and are not automatically migrated to host bindings. They do not provide the new conversation-level isolation or persona sequencing. Fixed-token authentication now captures the data instance in the same object call, and tool execution rechecks it, closing a deletion/recreation race.
 

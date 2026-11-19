@@ -1,3 +1,4 @@
+import { serveEvaluation } from "./persona-api";
 // The Worker in front of the memories. It holds no state: it routes a request
 // to the memory its path names, checks the memory's fixed token with the
 // memory's Durable Object or an OAuth access token with KV (oauth.ts), and
@@ -229,8 +230,8 @@ async function route(request: Request, env: Env, ctx: ExecutionContext | undefin
   if (path === "/healthz") return healthz(request);
   // The admin page: static files, never a Durable Object.
   if (isPagePath(path)) return servePage(request, path);
-  if (path.startsWith("/harness/v1/")) {
-    try { return await serveHarness(request, env, path, note); }
+  if (path.startsWith("/harness/v1/") || path.startsWith("/evaluation/v1/")) {
+    try { return path.startsWith("/evaluation/") ? await serveEvaluation(request, env, path, note) : await serveHarness(request, env, path, note); }
     catch (err) {
       logLine({ msg: "harness unavailable", error: err instanceof Error ? err.name : "unknown" });
       return plain(503, "the harness registry is unavailable; retry without changing the binding");
