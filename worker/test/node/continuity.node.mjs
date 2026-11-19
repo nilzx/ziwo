@@ -165,3 +165,19 @@ test('invalid judge output is retained but cannot produce a success summary', as
   await assert.rejects(experiment.run(corpus, candidate, artifacts));
   assert.ok([...artifacts.files.keys()].some(k => k.startsWith('judge-'))); assert.equal(artifacts.files.has('summary.json'), false); assert.equal(artifacts.files.get('environment.json').personaAdopted, false); await experiment.close();
 });
+
+test('generation and blinded judgment use distinct requested models and reject mismatched start', async () => {
+  const { corpus, candidate } = fixture(); const fake = new FakeServer(), artifacts = new MemoryArtifacts();
+  const experiment = await new ContinuityExperiment({ serverFactory: async () => fake, model: 'gpt-6.2-sol', judgeModel: 'gpt-6.1-terra' }).open();
+  const result = await experiment.run(corpus, candidate, artifacts); await experiment.close();
+  assert.equal(result.metadata.model, 'gpt-6.2-sol'); assert.equal(result.metadata.judgeModel, 'gpt-6.1-terra');
+  const starts = fake.calls.filter(c => c.method === 'thread/start');
+  for (const start of starts) assert.equal(start.params.model, start.params.developerInstructions.includes('independent blinded evaluator') ? 'gpt-6.1-terra' : 'gpt-6.2-sol');
+  const judgeThreads = new Set([...fake.threads].filter(([, instructions]) => instructions.includes('independent blinded evaluator')).map(([id]) => id));
+  for (const turn of fake.calls.filter(c => c.method === 'turn/start')) assert.equal(turn.params.model, judgeThreads.has(turn.params.threadId) ? 'gpt-6.1-terra' : 'gpt-6.2-sol');
+  const mismatch = new FakeServer(), original = mismatch.request.bind(mismatch);
+  mismatch.request = async (method, params) => { const response = await original(method, params); return method === 'thread/start' ? { ...response, model: 'unexpected' } : response; };
+  const failed = new MemoryArtifacts(), bad = await new ContinuityExperiment({ serverFactory: async () => mismatch }).open();
+  await assert.rejects(bad.run(corpus, candidate, failed), /actual model does not match/);
+  assert.equal(failed.files.has('summary.json'), false); await bad.close();
+});

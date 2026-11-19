@@ -4,6 +4,8 @@ This unreleased reference workflow uses Codex App Server to extract a traceable 
 
 The bundled fixture is entirely authored synthetic dialogue. It is useful for exercising provenance checks and measurement, but is not observed behavior of a real subject. Its scores cannot establish real-persona continuity.
 
+For evidence-limited new subjects and a frozen cross-model comparison, see [formation and environment comparisons](persona-evolution.md). Those separate tools keep the evidence requirements of this A/B/C workflow intact.
+
 ## Workflow
 
 1. Select one stable identity and an authorized material scope. Preserve existing natural behavior before collecting a long self-description. Do not scan unrelated chats or infer ownership from a name.

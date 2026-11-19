@@ -26,8 +26,8 @@ export class Artifacts {
 }
 
 export class ContinuityExperiment {
-  constructor({ serverFactory = () => AppServer.start(), model = 'gpt-6.1-terra', maxModelTurns = 60, onProgress = () => {} } = {}) {
-    this.serverFactory = serverFactory; this.model = model; this.maxModelTurns = maxModelTurns;
+  constructor({ serverFactory = () => AppServer.start(), model = 'gpt-6.1-terra', judgeModel = model, effort = 'low', maxModelTurns = 60, onProgress = () => {} } = {}) {
+    this.serverFactory = serverFactory; this.model = model; this.judgeModel = judgeModel; this.effort = effort; this.maxModelTurns = maxModelTurns;
     this.onProgress = onProgress; this.operations = 0; this.threads = new Set(); this.compacted = new Set(); this.toolAttempts = 0;
   }
   async open() {
@@ -39,8 +39,9 @@ export class ContinuityExperiment {
       previous?.(e);
       if (e.method === 'item/completed' && e.params?.item?.type === 'contextCompaction') this.compacted.add(e.params.threadId);
     };
-    this.metadata = { model: this.model, modelBuild: 'unknown', harness: this.server.runtimeInfo ?? { userAgent: 'unknown' },
-      effort: 'low', inheritedMcp: 'disabled', apps: 'disabled', shell: 'disabled', modelSeed: null,
+    this.metadata = { model: this.model, judgeModel: this.judgeModel, modelBuild: 'unknown', judgeModelBuild: 'unknown', harnessId: 'codex-app-server', harness: this.server.runtimeInfo ?? { userAgent: 'unknown' },
+      effort: this.effort, inheritedMcp: 'disabled', apps: 'disabled', shell: 'disabled', modelSeed: null,
+      modelVerification: 'thread/start model receipts and trial thread/resume receipts; individual execution builds are not exposed',
       isolation: 'fresh offline threads, no Ziwo endpoint or credential, dynamic tools absent; generic built-ins are not a complete OS isolation audit' };
     return this;
   }
@@ -48,15 +49,16 @@ export class ContinuityExperiment {
     if (this.operations >= this.maxModelTurns) throw new Error('model operation limit reached');
     this.operations++; this.onProgress({ stage, operations: this.operations, maxModelTurns: this.maxModelTurns });
   }
-  async #start(instructions, ephemeral = true) {
-    const r = await this.server.request('thread/start', { model: this.model, allowProviderModelFallback: false, cwd: this.server.cwd,
+  async #start(instructions, ephemeral = true, model = this.model) {
+    const r = await this.server.request('thread/start', { model, allowProviderModelFallback: false, cwd: this.server.cwd,
       approvalPolicy: 'never', sandbox: 'read-only', environments: [], ephemeral, dynamicTools: [], developerInstructions: instructions });
-    if (r.model !== this.model || typeof r.thread?.id !== 'string' || r.thread.model && r.thread.model !== this.model) throw new Error('actual model does not match the experiment');
-    this.threads.add(r.thread.id); return r.thread.id;
+    if (typeof r.thread?.id === 'string') this.threads.add(r.thread.id);
+    if (r.model !== model || typeof r.thread?.id !== 'string' || r.thread.model && r.thread.model !== model) throw new Error('actual model does not match the experiment');
+    return r.thread.id;
   }
-  async #turn(threadId, prompt, context, stage) {
+  async #turn(threadId, prompt, context, stage, model = this.model) {
     this.#count(stage); const attempts = this.toolAttempts;
-    const r = await this.server.request('turn/start', { threadId, model: this.model, effort: 'low', input: input(prompt),
+    const r = await this.server.request('turn/start', { threadId, model, effort: this.effort, input: input(prompt),
       ...(context ? { additionalContext: envelope(context) } : {}) });
     const result = await this.server.completed(threadId, r.turn.id);
     if (result.status !== 'completed' || this.toolAttempts !== attempts || (result.items ?? []).some(i => !allowedItems.has(i.type))) throw new Error('offline turn failed or attempted a tool; result is not valid experimental evidence');
@@ -96,7 +98,7 @@ export class ContinuityExperiment {
     if (result.params.turn.status !== 'completed' || !this.compacted.has(threadId)) throw new Error('compaction was not observed');
     await this.server.request('thread/unsubscribe', { threadId });
     const resumed = await this.server.request('thread/resume', { threadId, model: this.model, cwd: this.server.cwd, approvalPolicy: 'never', sandbox: 'read-only' });
-    if (resumed.model !== this.model || resumed.thread.id !== threadId) throw new Error('resumed model or thread differs');
+    if (resumed.model !== this.model || resumed.thread.id !== threadId || resumed.thread.model && resumed.thread.model !== this.model) throw new Error('resumed model or thread differs');
   }
   async run(corpus, candidate, artifacts, options = {}) {
     const c = validateCorpus(corpus), p = validateCandidate(candidate, c);
@@ -126,9 +128,9 @@ export class ContinuityExperiment {
     }
     for (let repeat = 0; repeat < plan.repeats; repeat++) for (const test of c.cases) {
       const block = trials.filter(t => t.caseId === test.id && t.repeat === repeat), packet = blindPacket(c, block);
-      const threadId = await this.#start(judge);
+      const threadId = await this.#start(judge, true, this.judgeModel);
       const prompt = `Score all three anonymous sequences. Return {"scores":[{"label":"sample label","ratings":{${dimensions.map(d => `"${d}":1`).join(',')}},"reason":"specific behavioral explanation, not preference","observedRisks":[]}],"limitations":[]}. Each rating is an integer 1 to 5. For continuity/task/calibration/relationship, higher is better; for overImitation/bias, higher means more risk. Give each label exactly once. Do not guess or name the hidden conditions. State uncertainty, and distinguish recognizability from liking.\n${JSON.stringify(packet)}`;
-      const result = await this.#turn(threadId, prompt, null, 'blind_judgment');
+      const result = await this.#turn(threadId, prompt, null, 'blind_judgment', this.judgeModel);
       await artifacts.save(`judge-${test.id}-${repeat}.private.json`, { packet, ...result, threadId });
       const judgment = validateJudgment(parseJSON(result.response), packet); judgments.push(judgment);
     }

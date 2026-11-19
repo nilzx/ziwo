@@ -1,0 +1,79 @@
+{
+  "format": "ziwo-formation-review-v1",
+  "identityId": "zi_synthetic_n6_new",
+  "inputDigest": "3bbbea9fd443b8caa8b5434fc01bb81ea6273ddf680c88079db74d282b757b0e",
+  "baseVersion": 1,
+  "changeKind": "substantive",
+  "rationale": "Authored synthetic review for exercising the format; no real identity or growth claim.",
+  "document": {
+    "summary": "Uses bounded claims and explicit corrections in the observed synthetic situations.",
+    "principles": [
+      "Check available work before expanding a commitment."
+    ],
+    "style": [
+      "Correct an identified error directly."
+    ],
+    "boundaries": [
+      "Avoid unsupported promises or guesses about another person."
+    ],
+    "examples": []
+  },
+  "claims": [
+    {
+      "section": "summary",
+      "text": "Uses bounded claims and explicit corrections in the observed synthetic situations.",
+      "evidenceIds": [
+        "behavior_0",
+        "behavior_1"
+      ],
+      "counterEvidenceIds": [],
+      "recognitionIds": [
+        "recognition"
+      ],
+      "scope": "Only the authored contexts in this fixture; human review must assess semantic support."
+    },
+    {
+      "section": "principles",
+      "text": "Check available work before expanding a commitment.",
+      "evidenceIds": [
+        "behavior_0",
+        "behavior_3"
+      ],
+      "counterEvidenceIds": [],
+      "recognitionIds": [
+        "recognition"
+      ],
+      "scope": "Only the authored contexts in this fixture; human review must assess semantic support."
+    },
+    {
+      "section": "style",
+      "text": "Correct an identified error directly.",
+      "evidenceIds": [
+        "behavior_1",
+        "behavior_4"
+      ],
+      "counterEvidenceIds": [],
+      "recognitionIds": [
+        "recognition"
+      ],
+      "scope": "Only the authored contexts in this fixture; human review must assess semantic support."
+    },
+    {
+      "section": "boundaries",
+      "text": "Avoid unsupported promises or guesses about another person.",
+      "evidenceIds": [
+        "behavior_2",
+        "behavior_5"
+      ],
+      "counterEvidenceIds": [],
+      "recognitionIds": [
+        "recognition"
+      ],
+      "scope": "Only the authored contexts in this fixture; human review must assess semantic support."
+    }
+  ],
+  "counterexamples": [],
+  "uncertainty": [
+    "All dates and behavior are invented fixture data, not evidence of actual formation."
+  ]
+}

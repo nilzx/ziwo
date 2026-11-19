@@ -1,6 +1,6 @@
 # Persona initialization and revision
 
-This describes the unreleased N2 service foundation. It separates adopted persona data from autobiographical memory and provides scoped evaluation, exact-proposal confirmation, atomic adoption, and current-version loading. The [N3 activation service](activation.md) now supplies gated history backfill and initialization readiness. The Codex adapter and reliable per-turn synchronization remain pending.
+This describes the unreleased N2 service foundation. It separates adopted persona data from autobiographical memory and provides scoped evaluation, exact-proposal confirmation, atomic adoption, and current-version loading. The [activation service](activation.md) supplies gated history backfill and initialization readiness. [Per-turn synchronization](turn-sync.md) and an optional [Codex reference client](../adapters/codex/README.md) are implemented; native client and full coding-workspace integration remain separate work. [Offline formation reviews](persona-evolution.md) complement this service without granting adoption authority.
 
 ## Ownership and capabilities
 
@@ -15,7 +15,7 @@ An adopted persona belongs to the same stable identity as its memory partition. 
 
 A registered host must obtain the user's target selection and attest that the evaluator is a fresh, independent conversation without injected Ziwo persona or memory. The server rejects already-bound conversations, temporary/inherited sources, target changes, and subject binding/forking involving a registered evaluator. The role reservation is permanent within that host namespace and thread. A failed start can leave this conservative reservation in place; retry the same target or create a new clean conversation.
 
-**Trust boundary:** the server authenticates the host, not the truth of an arbitrary client's context claims. `source: "fresh"` is meaningful only from a trusted adapter. Host and admin credentials must remain outside model context. The private confirmation channel must represent a real user decision on the displayed proposal; a model's `approved: true` or quoted approval is never accepted as authorization. N4 must implement and verify these user-interaction and context-isolation guarantees.
+**Trust boundary:** the server authenticates the host, not the truth of an arbitrary client's context claims. `source: "fresh"` is meaningful only from a trusted adapter. Host and admin credentials must remain outside model context. The private confirmation channel must represent a real user decision on the displayed proposal; a model's `approved: true` or quoted approval is never accepted as authorization. The N4 reference client implements these user controls and isolation checks; each additional adapter must verify its own guarantees.
 
 ## Start and read an evaluation
 
@@ -88,7 +88,7 @@ After the user reviews the exact proposal, the private channel calls `POST …/c
 
 `GET /harness/v1/persona?threadId=<bound-thread>` uses the registered host credential and the original binding. It returns the current `identityId`, data `instance`, `version`, `digest`, `document` and stored `loadText`. The same adopted version yields the same loading text, including after a verified restore. Missing, damaged, wrong-owner or invalid-evidence personas fail explicitly; there is no default persona fallback.
 
-Two conversations bound to identity A receive A's newly adopted version on their next load. They remain bound to A, and A→B attempts still fail. This endpoint provides the persona side of future per-turn synchronization. The adapter must eventually check persona **and memory** before each user turn, load persona first, then memory, and only then respond. N3 finishes the service initialization gates; N4 must enforce that client workflow.
+Two conversations bound to identity A receive A's newly adopted version on their next load. They remain bound to A, and A→B attempts still fail. The [synchronization service](turn-sync.md) and reference client check persona **and memory** before each user turn, load persona first, then memory, and only then respond. This endpoint remains available for initialization and explicit current-version loading.
 
 Every snapshot input is conservatively treated as a dependency, even if the model cites only a subset. A valid base persona's source dependencies also propagate to revisions. Erasing a source, including cascaded erasure, atomically invalidates affected evaluations and proposals, revokes their tokens, and removes derived proposal documents and adopted loading text from all affected versions. Minimal IDs, fingerprints, digests and decision receipts remain for audit. Current loading then requires a newly confirmed repair; it does not fall back to an older version. Ordinary material changes also fail validity checks. Previously downloaded backups and already-delivered client context cannot be remotely erased.
 

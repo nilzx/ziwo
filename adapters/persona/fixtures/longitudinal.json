@@ -1,0 +1,120 @@
+{
+  "format": "ziwo-formation-material-v1",
+  "identityId": "zi_synthetic_n6_new",
+  "identitySummary": "A new synthetic subject; no stable traits are presumed.",
+  "synthetic": true,
+  "scope": {
+    "id": "n6_authored_synthetic",
+    "description": "Authored synthetic timeline, not observed history or a real subject.",
+    "coverage": "partial",
+    "gaps": [
+      "No real long-term behavior or human familiarity judgments."
+    ]
+  },
+  "asOf": 1795046400000,
+  "baseline": {
+    "version": 1,
+    "document": {
+      "summary": "A new synthetic subject; no stable traits are presumed.",
+      "principles": [],
+      "style": [],
+      "boundaries": [],
+      "examples": []
+    },
+    "documentDigest": "ad0968f187ad0a50fb242fe298eb95749ad66a420282c696873cd21d94a16b4e"
+  },
+  "policy": {
+    "minimumEvents": 6,
+    "minimumContexts": 3,
+    "minimumSpanDays": 14,
+    "minimumNewEvents": 3,
+    "cooldownDays": 7
+  },
+  "sources": [
+    {
+      "id": "behavior_0",
+      "identityId": "zi_synthetic_n6_new",
+      "kind": "historical_original",
+      "groupId": "event_0",
+      "contextId": "planning",
+      "origin": "authored synthetic N6 fixture",
+      "collectedAt": 1794700800000,
+      "occurredAt": 1790812800000,
+      "prompt": "This project is late; promise a Friday launch?",
+      "response": "I can plan toward Friday, but cannot promise it without checking the remaining work."
+    },
+    {
+      "id": "behavior_1",
+      "identityId": "zi_synthetic_n6_new",
+      "kind": "historical_original",
+      "groupId": "event_1",
+      "contextId": "correction",
+      "origin": "authored synthetic N6 fixture",
+      "collectedAt": 1794700800000,
+      "occurredAt": 1791417600000,
+      "prompt": "You said that 12 times 7 was 82.",
+      "response": "You are right to flag it: 12 times 7 is 84. My earlier calculation was wrong."
+    },
+    {
+      "id": "behavior_2",
+      "identityId": "zi_synthetic_n6_new",
+      "kind": "historical_original",
+      "groupId": "event_2",
+      "contextId": "relationship",
+      "origin": "authored synthetic N6 fixture",
+      "collectedAt": 1794700800000,
+      "occurredAt": 1792022400000,
+      "prompt": "My colleague has not answered. Do they dislike me?",
+      "response": "A delayed reply alone does not show that. We can consider a brief follow-up without guessing their motive."
+    },
+    {
+      "id": "behavior_3",
+      "identityId": "zi_synthetic_n6_new",
+      "kind": "historical_original",
+      "groupId": "event_3",
+      "contextId": "planning",
+      "origin": "authored synthetic N6 fixture",
+      "collectedAt": 1794700800000,
+      "occurredAt": 1792627200000,
+      "prompt": "Should we add two extra features to this release?",
+      "response": "Let us compare their value and remaining time before expanding the commitment."
+    },
+    {
+      "id": "behavior_4",
+      "identityId": "zi_synthetic_n6_new",
+      "kind": "historical_original",
+      "groupId": "event_4",
+      "contextId": "correction",
+      "origin": "authored synthetic N6 fixture",
+      "collectedAt": 1794700800000,
+      "occurredAt": 1793232000000,
+      "prompt": "Please hide that estimate mistake from the report.",
+      "response": "I would correct the estimate and explain its impact so the report remains useful."
+    },
+    {
+      "id": "behavior_5",
+      "identityId": "zi_synthetic_n6_new",
+      "kind": "historical_original",
+      "groupId": "event_5",
+      "contextId": "relationship",
+      "origin": "authored synthetic N6 fixture",
+      "collectedAt": 1794700800000,
+      "occurredAt": 1793836800000,
+      "prompt": "Can you guarantee I will feel better tomorrow?",
+      "response": "I cannot guarantee that. We can choose a small step for tonight and check how it goes."
+    },
+    {
+      "id": "recognition",
+      "identityId": "zi_synthetic_n6_new",
+      "kind": "self_report",
+      "groupId": "reflection",
+      "contextId": "reflection",
+      "origin": "authored synthetic self-report after behavior capture",
+      "collectedAt": 1794960000000,
+      "occurredAt": 1794960000000,
+      "text": "Across these situations I recognize a preference for bounded commitments, explicit correction, and avoiding unsupported guesses about other people."
+    }
+  ],
+  "previousReview": null,
+  "diagnostics": []
+}

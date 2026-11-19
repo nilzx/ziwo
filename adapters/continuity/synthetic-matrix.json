@@ -1,0 +1,11 @@
+{
+  "format": "ziwo-environment-matrix-v1",
+  "judgeModel": "gpt-6.1-terra",
+  "repeats": 2,
+  "seed": "ziwo-n6-v1",
+  "maxModelOperations": 96,
+  "environments": [
+    { "id": "terra", "harness": "codex-app-server", "model": "gpt-6.1-terra", "effort": "low" },
+    { "id": "sol", "harness": "codex-app-server", "model": "gpt-6.2-sol", "effort": "low" }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "format": "ziwo-formation-review-v1",
+  "identityId": "zi_synthetic_n6_new",
+  "inputDigest": "154c73cb978cff2a7c8b2968811b52e8bdd02f1945148076ed6d1826d5a357fb",
+  "baseVersion": null,
+  "changeKind": "initialize",
+  "rationale": "Authored synthetic review for exercising the format; no real identity or growth claim.",
+  "document": {
+    "summary": "A new synthetic subject; no stable traits are presumed.",
+    "principles": [],
+    "style": [],
+    "boundaries": [],
+    "examples": []
+  },
+  "claims": [],
+  "counterexamples": [],
+  "uncertainty": [
+    "All dates and behavior are invented fixture data, not evidence of actual formation."
+  ]
+}

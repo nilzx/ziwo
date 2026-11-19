@@ -49,6 +49,8 @@ ziwo 是一个小型服务,AI 的各个客户端都连到它。现成的运行�
 
 ## 更多
 
+- [人格形成与环境对照](docs/persona-evolution.md)：开发版的证据不足处理、独立评审建议、变化分类和跨模型合成对照；不自动修订人格。
+
 - [人格提取与连续性对照](docs/continuity-evaluation.md)：开发版离线材料校验、留出 A/B/C 对照与盲评；合成试验不代表真实人格迁移已成功。
 
 - [逐轮同步与绑定工具](docs/turn-sync.md)：开发版的固定增量范围、加载确认，以及可选的 [Codex 参考入口](adapters/codex/README.md)；尚未发布。

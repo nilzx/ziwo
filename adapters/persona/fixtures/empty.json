@@ -1,0 +1,26 @@
+{
+  "format": "ziwo-formation-material-v1",
+  "identityId": "zi_synthetic_n6_new",
+  "identitySummary": "A new synthetic subject; no stable traits are presumed.",
+  "synthetic": true,
+  "scope": {
+    "id": "n6_authored_synthetic",
+    "description": "Authored synthetic timeline, not observed history or a real subject.",
+    "coverage": "partial",
+    "gaps": [
+      "No real long-term behavior or human familiarity judgments."
+    ]
+  },
+  "asOf": 1795046400000,
+  "baseline": null,
+  "policy": {
+    "minimumEvents": 6,
+    "minimumContexts": 3,
+    "minimumSpanDays": 14,
+    "minimumNewEvents": 3,
+    "cooldownDays": 7
+  },
+  "sources": [],
+  "previousReview": null,
+  "diagnostics": []
+}
