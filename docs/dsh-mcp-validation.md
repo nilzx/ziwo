@@ -1,8 +1,35 @@
 # DeepSeek Harness MCP validation
 
-## Generic turn controller follow-up — 2026-11-20
+## Current local acceptance — 2026-11-20
 
-The latest local test adds an opt-in, server-neutral `turnContext` controller to
+The confirmed capability-tier scope now passes local validation: explicit
+activation, immutable subject binding, approved same-subject persona revisions,
+per-turn incremental delivery, crash-safe history initialization, independent
+evaluation, restored-instance authorization, dual-subject isolation, and code
+work after refresh. Tests use the qianwen `deepseek-v4.1-flash` route with
+GPT-6.1 Terra organizing and independently reviewing synthetic evidence.
+
+The Worker passed 549 tests, Node tooling 161, and the connector 158. A true
+post-commit process kill resumed without duplicate history. A host-query fault
+injection with only a summary retained explicit gaps and notices without
+inventing a reconstructed memory. System-prompt replacement no longer rejects
+an intact memory delta; actual context loss still requires reloading.
+
+The strongest tier requires a trusted host's pre-construction admission hook.
+Stock dsh 0.2.2-rc.5 lacks it. An optional generic host patch and reproducible
+isolated builder are supplied in the connector repository. In a complete
+isolated host, the ordinary fork business API persisted 219 inherited events
+with the actual parent, and the child resumed the original subject/persona with
+an independent refresh. This is not a browser-click test or an upstream/global
+installation. See [capability levels](mcp-capabilities.md) for exact boundaries.
+
+Test-server deployment remains pending Cloudflare reauthentication. No live
+Worker was replaced. The earlier sections below are historical samples and
+retain their original failures and narrower acceptance scopes.
+
+## Earlier generic turn controller follow-up — 2026-11-20
+
+The first controller test added an opt-in, server-neutral `turnContext` controller to
 `dsh-mcp-connector`. Ziwo supplies structured session/identity metadata alongside
 the existing `get_context` text. See [capability levels](mcp-capabilities.md) for
 the exact contract and configuration.
