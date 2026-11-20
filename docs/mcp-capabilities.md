@@ -7,12 +7,12 @@ Ziwo supports ordinary MCP clients and clients with a generic lifecycle controll
 | Memory tools | Yes | Yes | Yes |
 | Refresh after the conversation first loads memory | Model instruction | Enforced before generation | Enforced before generation |
 | Bounded current memory summary | Yes | Yes | Yes |
-| Paged material memory changes and confirmed persona revisions | `sync_context`, client applies pages | Paging and recorded-context delivery tested locally and in Web; full lifecycle acceptance pending | Yes |
+| Paged material memory changes and confirmed persona revisions | `sync_context`, client applies pages | Passed the confirmed local capability-tier scope; deployment verification pending | Yes |
 | Independent evaluation and proposals | Scoped evaluation MCP endpoint | Separate fresh evaluator | Yes |
-| Initial chat-history activation gates | Not exposed on ordinary token/OAuth MCP | Trusted lifecycle MCP endpoint and configurable initialization gate; full acceptance pending | Yes |
+| Initial chat-history activation gates | Not exposed on ordinary token/OAuth MCP | Trusted lifecycle MCP endpoint and configurable initialization gate; local acceptance passed | Yes |
 | Authoritative persistent identity binding | No | Registered connector credential + host metadata on the lifecycle endpoint | Yes |
 
-The generic controller is reusable connector functionality, not a Ziwo-specific harness adapter. The first implementation is in `dsh-mcp-connector`. The feed, evaluation and trusted lifecycle endpoints do not make ordinary MCP equivalent to the full [activation](activation.md) and [turn synchronization](turn-sync.md) contract. Full acceptance still requires activation, persistent ownership, safe incremental delivery, and isolation evidence.
+The generic controller is reusable connector functionality, not a Ziwo-specific harness adapter. The first implementation is in `dsh-mcp-connector`. The feed, evaluation and trusted lifecycle endpoints do not make ordinary MCP equivalent to the full [activation](activation.md) and [turn synchronization](turn-sync.md) contract. The confirmed capability-tier scope passed local synthetic acceptance, including activation, persistent ownership, safe incremental delivery, and isolation. The strongest tier requires the host capabilities described below; stock dsh does not provide all of them. See the [current validation status](dsh-mcp-validation.md#current-local-acceptance--2026-11-20) for deployment and evidence limits.
 
 ## Incremental persona and memory feed
 
@@ -50,7 +50,7 @@ Each page has at most 100 material events and a soft 64 KiB change budget (one v
 
 Persona validation is cached inside the Durable Object using the identity, instance, persona revision, and material-event revision. Unchanged loads do not reread every evidence item or the full persona record. Material writes, adoption, invalidation, and restore force validation again. This cache is not persisted or exported.
 
-Real Web evidence includes the bounded summary and a subset of the trusted lifecycle workflow described below. It now includes multi-page changes, a deletion tombstone, outage blocking/recovery, and same-subject reloading after real compaction. The complete acceptance matrix is still pending. Do not treat changing a configured tool name as full persona acceptance.
+Real Web evidence includes the bounded summary and a subset of the trusted lifecycle workflow described below, including multi-page changes, a deletion tombstone, outage blocking/recovery, and same-subject reloading after real compaction. Additional isolated runs complete the confirmed local capability-tier scope. They do not establish every browser path, another Harness, or real long-term continuity. Changing a configured tool name alone does not establish full persona acceptance.
 
 Separate local dsh headless runs verified resuming the same durable conversation
 in a new process, writing a new memory after an empty delta, and synchronizing
@@ -199,7 +199,8 @@ the same binding and incremental read position.
 A retained workflow sidecar can recover a missing context sidecar by reloading
 the same owner. Missing workflow ownership, changed endpoints, old host bindings
 without authenticated MCP conversation records, and restore reassociation are
-not silently migrated. Full acceptance across the remaining scenarios is pending.
+not silently migrated. Explicit, operator-authorized recovery is required for a
+restored instance; local recovery evidence is described above.
 
 The generic delivery controller keeps the last admitted cursor and a pending
 receipt containing only IDs, hashes and next-state scalars. It confirms exact

@@ -23,9 +23,20 @@ with the actual parent, and the child resumed the original subject/persona with
 an independent refresh. This is not a browser-click test or an upstream/global
 installation. See [capability levels](mcp-capabilities.md) for exact boundaries.
 
-Test-server deployment remains pending Cloudflare reauthentication. No live
-Worker was replaced. The earlier sections below are historical samples and
-retain their original failures and narrower acceptance scopes.
+The validated Worker was deployed to the designated test server on 2026-11-20
+at 15:40 UTC. Cloudflare reports version
+`7d7135f7-3093-415a-a9bc-b1a634c87014` at 100%, tagged
+`persona-mcp-003ba8f`. Post-deployment end-to-end validation remains pending:
+terminal requests still fail during TLS setup, before an HTTP response. After
+network recovery, an explicit browser reload of the health endpoint returned
+`ok`; the management API also remains reachable. These checks do not establish
+remote MCP accessibility from the test process or synchronization correctness.
+
+The first synthetic host registration returned a network error without a
+response; its remote outcome is unknown. No synthetic subjects were created
+and no remote model runs began. Further writes stopped, and the fixture setup
+now saves planned names before requests. The earlier sections below are
+historical samples and retain their original failures and narrower scopes.
 
 ## Earlier generic turn controller follow-up — 2026-11-20
 
