@@ -18,6 +18,7 @@ import { Memory } from "./memory-object";
 import { challenge, isOAuthPath, isOAuthToken, issuerOf, oauthAccess, serveOAuth } from "./oauth";
 import { isPagePath, servePage } from "./page";
 import { buildServer } from "./mcp/server";
+import { serveLifecycleMcp } from './mcp/lifecycle';
 import { clipText, type LogFields, logLine } from "./log";
 import { serveHarness } from "./harness";
 
@@ -238,6 +239,9 @@ async function route(request: Request, env: Env, ctx: ExecutionContext | undefin
     }
   }
   // /<name>/mcp
+  if (parts.length === 4 && parts[2] === 'agent' && parts[3] === 'mcp' && validName(parts[1]!)) {
+    return serveLifecycleMcp(request, env, parts[1]!, note);
+  }
   if (parts.length === 3 && parts[0] === "" && parts[2] === "mcp" && validName(parts[1]!)) {
     return serveMemory(request, env, parts[1]!, note);
   }

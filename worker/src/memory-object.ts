@@ -1,9 +1,9 @@
-import { Activations } from "./store/activation";
+import { Activations, type ActivationReadinessCache } from "./store/activation";
 import { Sync } from "./store/sync";
 import { check as checkTool, tools as toolDefinitions } from "./mcp/tools";
 import { z } from "zod";
 import type { ThreadBinding } from "./bindings";
-import { Personas, PersonaError, personaOutcome, type PersonaLoadCache } from "./store/persona";
+import { digest, Personas, PersonaError, personaOutcome, type PersonaLoadCache } from "./store/persona";
 import { ContextSync } from './store/context-sync';
 import { DurableObject } from "cloudflare:workers";
 import { clip, InvalidInput, parseSpan, parseWhen, queryParts, type RememberRequest, trimSpace } from "./memory/clean";
@@ -147,6 +147,7 @@ export class Memory extends DurableObject<Env> {
   // The memory's instance id, once read: see instance.
   private instanceId?: string;
   private readonly personaLoadCache: PersonaLoadCache = {};
+  private readonly activationReadiness: ActivationReadinessCache = new Map();
 
   private get parts(): { store: Store; service: Service } {
     if (this.built === undefined) {
@@ -175,6 +176,38 @@ export class Memory extends DurableObject<Env> {
       const personas = this.personas;
       return new ContextSync(new Db(this.ctx.storage.sql), personas).read(input, instance);
     }));
+  }
+  mcpContext(binding: ThreadBinding, turn: string, input: unknown) {
+    return JSON.stringify(personaOutcome(() => {
+      const personas = this.personas, db = new Db(this.ctx.storage.sql);
+      new Activations(db, this.ctx.storage, this.store, this.service, this.activationReadiness).readySession(binding);
+      return new ContextSync(db, personas).read(input, binding.instance, { scope: digest([binding.harnessId, binding.threadId]), turn });
+    }));
+  }
+  mcpMemoryTool(binding: ThreadBinding, turn: string, cursor: string, requestId: string, name: string, args: Record<string, unknown>, meaning?: QueryVector) {
+    return JSON.stringify(personaOutcome(() => this.ctx.storage.transactionSync(() => {
+      const personas = this.personas, db = new Db(this.ctx.storage.sql);
+      const sessionId = new Activations(db, this.ctx.storage, this.store, this.service, this.activationReadiness).readySession(binding);
+      const scope = digest([binding.harnessId, binding.threadId]);
+      new ContextSync(db, personas).authorize(cursor, binding.identityId, binding.instance, scope, turn);
+      if (!/^[A-Za-z0-9_.:-]{1,200}$/.test(requestId)) throw new PersonaError(400, 'a stable requestId is required');
+      const def = toolDefinitions.find(d => d.name === name && d.name !== 'get_context');
+      if (!def || Object.keys(args).some(k => k === 'session_id' || !def.fields.some(f => f.name === k))) throw new PersonaError(400, 'invalid bound memory arguments');
+      const checked = checkTool(def, { ...args, ...(def.fields.some(f => f.name === 'session_id') ? { session_id: sessionId } : {}) }, 'ziwo-mcp');
+      if ('invalid' in checked) throw new PersonaError(400, checked.invalid);
+      const rid = digest(['mcp', scope, binding.instance, requestId]), fingerprint = digest([name, args]);
+      const prior = db.first('SELECT fingerprint FROM sync_calls WHERE id = ?', rid);
+      if (prior) {
+        if (prior.fingerprint !== fingerprint) throw new PersonaError(409, 'requestId was reused with different arguments');
+        return { text: 'This request already completed and was not repeated. Use a new read request if its result is needed.', replayed: true };
+      }
+      const tool = checked.ok.tool === 'recall' && meaning !== undefined ? { ...checked.ok, meaning } : checked.ok;
+      const result = this.answer(tool, binding.instance);
+      if ('invalid' in result) throw new PersonaError(400, result.invalid);
+      if ('gone' in result) throw new PersonaError(409, 'bound subject is unavailable');
+      db.run('INSERT INTO sync_calls(id, fingerprint) VALUES(?, ?)', rid, fingerprint);
+      return result;
+    })));
   }
   startEvaluation(input: { id: string; harnessId: string; threadId: string; requestId: string; identityId: string; instance: string }, tokenHash: string) {
     return personaOutcome(() => this.personas.start(input, tokenHash, this.now()));

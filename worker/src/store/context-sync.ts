@@ -16,6 +16,7 @@ const cursorSchema = z.object({
   v: z.literal(1), owner: z.string(), instance: z.string(),
   from: ordinal, after: ordinal, upper: ordinal, complete: z.boolean(),
   persona: z.string(),
+  scope: z.string().optional(), turn: z.string().optional(),
 }).strict();
 type Cursor = z.infer<typeof cursorSchema>;
 function fail(message: string): never { throw new PersonaError(409, message); }
@@ -46,7 +47,16 @@ export class ContextSync {
     if (c.from > c.after || c.after > c.upper || (c.complete && c.after !== c.upper)) fail('invalid sync cursor range');
     return c;
   }
-  read(raw: unknown, expectedInstance?: string): Record<string, unknown> {
+  authorize(raw: string, owner: string, instance: string, scope: string, turn: string): void {
+    const key = this.db.getMeta(metaTokenHash);
+    if (!key) fail('memory is unavailable');
+    const cursor = this.decode(raw, key);
+    if (cursor.owner !== owner || cursor.instance !== instance || cursor.scope !== scope || cursor.turn !== turn || !cursor.complete) {
+      fail('load all context pages for this conversation and user turn before using memory tools');
+    }
+    if (cursor.upper > materialRevision(this.db)) fail('context receipt is outside the current history');
+  }
+  read(raw: unknown, expectedInstance?: string, delivery?: { scope: string; turn: string }): Record<string, unknown> {
     const parsed = contextSyncInput.safeParse(raw);
     if (!parsed.success) throw new PersonaError(400, 'invalid context synchronization request');
     const p = parsed.data, owner = readIdentity(this.db)?.id, instance = this.db.getMeta(metaInstance);
@@ -55,13 +65,16 @@ export class ContextSync {
     if (!key) fail('memory is unavailable');
     const prior = p.cursor === undefined ? undefined : this.decode(p.cursor, key);
     if (prior && (prior.owner !== owner || prior.instance !== instance)) fail('sync cursor belongs to a different subject or instance; rebinding is forbidden');
+    if (prior && prior.scope !== delivery?.scope) fail('sync cursor belongs to another conversation or access mode');
     const current = materialRevision(this.db);
     if (prior && prior.upper > current) fail('sync cursor is outside the current history; reload is required');
     const loaded = this.db.first('SELECT version FROM persona_current WHERE singleton = 1') === undefined ? undefined : this.personas.load(owner, instance);
+    if (delivery !== undefined && loaded === undefined) fail('the bound subject has no adopted persona');
     const persona = loaded === undefined ? { status: 'uninitialized' as const }
       : { status: 'adopted' as const, version: loaded.version, digest: loaded.digest, document: loaded.document };
     const personaMark = persona.status === 'adopted' ? digest([persona.version, persona.digest]) : 'uninitialized';
     const continuing = prior !== undefined && !prior.complete && !p.reload;
+    if (continuing && prior.turn !== delivery?.turn) fail('finish or reload the incomplete page set in its owning user turn');
     const from = p.reload || prior === undefined ? 0 : continuing ? prior.from : prior.after;
     const after = p.reload || prior === undefined ? 0 : prior.after;
     const upper = continuing ? prior.upper : current;
@@ -94,7 +107,7 @@ export class ContextSync {
     }
     const more = this.db.first(`SELECT 1 AS more FROM events WHERE seq > ? AND seq <= ? AND ${materialKinds} LIMIT 1`, next, upper) !== undefined;
     if (!more) next = upper;
-    const cursor = this.encode({ v: 1, owner, instance, from, after: next, upper, complete: !more, persona: personaMark }, key);
+    const cursor = this.encode({ v: 1, owner, instance, from, after: next, upper, complete: !more, persona: personaMark, ...delivery }, key);
     return {
       schema_version: 1, identity: { id: owner, instance }, cursor, complete: !more,
       from: after, through: next, upper, changes,

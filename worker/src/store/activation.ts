@@ -30,6 +30,7 @@ const recordSchema = z.object({ id: hash, identityId: id, harnessId: id, threadI
   loaded: loadedSchema, startFingerprint: hash, createdAt: index, noticeAcknowledged: z.boolean(), resolvedGaps: z.array(id).max(100),
 }).strict();
 export type Activation = z.infer<typeof recordSchema>;
+export type ActivationReadinessCache = Map<string, { revision: number; owner: string; instance: string; activation: string; sessionId: string }>;
 const receiptSchema = z.object({ id: hash, sourceFingerprint: hash, decisionFingerprint: hash, memoryId: id.nullable(), material: z.enum(['original', 'summary']), at: index }).strict();
 type Receipt = z.infer<typeof receiptSchema>;
 const requestSchema = z.object({ id: hash, fingerprint: hash }).strict();
@@ -45,8 +46,8 @@ const decision = z.discriminatedUnion('action', [
   z.object({ itemId: id, action: z.literal('remember'), memory: memoryInput }).strict(),
   z.object({ itemId: id, action: z.literal('skip'), reason: z.enum(['not_memorable', 'duplicate', 'summary_only', 'irrelevant']) }).strict(),
 ]);
-const batchInput = common.extend({ requestId: id, decisions: z.array(decision).min(1).max(20) }).strict();
-const finishInput = common.extend({ requestId: id, resolveGaps: z.array(id).max(100).default([]) }).strict();
+export const batchInput = common.extend({ requestId: id, decisions: z.array(decision).min(1).max(20) }).strict();
+export const finishInput = common.extend({ requestId: id, resolveGaps: z.array(id).max(100).default([]) }).strict();
 const anchorInput = common.extend({ requestId: id, beforeBoundaryId: id, cutoff: anchor, status: z.literal('completed'), readable: z.literal(true) }).strict();
 const reopenInput = common.extend({ requestId: id, beforeBoundaryId: id }).strict();
 function fail(message: string, status: 400 | 403 | 404 | 409 | 413 = 409): never { throw new PersonaError(status, message); }
@@ -103,7 +104,7 @@ export function exportActivations(db: Db): ActivationBackup | undefined {
     requests: db.all('SELECT id, fingerprint FROM activation_requests ORDER BY id') }, owner);
 }
 export class Activations {
-  constructor(private readonly db: Db, private readonly storage: DurableObjectStorage, private readonly store: Store, private readonly service: Service) {}
+  constructor(private readonly db: Db, private readonly storage: DurableObjectStorage, private readonly store: Store, private readonly service: Service, private readonly readiness?: ActivationReadinessCache) {}
   private target(b: ThreadBinding): void {
     if (readIdentity(this.db)?.id !== b.identityId || this.db.getMeta(metaInstance) !== b.instance) fail('bound subject or instance is unavailable');
   }
@@ -132,6 +133,19 @@ export class Activations {
     const receipt = parse(receiptSchema, JSON.parse(text(r.record)));
     if (receipt.sourceFingerprint !== sourceFingerprint(a, item)) fail('history source identifier was reused with changed material');
     return receipt;
+  }
+  readySession(b: ThreadBinding): string {
+    this.target(b);
+    const revision = Number(this.db.first('SELECT revision FROM activation_revision WHERE singleton = 1')?.revision ?? -1);
+    const cached = this.readiness?.get(key(b));
+    if (cached && cached.revision === revision && cached.owner === b.identityId && cached.instance === b.instance && cached.activation === b.activationId) return cached.sessionId;
+    const a = this.need(b);
+    if (!a.completed || !a.sealed || a.items.some(i => this.receipt(a, i) === undefined)) fail('initial conversation history is incomplete');
+    if (this.readiness) {
+      if (this.readiness.size >= 256) this.readiness.clear();
+      this.readiness.set(key(b), { revision, owner: b.identityId, instance: b.instance, activation: b.activationId, sessionId: a.sessionId });
+    }
+    return a.sessionId;
   }
   status(b: ThreadBinding) {
     const a = this.get(b);

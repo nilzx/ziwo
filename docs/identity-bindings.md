@@ -62,7 +62,7 @@ Admin-authenticated operations:
 | `POST /admin/harnesses/<id>/token` | Rotates the token while preserving the namespace and all bindings. The old token stops working. |
 | `DELETE /admin/harnesses/<id>` | Revokes the namespace's credential; preserves binding history. A revoked host cannot be reactivated by token rotation. |
 
-Only the token's SHA-256 is stored. Tokens use the `zwh_` prefix and are not accepted as existing MCP credentials. A newly registered host with the same display name gets a different namespace.
+Only the token's SHA-256 is stored. Tokens use the `zwh_` prefix and are not accepted as ordinary memory MCP credentials. The unreleased [trusted lifecycle MCP endpoint](mcp-capabilities.md#trusted-conversation-lifecycle-over-mcp) accepts them with connector-authenticated conversation metadata. A newly registered host with the same display name gets a different namespace.
 
 ## Conversation binding API
 

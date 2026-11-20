@@ -7,12 +7,12 @@ Ziwo supports ordinary MCP clients and clients with a generic lifecycle controll
 | Memory tools | Yes | Yes | Yes |
 | Refresh after the conversation first loads memory | Model instruction | Enforced before generation | Enforced before generation |
 | Bounded current memory summary | Yes | Yes | Yes |
-| Paged material memory changes and confirmed persona revisions | `sync_context`, client applies pages | Paging/delivery integration pending | Yes |
+| Paged material memory changes and confirmed persona revisions | `sync_context`, client applies pages | Paging and recorded-context delivery primitives implemented; full acceptance pending | Yes |
 | Independent evaluation and proposals | Scoped evaluation MCP endpoint | Separate fresh evaluator | Yes |
-| Initial chat-history activation gates | Not yet exposed on ordinary MCP | Pending | Yes |
-| Authoritative persistent identity binding | No | Local endpoint/identity pins only | Yes |
+| Initial chat-history activation gates | Not exposed on ordinary token/OAuth MCP | Trusted lifecycle MCP endpoint; controller orchestration pending | Yes |
+| Authoritative persistent identity binding | No | Registered connector credential + host metadata on the lifecycle endpoint | Yes |
 
-The generic controller is reusable connector functionality, not a Ziwo-specific harness adapter. The first implementation is in `dsh-mcp-connector`. The new read-only feed and evaluation endpoint do not yet make ordinary MCP equivalent to the full [activation](activation.md) and [turn synchronization](turn-sync.md) contract. Full acceptance still requires activation, persistent ownership, safe incremental delivery, and isolation evidence.
+The generic controller is reusable connector functionality, not a Ziwo-specific harness adapter. The first implementation is in `dsh-mcp-connector`. The feed, evaluation and trusted lifecycle endpoints do not make ordinary MCP equivalent to the full [activation](activation.md) and [turn synchronization](turn-sync.md) contract. Full acceptance still requires activation, persistent ownership, safe incremental delivery, and isolation evidence.
 
 ## Incremental persona and memory feed
 
@@ -50,7 +50,103 @@ Each page has at most 100 material events and a soft 64 KiB change budget (one v
 
 Persona validation is cached inside the Durable Object using the identity, instance, persona revision, and material-event revision. Unchanged loads do not reread every evidence item or the full persona record. Material writes, adoption, invalidation, and restore force validation again. This cache is not persisted or exported.
 
-The current generic connector example below still uses the bounded summary. **Do not replace its tool with `sync_context` yet**: safe paging, retained deltas after a failed generation, context-loss recovery and activation integration are still pending. The feed itself is covered by local protocol tests, not by the earlier real dsh summary test.
+The existing real Web evidence covers the bounded summary. Paging, recorded-context delivery and context-loss recovery now have local connector tests; full lifecycle orchestration and real Web acceptance are still pending. Do not treat changing a configured tool name as full persona acceptance.
+
+## Trusted conversation lifecycle over MCP
+
+The unreleased `/<memory>/agent/mcp` endpoint uses the same MCP tool protocol, but
+requires a registered `zwh_` connector credential. Ordinary memory tokens and
+OAuth grants remain on `/<memory>/mcp` and cannot call this endpoint. Register
+and rotate the private credential through the existing [host administration
+API](identity-bindings.md#trusted-host-credentials), outside model context.
+
+The connector attaches this namespace to `tools/call.params._meta`:
+
+```json
+{
+  "io.ziwo/conversation": {
+    "id": "persistent-conversation-id",
+    "createdAt": 1795161600000,
+    "parentId": null,
+    "temporary": false,
+    "seeded": false,
+    "turn": "host-derived-current-user-turn"
+  }
+}
+```
+
+The credential establishes a host namespace; metadata is an attestation by that
+host, not independently authenticated evidence of a physical conversation.
+Callers holding the credential can falsify host facts, so it must remain private
+to a trusted connector. Tool arguments cannot replace these fields. Conversation
+creation time and parent lineage are immutable. Temporary helpers are rejected;
+seeded context without a verified parent cannot acquire a subject. Different
+hosts may use the same local conversation ID without sharing authority.
+
+| Tool | Contract |
+| --- | --- |
+| `activate_context` | Load the confirmed persona and establish/reuse this conversation's binding. A different subject or instance is rejected before its persona is returned. |
+| `initialize_context` | Acknowledge the exact loaded persona and register the connector's fixed history manifest, supplied only in metadata. |
+| `read_initial_history` | Inspect pending IDs and decisions; use the connector's scoped history reader for originals. |
+| `process_initial_history` | Remember or explicitly skip verified items, with stable request IDs and immutable source receipts. |
+| `complete_context` | Complete only when the entire fixed manifest has decisions; gaps remain explicit. |
+| `acknowledge_persona` | Acknowledge a newly loaded version if initialization was interrupted by revision. |
+| `refresh_context` | Read all material changes and persona revisions, gated on completed initial history. |
+| Existing memory tools except `get_context` | Require this conversation's complete current-turn `cursor` and a stable `requestId`; the server supplies the bound memory session. |
+
+History metadata adds `history: {cutoff, coverage, gaps, items}` using the
+[activation manifest](activation.md) schema, at most 5,000 items and 100 gaps.
+The connector freezes this before explicit activation, retains uncertain
+requests, and presents it only to configured initialization tools. A verified
+fork inherits its parent's subject and initialization provenance on the server;
+the connector's complete fork workflow is still pending.
+
+A complete cursor is signed for the host conversation and current user turn.
+Incomplete, ordinary-MCP, other-chat, and old-turn cursors cannot authorize bound
+memory tools. A complete cursor can refresh into the next turn; unfinished pages
+must finish in their original turn or reload. Stable request IDs deduplicate
+successful memory operations without retaining a cached response body. They
+must not be reused for different arguments. No-change refreshes remain read-only,
+and do not prevent the current turn from saving new memories.
+
+A failed activation reports `structuredContent.activationEstablished=false`
+only when the server knows no binding RPC was attempted and no binding existed.
+This can release a connector's newly captured history boundary. Other errors,
+including ambiguous binding failures, do not authorize releasing that boundary.
+
+Minimal experimental connector configuration:
+
+```yaml
+runtimeMetadata:
+  namespace: io.ziwo/conversation
+  captureTools: [activate_context]
+  historyTools: [initialize_context]
+  captureRollback: { pointer: /activationEstablished, value: false }
+turnContext:
+  tool: refresh_context
+  state: { cursor: /cursor }
+  pins: [/identity/id, /identity/instance]
+  pagination: { complete: /complete, maxPages: 128 }
+  delivery:
+    reloadArguments: { reload: true }
+  maxBytes: 1048576
+```
+
+Use the trusted endpoint and private bearer credential, and deny temporary-agent
+access. This configuration is a local development primitive, not a complete
+one-step activation workflow. The first successful `refresh_context` activates
+its automatic refresh; orchestration must also guard the earlier initialization
+phase. Missing/changed sidecars, old host bindings without authenticated MCP
+conversation records, restore reassociation, and connector fork inheritance need
+explicit handling and are not silently migrated.
+
+The generic delivery controller keeps the last admitted cursor and a pending
+receipt containing only IDs, hashes and next-state scalars. It confirms exact
+content against the actual current model surface before advancing. A failed
+admission is re-read from the old position; surface replacement/compaction causes
+a full same-subject reload. This establishes recorded input, not proof that a
+model understood it. All pages must fit configured total limits before the model
+continues. Full real dsh persona acceptance remains pending.
 
 ## Independent evaluation over MCP
 

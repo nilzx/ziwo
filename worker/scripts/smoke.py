@@ -412,8 +412,8 @@ def run(w):
     desktop = Client(base, "claude", claude_token, "desktop-app")
     check("claude's token opens claude's memory", desktop.status == 200, desktop.status)
     names = desktop.tools()
-    check("it serves the eight tools",
-          sorted(names) == sorted(["get_context", "remember", "recall", "expand", "reflect", "amend", "erase", "check"]), names)
+    check("it serves the memory tools and incremental context feed",
+          sorted(names) == sorted(["sync_context", "get_context", "remember", "recall", "expand", "reflect", "amend", "erase", "check"]), names)
     ctx = desktop.tool("get_context", model="model-a")
     has("a new memory is empty", ctx, "No memories yet")
     has("and says what time it is, in UTC unless told", ctx, "(UTC)")

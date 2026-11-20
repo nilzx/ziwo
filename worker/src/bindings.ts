@@ -13,9 +13,18 @@ export interface ThreadBinding {
   updatedAt: number;
 }
 export interface BindingTarget { identityId: string; memory: string; instance: string }
+export interface McpConversationClaim { id: string; createdAt: number; parentId: string | null; temporary: boolean; seeded: boolean }
 export type BindingResult<T> = { value: T } | { error: string; status: 401 | 403 | 409 };
 
 export const bindingSchema = `
+CREATE TABLE IF NOT EXISTS mcp_conversations (
+  harness_id TEXT NOT NULL, thread_id TEXT NOT NULL, created_at INTEGER NOT NULL,
+  parent_thread_id TEXT, PRIMARY KEY(harness_id, thread_id)
+) STRICT, WITHOUT ROWID;
+CREATE TRIGGER IF NOT EXISTS mcp_conversations_no_update BEFORE UPDATE ON mcp_conversations
+BEGIN SELECT RAISE(ABORT, 'MCP conversation identity is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS mcp_conversations_no_delete BEFORE DELETE ON mcp_conversations
+BEGIN SELECT RAISE(ABORT, 'MCP conversation identity cannot be released'); END;
 CREATE TABLE IF NOT EXISTS evaluation_threads (
   harness_id TEXT NOT NULL, thread_id TEXT NOT NULL, identity_id TEXT NOT NULL,
   memory TEXT NOT NULL, instance TEXT NOT NULL, created_at INTEGER NOT NULL,
@@ -104,6 +113,33 @@ export class Bindings {
     if (host === undefined) return unauthorized();
     const row = this.row(host, thread);
     return { value: row === undefined ? null : binding(row) };
+  }
+  mcpConversation(hash: string, claim: McpConversationClaim, target: BindingTarget | null, activation: string, at: number): BindingResult<ThreadBinding | null> {
+    return this.storage.transactionSync(() => {
+      const host = this.harness(hash);
+      if (host === undefined) return unauthorized();
+      if (claim.temporary) return { error: 'temporary agents cannot access a subject conversation', status: 403 };
+      const saved = this.sql.exec<Row>('SELECT created_at, parent_thread_id FROM mcp_conversations WHERE harness_id = ? AND thread_id = ?', host, claim.id).toArray()[0];
+      if (saved && (saved.created_at !== claim.createdAt || saved.parent_thread_id !== claim.parentId)) return conflict('persistent MCP conversation identity or lineage changed');
+      const existing = this.row(host, claim.id);
+      if (target === null) {
+        if (existing && !saved) return conflict('establish the authenticated MCP conversation before using its binding');
+        return { value: existing ? binding(existing) : null };
+      }
+      if (existing && (existing.identity_id !== target.identityId || existing.instance !== target.instance || existing.memory !== target.memory)) return conflict('this conversation is bound to a different subject or instance');
+      if (!existing && claim.seeded && claim.parentId === null) return conflict('inherited context without a verified parent cannot acquire a new subject');
+      if (!existing && claim.parentId !== null) {
+        const parent = this.row(host, claim.parentId);
+        if (!parent || parent.identity_id !== target.identityId || parent.instance !== target.instance || parent.memory !== target.memory) return conflict('a fork must inherit its parent subject and instance');
+      }
+      const result = existing ? { value: binding(existing) }
+        : claim.parentId === null ? this.bind(hash, claim.id, target, activation, 'conversation', at)
+        : this.fork(hash, claim.parentId, claim.id, 'conversation', at);
+      if ('error' in result) return result;
+      if (result.value === null) return conflict('the parent conversation is unbound');
+      if (!saved) this.sql.exec('INSERT INTO mcp_conversations(harness_id, thread_id, created_at, parent_thread_id) VALUES(?, ?, ?, ?)', host, claim.id, claim.createdAt, claim.parentId);
+      return result;
+    });
   }
   private evaluator(host: string, thread: string): Row | undefined {
     return this.sql.exec<Row>('SELECT * FROM evaluation_threads WHERE harness_id = ? AND thread_id = ?', host, thread).toArray()[0];

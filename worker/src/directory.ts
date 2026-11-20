@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import type { Env } from "./index";
-import { Bindings, bindingSchema, type BindingTarget } from "./bindings";
+import { Bindings, bindingSchema, type BindingTarget, type McpConversationClaim } from "./bindings";
 
 // The one object of the directory: its name within its namespace.
 export const directoryName = "directory";
@@ -74,6 +74,9 @@ export class Directory extends DurableObject<Env> {
   revokeHarness(id: string) { return this.bindings.revoke(id); }
   rotateHarness(id: string, hash: string) { return this.bindings.rotate(id, hash); }
   threadBinding(hash: string, thread: string) { return this.bindings.read(hash, thread); }
+  mcpConversation(hash: string, claim: McpConversationClaim, target: BindingTarget | null, activation: string, at: number) {
+    return this.bindings.mcpConversation(hash, claim, target, activation, at);
+  }
   bindThread(hash: string, thread: string, target: BindingTarget, activation: string, source: string, at: number) {
     return this.bindings.bind(hash, thread, target, activation, source, at);
   }
