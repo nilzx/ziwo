@@ -7,7 +7,7 @@ Ziwo supports ordinary MCP clients and clients with a generic lifecycle controll
 | Memory tools | Yes | Yes | Yes |
 | Refresh after the conversation first loads memory | Model instruction | Enforced before generation | Enforced before generation |
 | Bounded current memory summary | Yes | Yes | Yes |
-| Paged material memory changes and confirmed persona revisions | `sync_context`, client applies pages | Passed the confirmed local capability-tier scope; deployment verification pending | Yes |
+| Paged material memory changes and confirmed persona revisions | `sync_context`, client applies pages | Passed the confirmed local capability-tier scope; remote deployment smoke passed | Yes |
 | Independent evaluation and proposals | Scoped evaluation MCP endpoint | Separate fresh evaluator | Yes |
 | Initial chat-history activation gates | Not exposed on ordinary token/OAuth MCP | Trusted lifecycle MCP endpoint and configurable initialization gate; local acceptance passed | Yes |
 | Authoritative persistent identity binding | No | Registered connector credential + host metadata on the lifecycle endpoint | Yes |

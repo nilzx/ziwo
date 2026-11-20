@@ -26,17 +26,34 @@ installation. See [capability levels](mcp-capabilities.md) for exact boundaries.
 The validated Worker was deployed to the designated test server on 2026-11-20
 at 15:40 UTC. Cloudflare reports version
 `7d7135f7-3093-415a-a9bc-b1a634c87014` at 100%, tagged
-`persona-mcp-003ba8f`. Post-deployment end-to-end validation remains pending:
-terminal requests still fail during TLS setup, before an HTTP response. After
-network recovery, an explicit browser reload of the health endpoint returned
-`ok`; the management API also remains reachable. These checks do not establish
-remote MCP accessibility from the test process or synchronization correctness.
+`persona-mcp-003ba8f`. Initial TLS failures were resolved before the remote
+end-to-end follow-up. Six real qianwen `deepseek-v4.1-flash` runs then passed
+through the same generic connector and isolated host admission build:
+
+| Run | Observed result |
+| --- | --- |
+| A1 activation | Loaded the exact user-approved synthetic persona and wrote X. |
+| A2 activation | Loaded the same subject/persona, read X, and wrote Y. |
+| B1 activation | Loaded its own approved synthetic persona and wrote an independent B marker. |
+| A1 process restart | Refreshed Y; a real attempt to activate B was rejected by the connector's group guard before a B request. |
+| A1 empty refresh | Received `from=7`, `through=7`, zero changes, then successfully wrote Z. |
+| A2 process restart | Automatically refreshed through sequence 11; actual model context contained Z and the final answer was correct without a model-initiated tool call. |
+
+Read-only storage exports confirmed that A contained no B marker and B contained
+no A markers, with each original identity and adopted persona version intact.
+Both known test subjects were then deleted and their identity routes returned
+404; the dedicated host was revoked and its old credential returned 401. The
+test proxy stopped. This remote follow-up checks deployment behavior; the wider
+persona revision, recovery, history and failure matrix remains supported by the
+local evidence above, not by these six runs alone.
 
 The first synthetic host registration returned a network error without a
-response; its remote outcome is unknown. No synthetic subjects were created
-and no remote model runs began. Further writes stopped, and the fixture setup
-now saves planned names before requests. The earlier sections below are
-historical samples and retain their original failures and narrower scopes.
+response; its remote outcome is unknown. Its random name and ID were not
+retained, so a possible orphan host record cannot be identified or revoked.
+That attempt created no known subjects and started no models. Subsequent setup
+saved names and operation states before requests, and all known objects from
+the successful run were cleaned up. The earlier sections below are historical
+samples and retain their original failures and narrower scopes.
 
 ## Earlier generic turn controller follow-up — 2026-11-20
 
