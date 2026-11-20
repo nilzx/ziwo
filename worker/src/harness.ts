@@ -20,6 +20,7 @@ const identifier = z.string().min(1).max(200).regex(/^[A-Za-z0-9_.:-]+$/);
 const target = z.object({ memory: z.string().refine(validName), identityId: identifier, instance: identifier });
 const bindInput = target.extend({ threadId: identifier, activationId: identifier, source: z.enum(["conversation", "temporary"]) }).strict();
 const restoreInput = target.extend({ threadId: identifier, previousInstance: identifier, requestId: identifier }).strict();
+const mcpRestoreInput = restoreInput.extend({ createdAt: z.number().int().safe().nonnegative(), parentThreadId: identifier.nullable() }).strict();
 const forkInput = z.object({ threadId: identifier, parentThreadId: identifier, source: z.enum(["conversation", "temporary"]) }).strict();
 
 export async function readObject(request: Request, maxBytes = 8192): Promise<unknown> {
@@ -44,13 +45,24 @@ export function harnessAdminRoute(parts: string[], method: string): boolean {
   return parts[2] === "harnesses" && (
     (parts.length === 3 && method === "POST") ||
     (parts.length === 4 && /^h_[a-f0-9-]{36}$/.test(parts[3]!) && method === "DELETE") ||
-    (parts.length === 5 && /^h_[a-f0-9-]{36}$/.test(parts[3]!) && parts[4] === "token" && method === "POST")
+    (parts.length === 5 && /^h_[a-f0-9-]{36}$/.test(parts[3]!) && ['token', 'restores'].includes(parts[4]!) && method === "POST") ||
+    (parts.length === 6 && /^h_[a-f0-9-]{36}$/.test(parts[3]!) && parts[4] === 'restores' && identifier.safeParse(parts[5]).success && method === 'DELETE')
   );
 }
 
 // Called only after the existing admin authentication and guessing limit.
 export async function serveHarnessAdmin(request: Request, env: Env, parts: string[]): Promise<Response> {
   const registry = env.DIRECTORY.getByName(directoryName);
+  if (parts[4] === 'restores') {
+    if (request.method === 'DELETE') return await registry.revokeMcpRestore(parts[3]!, parts[5]!, Date.now()) ? json(200, { revoked: parts[5] }) : notFound();
+    const parsed = mcpRestoreInput.safeParse(await readObject(request));
+    if (!parsed.success) return json(400, { error: 'an exact MCP conversation and restore target are required' });
+    const p = parsed.data;
+    if (!await targetAvailable(env, p)) return json(409, { error: 'restored subject or instance is unavailable' });
+    const result = await registry.approveMcpRestore(parts[3]!, { id: p.threadId, createdAt: p.createdAt, parentId: p.parentThreadId },
+      { memory: p.memory, identityId: p.identityId, instance: p.instance }, p.previousInstance, p.requestId, Date.now());
+    return 'error' in result ? json(result.status, { error: result.error }) : json(200, result.value);
+  }
   if (request.method === "DELETE") {
     return await registry.revokeHarness(parts[3]!) ? json(200, { revoked: parts[3] }) : notFound();
   }

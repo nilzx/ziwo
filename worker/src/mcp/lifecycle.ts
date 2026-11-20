@@ -14,6 +14,7 @@ import { digest, PersonaError } from '../store/persona';
 import { listed, tools } from './tools';
 
 export const conversationMetaKey = 'io.ziwo/conversation';
+export const recoveryMetaKey = 'io.ziwo/recovery';
 const id = z.string().min(1).max(200).regex(/^[A-Za-z0-9_.:-]+$/);
 const ordinal = z.number().int().safe().nonnegative();
 const personaReceipt = { personaVersion: ordinal, personaDigest: z.string().regex(/^[a-f0-9]{64}$/) };
@@ -66,6 +67,23 @@ export function lifecycleServer(env: Env, hash: string, target: BindingTarget): 
       persona: unwrap(await stub.loadPersona(b.identityId, b.instance)),
       activation: unwrap(await stub.activationRequest(b, 'status', undefined)) };
   }
+  server.registerTool('restore_context', {
+    title: 'Resume an explicitly approved restored instance',
+    description: 'Consume an exact restore approval already created in the private user channel. This cannot create approval, change the subject, release a binding, or reset history. The connector must independently migrate its durable pins and reload the current persona and all context before generation.',
+    inputSchema: z.object({ requestId: id }).strict(),
+    annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, (input, ctx) => result(async () => {
+    const meta = metadata(ctx), { history: _history, turn: _turn, ...claim } = meta;
+    const privateRecovery = (ctx as { mcpReq?: { _meta?: Record<string, unknown> } }).mcpReq?._meta?.[recoveryMetaKey];
+    const proof = z.object({ requestId: id }).strict().safeParse(privateRecovery);
+    if (!proof.success || proof.data.requestId !== input.requestId) throw new PersonaError(403, 'the private connector recovery controller is required');
+    // Check the restored persona before committing a route change. A race after
+    // this read still fails closed in loadingState and subsequent memory calls.
+    unwrap(await stub.loadPersona(target.identityId, target.instance));
+    const restored = await registry.restoreMcpConversation(hash, claim, target, input.requestId, Date.now());
+    if ('error' in restored) throw new PersonaError(restored.status, restored.error);
+    return { ...await loadingState(restored.value.binding), reassociation: restored.value.reassociation };
+  }));
   server.registerTool('resume_context', {
     title: 'Resume the original subject workflow',
     description: 'Inspect the original conversation binding and load its current confirmed persona and initialization progress. A verified persistent fork inherits its parent subject; an unbound root stays neutral. This never switches subjects or releases an established binding.',

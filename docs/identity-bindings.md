@@ -83,6 +83,52 @@ A persistent fork inherits a registered parent's identity and pinned instance, r
 
 Restore association verifies the existing subject, expected previous instance, and new target's identity/instance. It resets initialization without changing the identity. Successful restore request IDs and their arguments persist. Replaying an older request after later restores returns the **current** binding without rolling it back; reusing the same request ID for different arguments is refused.
 
+### Private approval for MCP recovery
+
+The generic MCP controller uses an explicit private approval, rather than giving
+model tool arguments authority to change an instance. After reviewing the exact
+conversation and restored target, the user-facing admin channel calls
+`POST /admin/harnesses/<harnessId>/restores` with:
+
+```json
+{
+  "requestId": "restore-operation-1",
+  "threadId": "persistent-conversation-id",
+  "createdAt": 1795161600000,
+  "parentThreadId": null,
+  "identityId": "zi_original_subject",
+  "memory": "restored-route",
+  "instance": "i_restored",
+  "previousInstance": "i_original"
+}
+```
+
+The authenticated MCP conversation must already exist with the exact creation
+time and parent. The target must preserve its identity and replace the expected
+old instance. Approval records are immutable; request ID reuse with changed
+arguments is rejected. `DELETE /admin/harnesses/<harnessId>/restores/<requestId>`
+revokes future consumption/replay, without undoing an already committed binding.
+Approval and revocation require admin authentication, not a connector or memory
+credential. Each conversation needs its own explicit approval; this is not
+automatic merging or migration of other writable copies.
+
+On the restored `/<memory>/agent/mcp` endpoint, `restore_context({requestId})`
+also requires connector-supplied `_meta["io.ziwo/recovery"] = {requestId}` in
+addition to the actual conversation metadata. Only the private recovery
+controller supplies that namespace. Ordinary model calls cannot supply it through
+tool arguments. The server checks the approved old and new targets in the same
+Directory transaction as the binding change, and returns a `reassociation`
+receipt containing `requestId`, `from`, `to`, and the approved conversation.
+An old MCP recovery request after a later restoration is rejected; it never
+rolls the binding back or presents an obsolete transition as current.
+
+The connector must independently journal and verify this transition before
+updating its endpoint fingerprints and instance pins. It preserves the original
+history references, clears old cursors and delivery/persona acknowledgments,
+then resumes initialization and fully reloads the restored instance before
+generation. A remote success with a lost response remains pending locally.
+Neither the receipt nor the returned persona alone proves complete loading.
+
 The target object is checked before binding/association and on every returned binding. Cross-object deletion is not one atomic transaction with Directory registration: a race can leave a binding whose `targetAvailable` is false. It remains bound and cannot run; it is not reassigned by name. Future memory calls must recheck the captured identity and instance at their point of use.
 
 ## Initialization and compatibility limits

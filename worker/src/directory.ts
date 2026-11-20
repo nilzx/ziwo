@@ -77,6 +77,13 @@ export class Directory extends DurableObject<Env> {
   mcpConversation(hash: string, claim: McpConversationClaim, target: BindingTarget | null, activation: string, at: number) {
     return this.bindings.mcpConversation(hash, claim, target, activation, at);
   }
+  approveMcpRestore(host: string, claim: Pick<McpConversationClaim, 'id' | 'createdAt' | 'parentId'>, target: BindingTarget, previous: string, request: string, at: number) {
+    return this.bindings.approveMcpRestore(host, claim, target, previous, request, at);
+  }
+  revokeMcpRestore(host: string, request: string, at: number) { return this.bindings.revokeMcpRestore(host, request, at); }
+  restoreMcpConversation(hash: string, claim: McpConversationClaim, target: BindingTarget, request: string, at: number) {
+    return this.bindings.restoreMcpConversation(hash, claim, target, request, at);
+  }
   bindThread(hash: string, thread: string, target: BindingTarget, activation: string, source: string, at: number) {
     return this.bindings.bind(hash, thread, target, activation, source, at);
   }

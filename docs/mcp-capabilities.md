@@ -96,6 +96,7 @@ hosts may use the same local conversation ID without sharing authority.
 | Tool | Contract |
 | --- | --- |
 | `resume_context` | Reload the existing subject and initialization progress. An unbound root stays neutral; a verified persistent child inherits its parent. |
+| `restore_context` | Consume an exact private recovery approval using controller-only metadata; return the same subject's restored instance and a transition receipt. Ordinary model calls cannot authorize or complete the connector migration. |
 | `activate_context` | Load the confirmed persona and establish/reuse this conversation's binding. A different subject or instance is rejected before its persona is returned. |
 | `initialize_context` | Acknowledge the exact loaded persona and register the connector's fixed history manifest, supplied only in metadata. |
 | `read_initial_history` | Inspect pending IDs and decisions; use the connector's scoped history reader for originals. |
@@ -130,6 +131,14 @@ A successful `resume_context` also reports that field when the root is still
 unbound. This releases only a pending, never successfully established history
 boundary. Other errors, including ambiguous binding failures, do not authorize
 releasing it. Bound resume responses report `activationEstablished=true`.
+
+Restored-instance association uses the separate [private recovery
+approval](identity-bindings.md#private-approval-for-mcp-recovery) and a generic
+connector recovery journal. Merely editing an endpoint, deleting a sidecar, or
+calling the model-visible tool does not migrate an activated conversation.
+After a verified transition, the initialization gate loads and acknowledges the
+restored persona before the first complete memory refresh. Failure at either
+stage prevents ordinary work.
 
 Minimal experimental connector configuration:
 

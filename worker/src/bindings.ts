@@ -14,9 +14,29 @@ export interface ThreadBinding {
 }
 export interface BindingTarget { identityId: string; memory: string; instance: string }
 export interface McpConversationClaim { id: string; createdAt: number; parentId: string | null; temporary: boolean; seeded: boolean }
+export interface McpRestoreApproval {
+  requestId: string; harnessId: string; threadId: string; createdAt: number; parentThreadId: string | null;
+  from: BindingTarget; to: BindingTarget; approvedAt: number;
+}
 export type BindingResult<T> = { value: T } | { error: string; status: 401 | 403 | 409 };
 
 export const bindingSchema = `
+CREATE TABLE IF NOT EXISTS mcp_restore_approvals (
+  harness_id TEXT NOT NULL, request_id TEXT NOT NULL, fingerprint TEXT NOT NULL, record TEXT NOT NULL,
+  PRIMARY KEY(harness_id, request_id)
+) STRICT, WITHOUT ROWID;
+CREATE TRIGGER IF NOT EXISTS mcp_restore_approvals_no_update BEFORE UPDATE ON mcp_restore_approvals
+BEGIN SELECT RAISE(ABORT, 'MCP restore approvals are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS mcp_restore_approvals_no_delete BEFORE DELETE ON mcp_restore_approvals
+BEGIN SELECT RAISE(ABORT, 'MCP restore approvals are immutable'); END;
+CREATE TABLE IF NOT EXISTS mcp_restore_revocations (
+  harness_id TEXT NOT NULL, request_id TEXT NOT NULL, at INTEGER NOT NULL,
+  PRIMARY KEY(harness_id, request_id)
+) STRICT, WITHOUT ROWID;
+CREATE TRIGGER IF NOT EXISTS mcp_restore_revocations_no_update BEFORE UPDATE ON mcp_restore_revocations
+BEGIN SELECT RAISE(ABORT, 'MCP restore revocations are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS mcp_restore_revocations_no_delete BEFORE DELETE ON mcp_restore_revocations
+BEGIN SELECT RAISE(ABORT, 'MCP restore revocations are immutable'); END;
 CREATE TABLE IF NOT EXISTS mcp_conversations (
   harness_id TEXT NOT NULL, thread_id TEXT NOT NULL, created_at INTEGER NOT NULL,
   parent_thread_id TEXT, PRIMARY KEY(harness_id, thread_id)
@@ -113,6 +133,48 @@ export class Bindings {
     if (host === undefined) return unauthorized();
     const row = this.row(host, thread);
     return { value: row === undefined ? null : binding(row) };
+  }
+  approveMcpRestore(host: string, claim: Pick<McpConversationClaim, 'id' | 'createdAt' | 'parentId'>, target: BindingTarget, previous: string, request: string, at: number): BindingResult<McpRestoreApproval> {
+    return this.storage.transactionSync(() => {
+      if (!this.sql.exec('SELECT id FROM harnesses WHERE id = ? AND revoked = 0', host).toArray().length) return conflict('a live registered connector is required');
+      if (this.sql.exec('SELECT 1 FROM mcp_restore_revocations WHERE harness_id = ? AND request_id = ?', host, request).toArray().length) return conflict('this restore approval was revoked');
+      const fingerprint = JSON.stringify([claim.id, claim.createdAt, claim.parentId, target.identityId, target.memory, target.instance, previous]);
+      const prior = this.sql.exec<{ fingerprint: string; record: string }>('SELECT fingerprint, record FROM mcp_restore_approvals WHERE harness_id = ? AND request_id = ?', host, request).toArray()[0];
+      if (prior) return prior.fingerprint === fingerprint ? { value: JSON.parse(prior.record) as McpRestoreApproval } : conflict('restore approval identifier was reused with different arguments');
+      const saved = this.sql.exec<Row>('SELECT created_at, parent_thread_id FROM mcp_conversations WHERE harness_id = ? AND thread_id = ?', host, claim.id).toArray()[0];
+      const row = this.row(host, claim.id);
+      if (!saved || !row || saved.created_at !== claim.createdAt || saved.parent_thread_id !== claim.parentId) return conflict('the original authenticated MCP conversation is required');
+      const b = binding(row);
+      if (b.identityId !== target.identityId || b.instance !== previous || b.instance === target.instance) return conflict('restore approval must preserve the subject and match its previous instance');
+      const approval: McpRestoreApproval = { requestId: request, harnessId: host, threadId: claim.id, createdAt: claim.createdAt, parentThreadId: claim.parentId,
+        from: { identityId: b.identityId, memory: b.memory, instance: b.instance }, to: target, approvedAt: at };
+      this.sql.exec('INSERT INTO mcp_restore_approvals(harness_id, request_id, fingerprint, record) VALUES(?, ?, ?, ?)', host, request, fingerprint, JSON.stringify(approval));
+      return { value: approval };
+    });
+  }
+  revokeMcpRestore(host: string, request: string, at: number): boolean {
+    if (!this.sql.exec('SELECT 1 FROM mcp_restore_approvals WHERE harness_id = ? AND request_id = ?', host, request).toArray().length) return false;
+    this.sql.exec('INSERT OR IGNORE INTO mcp_restore_revocations(harness_id, request_id, at) VALUES(?, ?, ?)', host, request, at);
+    return true;
+  }
+  restoreMcpConversation(hash: string, claim: McpConversationClaim, target: BindingTarget, request: string, at: number): BindingResult<{ binding: ThreadBinding; reassociation: McpRestoreApproval }> {
+    return this.storage.transactionSync(() => {
+      const host = this.harness(hash);
+      if (!host) return unauthorized();
+      const checked = this.mcpConversation(hash, claim, null, '', at);
+      if ('error' in checked) return checked;
+      if (checked.value === null) return conflict('restore requires an existing bound MCP conversation');
+      const row = this.sql.exec<{ record: string }>('SELECT record FROM mcp_restore_approvals WHERE harness_id = ? AND request_id = ?', host, request).toArray()[0];
+      if (!row || this.sql.exec('SELECT 1 FROM mcp_restore_revocations WHERE harness_id = ? AND request_id = ?', host, request).toArray().length) return conflict('a private, unrevoked restore approval is required');
+      const approval = JSON.parse(row.record) as McpRestoreApproval;
+      const same = (a: BindingTarget, b: BindingTarget) => a.identityId === b.identityId && a.instance === b.instance && a.memory === b.memory;
+      if (approval.threadId !== claim.id || approval.createdAt !== claim.createdAt || approval.parentThreadId !== claim.parentId || !same(approval.to, target)) return conflict('restore approval does not match this conversation and endpoint');
+      if (!same(checked.value, approval.from) && !same(checked.value, approval.to)) return conflict('this restore approval was superseded; keep the current binding');
+      const restored = this.restore(hash, claim.id, target, approval.from.instance, request, at);
+      if ('error' in restored) return restored;
+      if (!same(restored.value, target)) return conflict('this restore approval was superseded; keep the current binding');
+      return { value: { binding: restored.value, reassociation: approval } };
+    });
   }
   mcpConversation(hash: string, claim: McpConversationClaim, target: BindingTarget | null, activation: string, at: number): BindingResult<ThreadBinding | null> {
     return this.storage.transactionSync(() => {
