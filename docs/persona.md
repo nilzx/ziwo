@@ -97,7 +97,7 @@ A proposal contains the full intended document and review context:
 
 Each example, if present, has `situation`, `response`, `limits`, and `evidenceIds`. Evidence IDs must belong to this snapshot. Examples should express representative behavior with context and limits; do not copy entire source transcripts. The request limit is 64 KiB. The service returns an immutable `proposalId` and `digest`. The digest binds the evaluation, identity, instance, base version, complete proposed content, explanations, and source fingerprints. Editing anything creates a different proposal and needs a new confirmation.
 
-The user-facing channel retrieves `GET /admin/persona/<memory>/proposals/<proposalId>` using admin authentication. It returns `before`, the proposed `document`, explanations, evidence IDs/count, state, base/current versions, and staleness. It does not automatically return raw memory content. Model-written proposal text can itself contain quotations; the adapter must constrain/review those before display. This API is not a raw-memory browsing UI.
+The user-facing channel retrieves `GET /admin/persona/<memory>/proposals/<proposalId>` using admin authentication. It returns `before`, the proposed `document`, explanations, evidence IDs/count, state, base/current versions, and staleness. Compare the full `document` with `before`; the evaluator's change summary can omit or misdescribe edits. Confirm the exact reviewed document and digest, not the summary alone. It does not automatically return raw memory content. Model-written proposal text can itself contain quotations; the adapter must constrain/review those before display. This API is not a raw-memory browsing UI.
 
 After the user reviews the exact proposal, the private channel calls `POST …/confirm`:
 

@@ -52,6 +52,16 @@ Persona validation is cached inside the Durable Object using the identity, insta
 
 Real Web evidence includes the bounded summary and a subset of the trusted lifecycle workflow described below. It now includes multi-page changes, a deletion tombstone, outage blocking/recovery, and same-subject reloading after real compaction. The complete acceptance matrix is still pending. Do not treat changing a configured tool name as full persona acceptance.
 
+Separate local dsh headless runs verified resuming the same durable conversation
+in a new process, writing a new memory after an empty delta, and synchronizing
+corrections and deletion to another conversation. Two fresh evaluation sessions
+read every snapshot page and submitted proposals; actual user confirmation and
+adoption in that experiment remain pending. One evaluator's summary omitted
+changes present in its document, reinforcing the need to review the exact
+[proposal document](persona.md#propose-review-confirm-adopt). The connector's
+automatic notice now states that refresh already ran while preserving new
+memory writes; this guidance reduces, but cannot prohibit, redundant model reads.
+
 ## Trusted conversation lifecycle over MCP
 
 The unreleased `/<memory>/agent/mcp` endpoint uses the same MCP tool protocol, but
