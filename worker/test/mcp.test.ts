@@ -6,6 +6,7 @@
 import { describe, expect, it } from "vitest";
 import { goAnswers } from "./go-answers";
 import { goListing } from "./go-listing";
+import { syncInstructions } from '../src/mcp/server';
 import { refreshEachTurn, serverSpeaks, writeUnasked } from "../src/mcp/format";
 import { minute, t0 } from "./helpers";
 import { Client, createMemory, type Generation, idIn, legacy, modern, setClock, template } from "./mcp-helpers";
@@ -265,7 +266,7 @@ describe.each(generations)("%s protocol generation", (gen) => {
     expect(hello.status).toBe(200);
     const want = expectedListing();
     const result = hello.msg?.result as Record<string, unknown>;
-    expect(result.instructions).toBe(want.instructions);
+    expect(result.instructions).toBe(want.instructions + syncInstructions);
     if (gen === "old") {
       expect(result.protocolVersion).toBe(legacy);
       expect(c.sessionId).toMatch(/^zw\./);
@@ -273,7 +274,9 @@ describe.each(generations)("%s protocol generation", (gen) => {
       expect(result.supportedVersions).toContain(modern);
     }
 
-    const listed = (await c.list()) as unknown as ToolListing[];
+    const all = (await c.list()) as unknown as ToolListing[];
+    expect(all.filter(t => t.name === 'sync_context')).toHaveLength(1);
+    const listed = all.filter(t => t.name !== 'sync_context');
     expect(listed.map((t) => t.name).sort()).toEqual([...want.tools.keys()].sort());
     for (const t of listed) {
       expect(t.title, t.name).toBe(titles[t.name]);

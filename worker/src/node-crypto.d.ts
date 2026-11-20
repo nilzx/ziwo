@@ -6,5 +6,11 @@ declare module "node:crypto" {
     digest(encoding: "hex"): string;
   }
   export function createHash(algorithm: "sha256"): Hash;
+  interface Hmac {
+    update(data: string): Hmac;
+    digest(encoding: 'base64url'): string;
+  }
+  export function createHmac(algorithm: 'sha256', key: string): Hmac;
+  export function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean;
   export function randomBytes(size: number): Uint8Array;
 }

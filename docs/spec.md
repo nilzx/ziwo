@@ -955,7 +955,7 @@ On 2026-11-13, 470 Vitest tests and 107 Node tests passed, and the smoke check p
 
 ```
 src/index.ts           the Worker: routing, credentials, MCP, the access log
-src/mcp/               the eight tools, their argument checks, how answers are laid out
+src/mcp/               memory tools, incremental context sync, and scoped persona evaluation
 src/memory-object.ts   the Memory Durable Object: tool calls, admin methods, the embedding alarm, import
 src/memory/            write rules and recall (service.ts), amending and reflecting (amend.ts),
                        input checks and query splitting (clean.ts), background embedding (embedding.ts)

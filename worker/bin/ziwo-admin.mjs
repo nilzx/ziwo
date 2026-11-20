@@ -8,6 +8,7 @@
 // written, and an import is opened in memory and sent.
 
 import { constants } from "node:fs";
+import { createHash } from 'node:crypto';
 import { open as openFile, readFile } from "node:fs/promises";
 import { stdin, stderr, stdout } from "node:process";
 import { ApiError, makeApi, paramNames, reportText, sealedFileName, utcStamp } from "../page/logic.mjs";
@@ -30,6 +31,16 @@ Usage:
   ziwo-admin grants <name>            list the clients signed in to a memory (OAuth)
   ziwo-admin revoke <name> <id>       revoke one of them, by the id grants shows
   ziwo-admin delete <name> <name>     delete a memory for good: give its name twice
+  ziwo-admin persona-evaluate <name> <request-id> --fresh
+                                      create scoped MCP access for a fresh independent evaluator
+  ziwo-admin persona-review <name> <proposal-id>
+                                      show the exact persona revision and evidence for review
+  ziwo-admin persona-approve <name> <proposal-id> <digest>
+                                      approve and adopt exactly the reviewed revision
+  ziwo-admin persona-reject <name> <proposal-id> <digest>
+                                      reject exactly the reviewed revision
+  ziwo-admin persona-revoke <name> <evaluation-id>
+                                      revoke the evaluator's access
 
 Environment:
   ZIWO_URL            the deployment's address, such as https://ziwo.example.workers.dev
@@ -153,8 +164,46 @@ function printToken(token, note, address) {
   out(`address  ${address}\ntoken    ${token}\n${note}\nIt cannot be shown again: keep it now, as you would a password.`);
 }
 
+/** @param {string[]} args @param {'approve'|'reject'} decision */
+async function decidePersona(args, decision) {
+  const [name, proposalId, digest] = positional(args, 3, 'the memory, proposal id and exact reviewed digest');
+  if (!/^[a-f0-9]{64}$/.test(digest)) throw new UsageError('copy the exact digest from persona-review');
+  const { api: a } = api();
+  const p = await a.reviewPersona(name, proposalId);
+  if (p.digest !== digest || p.stale) throw new UsageError('the reviewed proposal changed or is stale; review its current contents before deciding');
+  const exact = { identityId: p.identityId, instance: p.instance, digest };
+  const confirmationId = 'cli_' + createHash('sha256').update(JSON.stringify([proposalId, digest, decision])).digest('hex');
+  await a.confirmPersona(name, proposalId, { ...exact, confirmationId, decision });
+  out(JSON.stringify(decision === 'approve' ? await a.adoptPersona(name, proposalId, exact) : { rejected: true }));
+}
+
 /** @type {Record<string, (args: string[]) => Promise<number | void>>} */
 const commands = {
+  async 'persona-evaluate'(args) {
+    const [name, requestId, fresh] = positional(args, 3, 'the memory, a request id, and --fresh for a new independent evaluation conversation');
+    if (fresh !== '--fresh') throw new UsageError('use --fresh only for an independent conversation without Ziwo persona or inherited context');
+    const { api: a } = api();
+    const target = await a.identity(name);
+    if (!target.identity?.id) throw new UsageError('assign a stable subject identity before evaluation');
+    const r = await a.startEvaluation(name, { identityId: target.identity.id, instance: target.instance, requestId, source: 'fresh' });
+    out(JSON.stringify(r, null, 2));
+    stderr.write('Connect only a fresh independent evaluator to mcpUrl using the new token. The evaluator cannot approve or apply its proposal.\n');
+  },
+
+  async 'persona-review'(args) {
+    const [name, proposalId] = positional(args, 2, 'the memory and proposal id');
+    const { api: a } = api();
+    out(JSON.stringify(await a.reviewPersona(name, proposalId), null, 2));
+  },
+
+  async 'persona-approve'(args) { await decidePersona(args, 'approve'); },
+  async 'persona-reject'(args) { await decidePersona(args, 'reject'); },
+
+  async 'persona-revoke'(args) {
+    const [name, evaluationId] = positional(args, 2, 'the memory and evaluation id');
+    const { api: a } = api();
+    out(JSON.stringify(await a.revokeEvaluation(name, evaluationId)));
+  },
   async list(args) {
     positional(args, 0, "no arguments to list");
     const { api: a } = api();

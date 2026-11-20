@@ -8,6 +8,8 @@ import { clip, queryParts, trimSpace } from "../memory/clean";
 import type { AnswerNote, Memory } from "../memory-object";
 import { check, type Fault, faultOf, instructions, listed, tools } from "./tools";
 import { logLine } from "../log";
+import { contextSyncInput } from '../store/context-sync';
+import type { PersonaResult } from '../store/persona';
 
 export const serverVersion = "dev";
 
@@ -69,9 +71,23 @@ function toolError(text: string): CallToolResult {
   return { content: [{ type: "text", text }], isError: true };
 }
 
-// buildServer returns a server with the eight tools, bound to one memory.
+export const syncInstructions = '\n\nIncremental synchronization: after opting into sync_context, call it before each new user turn instead of repeatedly loading get_context. Keep its opaque cursor in this conversation and apply every page until complete=true. Unchanged checks return no persona and no memory changes; still record worthwhile new memories from the current turn with remember, whether or not other sessions changed anything. Replace the persona only when a new confirmed version is returned; never switch the bound subject. Erase events invalidate all retained copies of that memory. On context loss use reload=true with the same cursor. A cursor is a read position, not proof of activation, history processing or user approval. Ordinary MCP cannot observe user-turn boundaries: clients must enforce this lifecycle. Temporary helpers and independent persona evaluators must not load this context.';
+
+// Existing tools remain compatible; sync_context adds a read-only change feed.
 export function buildServer(call: Call): McpServer {
-  const server = new McpServer({ name: "ziwo", version: serverVersion }, { instructions });
+  const server = new McpServer({ name: "ziwo", version: serverVersion }, { instructions: instructions + syncInstructions });
+  server.registerTool('sync_context', {
+    title: 'Synchronize persona and memory changes',
+    description: 'Check this subject for confirmed persona revisions and memory changes. Read-only: creates no session, strengthens no memories and writes no receipts. Retain the returned cursor only after applying the page, and continue until complete=true before answering. Persona content is returned only on initial load, explicit reload or revision. This does not activate or rebind a conversation, approve a persona, or prove that initial chat history was processed.',
+    inputSchema: contextSyncInput,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async (raw): Promise<CallToolResult> => {
+    try {
+      const result = JSON.parse(await call.stub.syncContext(raw, call.instance)) as PersonaResult<Record<string, unknown>>;
+      if ('error' in result) return toolError(result.error);
+      return { content: [{ type: 'text', text: JSON.stringify(result.value) }], structuredContent: result.value };
+    } catch { return toolError(internalError); }
+  });
   for (const def of tools) {
     server.registerTool(
       def.name,

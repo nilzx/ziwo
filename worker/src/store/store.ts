@@ -2,6 +2,7 @@ import { Activations } from "./activation";
 import { Service } from "../memory/service";
 import { activationSchema } from "./activation-schema";
 import { syncSchema } from "./sync";
+import { revisionSchema } from './revisions';
 import { latestLogFormat } from "./schema";
 import { personaSchema } from "./persona-schema";
 import { Personas } from "./persona";
@@ -287,6 +288,7 @@ export class Store {
     this.db.run(personaSchema);
     this.db.run(activationSchema);
     this.db.run(syncSchema);
+    this.db.run(revisionSchema);
     this.checkLogFormat();
     if (this.db.getMeta(metaInstance) === undefined) this.db.setMeta(metaInstance, newID("i_"));
     const stored = this.db.getMeta(metaParams);

@@ -86,6 +86,17 @@ export function makeApi({ base = "", secret, fetch: doFetch = globalThis.fetch.b
     describe: (/** @type {string} */ name) => call("GET", memoryPath(name)),
     create: (/** @type {string} */ name) => call("POST", memoryPath(name)),
     newToken: (/** @type {string} */ name) => call("POST", memoryPath(name, "token")),
+    identity: (/** @type {string} */ name) => call('GET', memoryPath(name, 'identity')),
+    /** @param {string} name @param {object} body */
+    startEvaluation: (name, body) => call('POST', `/admin/persona/${encodeURIComponent(name)}/evaluations`, { body: JSON.stringify(body), type: 'application/json' }),
+    /** @param {string} name @param {string} id */
+    revokeEvaluation: (name, id) => call('DELETE', `/admin/persona/${encodeURIComponent(name)}/evaluations/${encodeURIComponent(id)}`),
+    /** @param {string} name @param {string} id */
+    reviewPersona: (name, id) => call('GET', `/admin/persona/${encodeURIComponent(name)}/proposals/${encodeURIComponent(id)}`),
+    /** @param {string} name @param {string} id @param {object} body */
+    confirmPersona: (name, id, body) => call('POST', `/admin/persona/${encodeURIComponent(name)}/proposals/${encodeURIComponent(id)}/confirm`, { body: JSON.stringify(body), type: 'application/json' }),
+    /** @param {string} name @param {string} id @param {object} body */
+    adoptPersona: (name, id, body) => call('POST', `/admin/persona/${encodeURIComponent(name)}/proposals/${encodeURIComponent(id)}/adopt`, { body: JSON.stringify(body), type: 'application/json' }),
     /** @param {string} name @param {{ params?: Record<string, number>, timeZone?: string }} change */
     settings: (name, change) =>
       call("PUT", memoryPath(name, "settings"), { body: JSON.stringify(change), type: "application/json" }),

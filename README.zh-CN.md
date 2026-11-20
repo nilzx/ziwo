@@ -50,7 +50,7 @@ ziwo 是一个小型服务,AI 的各个客户端都连到它。现成的运行�
 ## 更多
 
 - [原生 Codex CLI 代码工作区](adapters/codex/native/README.md)：开发版可选入口，在原生终端界面中编辑代码、运行离线测试和本地 Git，并逐轮同步绑定主体的人格与记忆；桌面接入后续推进。
-- [MCP 生命周期能力分级](docs/mcp-capabilities.md)：普通 MCP、强制上下文刷新，以及完整人格/记忆连续性仍需具备的能力。
+- [MCP 生命周期能力分级](docs/mcp-capabilities.md)：人格/记忆增量读取、独立评估、强制上下文刷新，以及完整连续性仍需具备的能力。
 - [DeepSeek Harness MCP 实测](docs/dsh-mcp-validation.md)：真实 Web 已验证通用逐轮记忆刷新、失败阻断、恢复和临时子代理工具隔离。
 
 - [人格形成与环境对照](docs/persona-evolution.md)：开发版的证据不足处理、独立评审建议、变化分类和跨模型合成对照；不自动修订人格。

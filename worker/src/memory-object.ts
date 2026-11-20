@@ -3,7 +3,8 @@ import { Sync } from "./store/sync";
 import { check as checkTool, tools as toolDefinitions } from "./mcp/tools";
 import { z } from "zod";
 import type { ThreadBinding } from "./bindings";
-import { Personas, PersonaError, personaOutcome } from "./store/persona";
+import { Personas, PersonaError, personaOutcome, type PersonaLoadCache } from "./store/persona";
+import { ContextSync } from './store/context-sync';
 import { DurableObject } from "cloudflare:workers";
 import { clip, InvalidInput, parseSpan, parseWhen, queryParts, type RememberRequest, trimSpace } from "./memory/clean";
 import type { AmendRequest, EntryRequest, EraseRequest, ReflectView } from "./memory/amend";
@@ -145,6 +146,7 @@ export class Memory extends DurableObject<Env> {
   private alarmRun?: Promise<void>;
   // The memory's instance id, once read: see instance.
   private instanceId?: string;
+  private readonly personaLoadCache: PersonaLoadCache = {};
 
   private get parts(): { store: Store; service: Service } {
     if (this.built === undefined) {
@@ -166,13 +168,21 @@ export class Memory extends DurableObject<Env> {
     if (this.identityInfo() === 'unknown') throw new PersonaError(404, 'subject is unavailable');
     // Build the store before accessing its separate persona tables.
     void this.store;
-    return new Personas(new Db(this.ctx.storage.sql), this.ctx.storage);
+    return new Personas(new Db(this.ctx.storage.sql), this.ctx.storage, this.personaLoadCache);
+  }
+  syncContext(input: unknown, instance?: string) {
+    return JSON.stringify(personaOutcome(() => {
+      const personas = this.personas;
+      return new ContextSync(new Db(this.ctx.storage.sql), personas).read(input, instance);
+    }));
   }
   startEvaluation(input: { id: string; harnessId: string; threadId: string; requestId: string; identityId: string; instance: string }, tokenHash: string) {
     return personaOutcome(() => this.personas.start(input, tokenHash, this.now()));
   }
   evaluationAuth(id: string, tokenHash: string) { return personaOutcome(() => this.personas.authenticate(id, tokenHash)); }
+  revokeEvaluation(id: string) { return personaOutcome(() => this.personas.revoke(id)); }
   readEvaluation(id: string, tokenHash: string, offset: number, limit: number) { return personaOutcome(() => this.personas.read(id, tokenHash, offset, limit)); }
+  readEvaluationJson(id: string, tokenHash: string, offset: number, limit: number) { return JSON.stringify(this.readEvaluation(id, tokenHash, offset, limit)); }
   proposePersona(id: string, tokenHash: string, input: unknown) { return personaOutcome(() => this.personas.propose(id, tokenHash, input, this.now())); }
   reviewPersona(id: string) { return personaOutcome(() => this.personas.review(id)); }
   confirmPersona(id: string, input: unknown) { return personaOutcome(() => this.personas.confirm(id, input, this.now())); }

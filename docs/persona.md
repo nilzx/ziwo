@@ -11,7 +11,38 @@ An adopted persona belongs to the same stable identity as its memory partition. 
 | Registered host (`zwh_…`) | Reserve a fresh evaluation conversation, create a scoped evaluation, load the current persona of an existing binding |
 | Evaluation (`zev_…`) | Read one fixed evaluation snapshot and submit proposals for that snapshot |
 | Private user-facing admin channel | Review a specific proposal, record a concrete approve/reject decision, adopt an approved proposal |
-| Existing fixed-token/OAuth memory connection | Existing memory operations; no persona confirmation or adoption |
+| Existing fixed-token/OAuth memory connection | Memory operations and read-only confirmed persona/memory deltas; no persona confirmation or adoption |
+
+## Portable evaluation with any MCP client
+
+The user-facing administration tool can prepare a scoped evaluation without a harness-specific adapter:
+
+```sh
+node worker/bin/ziwo-admin.mjs persona-evaluate MEMORY REQUEST_ID --fresh
+```
+
+It uses the existing `ZIWO_URL` and `ZIWO_ADMIN_SECRET` environment settings, and prints a newly issued `mcpUrl` and `token` once. Reuse the request ID after a lost response to keep the original snapshot and rotate the token. Keep the token in client connection settings, never in a prompt. Open a fresh conversation without Ziwo persona, autobiographical memory, or inherited parent context, and connect only this scoped evaluation endpoint. The server can restrict its tools and credentials; ordinary MCP cannot independently prove that a client's conversation is fresh.
+
+The endpoint `POST /evaluation/v1/MEMORY/EVALUATION_ID/mcp` supports both MCP generations and exposes:
+
+- `read_evaluation`: page the fixed subject/evidence snapshot as third-party material, with no memory writes or reinforcement.
+- `propose_persona`: submit a bounded proposal, evidence references, rationale, counterexamples, and uncertainty. Repeating the same proposal is idempotent.
+
+After the evaluator supplies a proposal ID, the user reviews and decides on its exact digest:
+
+```sh
+node worker/bin/ziwo-admin.mjs persona-review MEMORY PROPOSAL_ID
+node worker/bin/ziwo-admin.mjs persona-approve MEMORY PROPOSAL_ID REVIEWED_DIGEST
+# Or reject the reviewed proposal:
+node worker/bin/ziwo-admin.mjs persona-reject MEMORY PROPOSAL_ID REVIEWED_DIGEST
+node worker/bin/ziwo-admin.mjs persona-revoke MEMORY EVALUATION_ID
+```
+
+`persona-approve` refuses a changed or stale digest, records the specific user decision, and adopts that exact revision. A retry uses the same confirmation receipt. Evaluators and ordinary memory/OAuth credentials cannot call these private operations. Creating or revoking an evaluation also requires the private user channel. Administrative creation is `POST /admin/persona/MEMORY/evaluations` with `identityId`, `instance`, `requestId`, and `source:"fresh"`; revocation is `DELETE /admin/persona/MEMORY/evaluations/EVALUATION_ID`. Host-created evaluations can use the same MCP endpoint and continue to require a live host reservation.
+
+Confirmed persona updates are available to ordinary MCP through [`sync_context`](mcp-capabilities.md#incremental-persona-and-memory-feed). This read-only interface does not itself establish persistent chat ownership or complete initial history processing.
+
+## Registered host evaluation
 
 A registered host must obtain the user's target selection and attest that the evaluator is a fresh, independent conversation without injected Ziwo persona or memory. The server rejects already-bound conversations, temporary/inherited sources, target changes, and subject binding/forking involving a registered evaluator. The role reservation is permanent within that host namespace and thread. A failed start can leave this conservative reservation in place; retry the same target or create a new clean conversation.
 

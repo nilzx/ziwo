@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { Db, num, text, type Row } from './db';
 import { readIdentity } from './identity';
 import { metaInstance } from './schema';
+import { materialRevision } from './revisions';
 
 const line = z.string().trim().min(1).max(2000);
 const lines = z.array(line).max(40);
@@ -37,6 +38,10 @@ const versionSchema = z.object({
 export type PersonaVersion = z.infer<typeof versionSchema>;
 const bundleSchema = z.object({ identityId: id, currentVersion: ordinal.refine(v => v > 0), versions: z.array(versionSchema).min(1) }).strict();
 export type PersonaBundle = z.infer<typeof bundleSchema>;
+export interface PersonaLoadCache {
+  key?: string;
+  value?: { identityId: string; instance: string; version: number; digest: string; loadText: string; document: PersonaDocument };
+}
 export interface Evaluation {
   id: string; harnessId: string; threadId: string; requestId: string; identityId: string; instance: string;
   baseVersion: number | null; upperSeq: number; sources: SourceRef[]; inheritedSources: SourceRef[]; createdAt: number; invalidated: boolean;
@@ -115,7 +120,7 @@ export function exportPersona(db: Db): PersonaBundle | undefined {
   return bundle;
 }
 export class Personas {
-  constructor(private readonly db: Db, private readonly storage: DurableObjectStorage) {}
+  constructor(private readonly db: Db, private readonly storage: DurableObjectStorage, private readonly cache?: PersonaLoadCache) {}
   private target(identityId: string, instance: string): void {
     if (readIdentity(this.db)?.id !== identityId || this.db.getMeta(metaInstance) !== instance) fail('subject or instance is unavailable');
   }
@@ -136,9 +141,17 @@ export class Personas {
     this.target(identityId, instance);
     const n = this.currentNumber();
     if (n === null) fail('persona initialization is required');
+    // The event log is append-only. Every supported source mutation changes
+    // this revision; adoption/invalidation changes the persona revision.
+    // Keep this cache only in the object, never in exported or durable state.
+    const revision = this.db.first('SELECT revision FROM persona_revision WHERE singleton = 1')?.revision;
+    const cacheKey = digest([identityId, instance, n, revision, materialRevision(this.db)]);
+    if (this.cache?.key === cacheKey && this.cache.value) return this.cache.value;
     const v = this.version(n);
     if (v.invalidated || !sourcesValid(this.db, v.sources)) fail('persona evidence is no longer valid; a confirmed repair is required');
-    return { identityId, instance, version: n, digest: v.digest, loadText: v.loadText!, document: v.document! };
+    const value = { identityId, instance, version: n, digest: v.digest, loadText: v.loadText!, document: v.document! };
+    if (this.cache) { this.cache.key = cacheKey; this.cache.value = value; }
+    return value;
   }
   start(input: { id: string; harnessId: string; threadId: string; requestId: string; identityId: string; instance: string }, tokenHash: string, at: number): Evaluation {
     return this.storage.transactionSync(() => {
@@ -168,6 +181,10 @@ export class Personas {
     const job = JSON.parse(text(r.record)) as Evaluation;
     this.target(job.identityId, job.instance);
     return job;
+  }
+  revoke(jobId: string) {
+    this.db.run("UPDATE persona_evaluations SET token_hash = '' WHERE id = ?", jobId);
+    return { revoked: true };
   }
   private validJob(job: Evaluation): void {
     if (job.invalidated || !sourcesValid(this.db, mergeSources(job.sources, job.inheritedSources))) fail('evaluation sources changed; start a new evaluation');
