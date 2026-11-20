@@ -7,7 +7,7 @@ Ziwo supports ordinary MCP clients and clients with a generic lifecycle controll
 | Memory tools | Yes | Yes | Yes |
 | Refresh after the conversation first loads memory | Model instruction | Enforced before generation | Enforced before generation |
 | Bounded current memory summary | Yes | Yes | Yes |
-| Paged material memory changes and confirmed persona revisions | `sync_context`, client applies pages | Paging and recorded-context delivery primitives implemented; full acceptance pending | Yes |
+| Paged material memory changes and confirmed persona revisions | `sync_context`, client applies pages | Paging and recorded-context delivery tested locally and in Web; full lifecycle acceptance pending | Yes |
 | Independent evaluation and proposals | Scoped evaluation MCP endpoint | Separate fresh evaluator | Yes |
 | Initial chat-history activation gates | Not exposed on ordinary token/OAuth MCP | Trusted lifecycle MCP endpoint and configurable initialization gate; full acceptance pending | Yes |
 | Authoritative persistent identity binding | No | Registered connector credential + host metadata on the lifecycle endpoint | Yes |
@@ -50,7 +50,7 @@ Each page has at most 100 material events and a soft 64 KiB change budget (one v
 
 Persona validation is cached inside the Durable Object using the identity, instance, persona revision, and material-event revision. Unchanged loads do not reread every evidence item or the full persona record. Material writes, adoption, invalidation, and restore force validation again. This cache is not persisted or exported.
 
-Real Web evidence includes the bounded summary and a subset of the trusted lifecycle workflow described below. Paging, recorded-context delivery and context-loss recovery also have local connector tests; the complete acceptance matrix is still pending. Do not treat changing a configured tool name as full persona acceptance.
+Real Web evidence includes the bounded summary and a subset of the trusted lifecycle workflow described below. It now includes multi-page changes, a deletion tombstone, outage blocking/recovery, and same-subject reloading after real compaction. The complete acceptance matrix is still pending. Do not treat changing a configured tool name as full persona acceptance.
 
 ## Trusted conversation lifecycle over MCP
 
@@ -144,6 +144,7 @@ lifecycle:
   probe: resume_context
   allowedTools: [initialize_context, read_initial_history, process_initial_history, complete_context, acknowledge_persona, acknowledge_history_notice]
   localTools: [mcp_connector_history]
+  blockedTools: [subagent_fork]
   ready:
     activate_context: /activation/canRun
     resume_context: /activation/canRun
@@ -162,7 +163,12 @@ it forces the first full refresh in the same turn before ordinary work. Recovery
 uses an allowed probe through the normal scoped executor. This requires public
 model-stream middleware and the shared tool pipeline; bypassing custom executors
 and other in-process plugins are outside its enforcement boundary. No service
-names or pointers are hardcoded in the connector.
+names or pointers are hardcoded in the connector. `blockedTools` is a host tool
+deny list that remains effective after readiness. In dsh, list `subagent_fork`
+and any equivalent parent-history copy tools enabled in the profile. A guard
+and dispatch recheck reject them before their bodies run; fresh `subagent`
+helpers can still receive task-only materials. Changing this policy preserves
+the same binding and incremental read position.
 
 A retained workflow sidecar can recover a missing context sidecar by reloading
 the same owner. Missing workflow ownership, changed endpoints, old host bindings
@@ -177,10 +183,21 @@ a full same-subject reload. This establishes recorded input, not proof that a
 model understood it. All pages must fit configured total limits before the model
 continues. Local real dsh tests now cover activation, history processing, empty
 changes followed by new writes, cross-chat correction and same-subject persona
-revision. Full acceptance remains pending, including multi-page/deletion/failure
-scenarios and temporary-helper transcript isolation. Hiding tools and server
-instructions does not prevent a host from copying an already loaded parent
-transcript into a fork; that needs a gate before the copy is created.
+revision, multi-page changes, deletion, outage recovery, and compaction reload.
+One synthetic dsh run also rejected A-to-B activation without contacting B
+and rejected `subagent_fork` without creating a child. After fixing history-tool
+visibility, a fresh helper received neither the parent's synthetic memory
+marker nor the protected tool schemas. A neutral
+control chat made no memory calls. These are bounded test observations, not
+proof of arbitrary model behavior. Whole-host restart, concurrent persona
+revision and the complete independent-evaluator workflow still need Web
+acceptance. Configured history-copy tools now have a pre-execution gate, and
+temporary helpers cannot see or use the scoped history reader. A fallback also
+rejects seeded temporary helpers before generation when their parent is bound
+or their workspace enables this capability; it can run after seed persistence.
+Direct host APIs, UI fork commands, unlisted copy tools and in-process plugins
+remain outside the copy-before-storage guarantee. Universal copy isolation
+requires a host admission hook before creating any inherited seed.
 
 ## Independent evaluation over MCP
 
