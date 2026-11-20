@@ -572,6 +572,24 @@ describe("what the server says in get_context", () => {
 
 
 describe.each(generations)("context refresh (%s protocol)", (gen) => {
+  it("returns structured lifecycle state without claiming persona activation or full memory coverage", async () => {
+    const m = await createMemory();
+    const c = new Client(gen, m);
+    await c.connect();
+    const first = await c.send("tools/call", { name: "get_context", arguments: {} });
+    const result = first.msg?.result as { content: { text: string }[]; structuredContent: Record<string, unknown> };
+    expect(result.structuredContent).toMatchObject({ schema_version: 1,
+      identity: { id: expect.stringMatching(/^zi_/), instance: expect.any(String) },
+      capabilities: { memory: "bounded_summary", persona: "requires_host_activation", turn_enforcement: "client" } });
+    const session = result.structuredContent.session_id;
+    expect(session).toBe(idIn(result.content[0]!.text, "s_"));
+    const second = await c.send("tools/call", { name: "get_context", arguments: { session_id: session } });
+    expect((second.msg?.result as { structuredContent: unknown }).structuredContent).toEqual(result.structuredContent);
+    const bad = await c.send("tools/call", { name: "get_context", arguments: { session_id: "s_unknown" } });
+    expect(bad.msg?.result).toMatchObject({ isError: true });
+    expect(bad.msg?.result).not.toHaveProperty("structuredContent");
+  });
+
   it("retains the session while observing another conversation's correction", async () => {
     const m = await createMemory();
     const a = new Client(gen, m, "writer");

@@ -118,7 +118,8 @@ export function buildServer(call: Call): McpServer {
             return toolError(answer.invalid);
           }
           if (answer.note !== undefined) note = answer.note;
-          return { content: [{ type: "text", text: answer.text }] };
+          return { content: [{ type: "text", text: answer.text }],
+            ...(answer.structuredContent === undefined ? {} : { structuredContent: answer.structuredContent }) };
         } catch (err) {
           outcome = "error";
           // The kind of error only: its text may quote what a memory says.

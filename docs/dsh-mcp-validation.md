@@ -1,5 +1,40 @@
 # DeepSeek Harness MCP validation
 
+## Generic turn controller follow-up — 2026-11-20
+
+The latest local test adds an opt-in, server-neutral `turnContext` controller to
+`dsh-mcp-connector`. Ziwo supplies structured session/identity metadata alongside
+the existing `get_context` text. See [capability levels](mcp-capabilities.md) for
+the exact contract and configuration.
+
+Using the qianwen `deepseek-v4.1-flash` route in the real dsh Web service, the
+controller refreshed an activated conversation before natural memory questions,
+an unrelated arithmetic question, and a temporary-agent task. A correction in
+conversation A was visible in B. The temporary child had no Ziwo tools or server
+instructions, and its actual connector-status call returned `servers: []`.
+
+A stopped local Worker caused a five-second refresh timeout with no model
+generation. The final implementation displayed an explicit error asking the
+user to restore the connection and resend; dsh does not retain the rejected user
+batch as a normal conversation message. After recovery, browser reload and a
+connector-module reload, the same memory session was reused and the current
+answer was correct. This was **not** a restart of the user's dsh server.
+
+The Worker suite passed 513 tests; the connector suite passed 89 tests, including
+an installed-dsh storage-name contract check. GPT-6.1 Terra independently audited
+the synthetic logs and added connector regression tests. Steering, concurrency,
+state loss and several error paths have programmatic tests; the real Web sample
+does not establish every executor mode, fork/restore path, or long-term behavior.
+
+This closes the observed model-dependent refresh gap for this configured memory
+summary path. It does not provide ordinary MCP persona activation, a complete
+acknowledged memory change feed, or authoritative host conversation binding.
+The complete Ziwo contract is still pending for this path, so no test-server
+deployment was performed. The sections below retain historical evidence.
+
+
+## Earlier experiments
+
 On 2026-11-20, an initial DeepSeek Harness Web test exposed defects in both the MCP connector and Ziwo. A follow-up fixed generic MCP instruction forwarding, delegation scope, and memory refresh semantics. Natural cross-conversation refresh and temporary-agent tool isolation improved, but strict refresh on every user turn is still not reliable. No test-server deployment followed.
 
 ## Environment and scope

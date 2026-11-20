@@ -85,7 +85,14 @@ export interface Gone {
 // Answer is the text of a tool's answer, what was wrong with the call, or
 // that the memory is gone. note is what the access log may say of it, in
 // fixed words: never a name, a description or an id.
-export type Answer = { text: string; note?: AnswerNote } | Invalid | Gone;
+export type Answer = { text: string; note?: AnswerNote; structuredContent?: ContextMetadata } | Invalid | Gone;
+
+export interface ContextMetadata {
+  schema_version: 1;
+  session_id: string;
+  identity: { id: string | null; instance: string | null };
+  capabilities: { memory: "bounded_summary"; persona: "requires_host_activation"; turn_enforcement: "client" };
+}
 
 export interface AnswerNote {
   recall_in?: "subject" | "unsorted"; // a recall kept to a subject, or to the unsorted
@@ -593,7 +600,11 @@ export class Memory extends DurableObject<Env> {
         case "get_context": {
           const { view, zone, unknownZone } = this.startContext(call);
           const note: AnswerNote = view.prompt === undefined ? {} : { reflect_asked: view.prompt.subject === "" ? "unsorted" : "subject" };
-          return { text: formatContext(view, zone, unknownZone), note };
+          const db = new Db(this.ctx.storage.sql);
+          return { text: formatContext(view, zone, unknownZone), note,
+            structuredContent: { schema_version: 1, session_id: view.session.id,
+              identity: { id: readIdentity(db)?.id ?? null, instance: db.getMeta(metaInstance) ?? null },
+              capabilities: { memory: "bounded_summary", persona: "requires_host_activation", turn_enforcement: "client" } } };
         }
         case "remember": {
           const r = this.remember(call.args);
