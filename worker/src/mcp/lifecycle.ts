@@ -147,7 +147,7 @@ export function lifecycleServer(env: Env, hash: string, target: BindingTarget): 
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, (input, ctx) => result(async () => unwrap(await stub.activationRequest(await bound(metadata(ctx)), 'history', input))));
   server.registerTool('process_initial_history', {
-    title: 'Process initial conversation memories', description: 'Remember or explicitly skip each verified history item. Use a stable requestId for retry; source identity and occurrence precision come from the frozen manifest.',
+    title: 'Process initial conversation memories', description: 'Read the original content, then remember or explicitly skip each verified history item. Summaries cannot substitute for originals. Preserve fictional or hypothetical statements as such, and never invent actions, outcomes, feelings or lessons. Optional fields must be omitted when the source does not support them; neutral is not a default feeling. Use a stable requestId for retry; source identity and occurrence precision come from the frozen manifest.',
     inputSchema: batchInput.omit({ threadId: true }), annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, (input, ctx) => result(async () => { const b = await bound(metadata(ctx)); return unwrap(await stub.activationRequest(b, 'batch', { ...input, threadId: b.threadId })); }));
   server.registerTool('complete_context', {

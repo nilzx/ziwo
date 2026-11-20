@@ -75,6 +75,13 @@ Once sealed, `POST /harness/v1/activation/batch` accepts `{threadId, requestId, 
 
 A summary item must be skipped. Original material may also be skipped when it contains no worthwhile experience. A record is not required for every turn. An original recovered later may have its own item ID at the same sequence position as a summary, preserving their distinct provenance.
 
+Backfill must preserve the source's factual, hypothetical or fictional status.
+Optional outcomes, feelings, intensity and lessons are included only when the
+original record supports them; omit missing values, rather than inventing a
+neutral feeling or a retrospective lesson. Tool and field descriptions carry
+this rule to the model. Source digests and receipts establish provenance and
+deduplication, not semantic proof that a model's paraphrase is faithful.
+
 The immutable source receipt is keyed by host namespace, original source conversation and item ID. It binds material and processing decision. The write and receipt are atomic; a lost response, process/object reopen, or a new request ID cannot create the same experience twice. Changed decisions for an already-processed item conflict. Different source items do not collapse just because their memory text is identical. Erasing a resulting memory retains the receipt and cannot cause a retry to recreate its content.
 
 ## Finish, resume and fill gaps

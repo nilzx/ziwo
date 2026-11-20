@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { ThreadBinding } from '../bindings';
-import { clean, InvalidInput, parseWhen } from '../memory/clean';
+import { clean, InvalidInput, Moments, parseWhen } from '../memory/clean';
 import type { Service } from '../memory/service';
 import { knownZone, UTC } from '../zone';
 import { Db, text } from './db';
@@ -40,8 +40,17 @@ const common = z.object({ threadId: id });
 const beginInput = common.extend({ personaVersion: index, personaDigest: hash, model: z.string().max(120), client: z.string().max(120), timezone: z.string().max(100).default('UTC'), scope: scopeSchema.optional() }).strict();
 const ackInput = common.extend({ personaVersion: index, personaDigest: hash }).strict();
 const pageInput = common.extend({ requestId: id, beforeBoundaryId: id, offset: index, items: z.array(historyItem).max(100), final: z.boolean() }).strict();
-const memoryInput = z.object({ gist: z.string().min(1), body: z.string().min(1), moment: z.string().optional(), importance: z.number().optional(), intensity: z.number().optional(),
-  outcome: z.string().optional(), feeling: z.string().optional(), lesson: z.string().optional(), people: z.array(z.string()).optional(), pointer: z.string().optional() }).strict();
+const memoryInput = z.object({
+  gist: z.string().min(1).describe('Brief factual account supported by this original history item; preserve hypothetical or fictional status.'),
+  body: z.string().min(1).describe('Only what the original item records, including the subject\'s actual part. Do not invent missing actions, motives, outcomes, feelings, or lessons.'),
+  moment: z.enum([...Moments, '']).optional().describe('The kind of recorded occasion; omit for other. An empty string is accepted as a legacy alias for other.'),
+  importance: z.number().min(0).max(1).optional().describe('Retention importance from 0 to 1; default 0.5.'),
+  intensity: z.number().min(0).max(1).optional().describe('Only an intensity from 0 to 1 explicitly supported by a recorded feeling; otherwise omit.'),
+  outcome: z.string().optional().describe('Only an outcome recorded in the source; otherwise omit.'),
+  feeling: z.string().optional().describe('Only a feeling explicitly recorded in the original source. If none is recorded, omit this field; do not default to neutral or infer an emotion.'),
+  lesson: z.string().optional().describe('Only a lesson actually expressed in the source, not a new retrospective interpretation.'),
+  people: z.array(z.string()).optional(), pointer: z.string().optional(),
+}).strict();
 const decision = z.discriminatedUnion('action', [
   z.object({ itemId: id, action: z.literal('remember'), memory: memoryInput }).strict(),
   z.object({ itemId: id, action: z.literal('skip'), reason: z.enum(['not_memorable', 'duplicate', 'summary_only', 'irrelevant']) }).strict(),

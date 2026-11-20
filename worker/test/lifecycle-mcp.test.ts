@@ -28,6 +28,22 @@ async function initialize(f:Awaited<ReturnType<typeof fixture>>, protocol:string
  return value(await rpc(f,protocol,'refresh_context',{},claim));
 }
 describe.each([legacy,modern])('trusted lifecycle %s', protocol=>{
+ it('advertises history memory values accepted by the store',async()=>{
+  const f=await fixture(), claim=meta('history-schema');
+  const response=await fetchWorker(`/${f.m.name}/agent/mcp`,{method:'POST',headers:{authorization:`Bearer ${f.h.token}`,'content-type':'application/json',accept:'application/json, text/event-stream','mcp-protocol-version':protocol,...(protocol===modern?{'mcp-method':'tools/list'}:{})},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/list',params:{_meta:protocol===modern?{'io.modelcontextprotocol/protocolVersion':modern,'io.modelcontextprotocol/clientInfo':{name:'test',version:'1'},'io.modelcontextprotocol/clientCapabilities':{}}:{}}})});
+  const listed=(await readReply(response)).msg?.result as {tools:{name:string;inputSchema:any}[]};
+  const schema=listed.tools.find(t=>t.name==='process_initial_history')!.inputSchema;
+  const memory=schema.properties.decisions.items.oneOf.find((s:any)=>s.properties.action.const==='remember').properties.memory;
+  expect(memory.properties.moment.enum).toEqual(['start','blocked','corrected','breakthrough','finished','emotion','other','']);
+  for(const name of ['importance','intensity']) { expect(memory.properties[name].minimum).toBe(0); expect(memory.properties[name].maximum).toBe(1); }
+  const moments=memory.properties.moment.enum as string[];
+  claim.history={cutoff:{turnId:'past',itemId:`item-${moments.length-1}`,sequence:moments.length-1},coverage:'complete',gaps:[],items:moments.map((_m,i)=>({itemId:`item-${i}`,turnId:'past',sequence:i,contentDigest:'a'.repeat(64),material:'original',status:'completed',occurrence:{precision:'unknown'}}))};
+  const p=value(await rpc(f,protocol,'activate_context',{},claim)).persona;
+  value(await rpc(f,protocol,'initialize_context',{personaVersion:p.version,personaDigest:p.digest},claim));
+  failed(await rpc(f,protocol,'process_initial_history',{requestId:'invalid',decisions:[{itemId:'item-0',action:'remember',memory:{gist:'g',body:'b',moment:'free prose'}}]},claim));
+  value(await rpc(f,protocol,'process_initial_history',{requestId:'valid',decisions:moments.map((moment,i)=>({itemId:`item-${i}`,action:'remember',memory:{gist:`occasion ${i}`,body:'Synthetic source explicitly records curiosity',moment,importance:i%2,intensity:i%2,...(i%2?{feeling:'curiosity'}:{})}}))},claim));
+  value(await rpc(f,protocol,'complete_context',{requestId:'done'},claim));
+ });
  it('releases only a definitely unbound failed activation',async()=>{
   const f=await fixture(), uninitialized=await createMemory(), claim=meta('no-persona');
   const rejected=await rpc({...f,m:uninitialized},protocol,'activate_context',{},claim);

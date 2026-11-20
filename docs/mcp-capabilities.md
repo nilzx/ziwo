@@ -231,7 +231,25 @@ rejects seeded temporary helpers before generation when their parent is bound
 or their workspace enables this capability; it can run after seed persistence.
 Direct host APIs, UI fork commands, unlisted copy tools and in-process plugins
 remain outside the copy-before-storage guarantee. Universal copy isolation
-requires a host admission hook before creating any inherited seed.
+requires a host admission hook before constructing or persisting an inherited
+destination session. The connector now supports a proposed, generic
+`session/preparing` contract and `lifecycle.requireCreationAdmission: true`;
+requiring it on an unsupported host fails startup. Isolated real SessionStore
+tests verified refusal before destination construction and caller persistence,
+including unlabelled nonempty seeds. The host proposal also adds actual parent
+lineage to normal persistent forks. It has not been installed into stock dsh,
+and the full UI/API matrix has not been accepted. The host may still read source
+history before this admission; privileged plugins bypassing SessionStore and
+tampered local ownership storage are outside the trusted-host boundary.
+
+Nonempty history tests also exercised a committed batch whose response was
+withheld, followed by a confirmed process kill and a fresh-process resume. The
+resumed conversation read the original receipt and memory ID without rewriting
+the history. An earlier sample invented a neutral feeling absent from its
+source. History tool guidance now requires unsupported optional fields to be
+omitted, preserves fictional status, and advertises the store's accepted moment
+values and numeric ranges. Later synthetic samples omitted unsupported feelings;
+these observations do not establish semantic fidelity for arbitrary histories.
 
 The installed dsh PTC executor was also checked with an already bound
 conversation: its rejection of the controller's direct refresh stopped the
