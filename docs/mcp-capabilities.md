@@ -237,8 +237,11 @@ destination session. The connector now supports a proposed, generic
 requiring it on an unsupported host fails startup. Isolated real SessionStore
 tests verified refusal before destination construction and caller persistence,
 including unlabelled nonempty seeds. The host proposal also adds actual parent
-lineage to normal persistent forks. It has not been installed into stock dsh,
-and the full UI/API matrix has not been accepted. The host may still read source
+lineage to normal persistent forks. An isolated complete dsh process exercised
+the ordinary fork business API with 219 inherited source events and verified
+the persisted parent header; rejected synthetic destinations were not stored.
+It has not been installed into stock dsh, and browser interaction and the full
+entry-point matrix have not been accepted. The host may still read source
 history before this admission; privileged plugins bypassing SessionStore and
 tampered local ownership storage are outside the trusted-host boundary.
 
@@ -250,6 +253,15 @@ source. History tool guidance now requires unsupported optional fields to be
 omitted, preserves fictional status, and advertises the store's accepted moment
 values and numeric ranges. Later synthetic samples omitted unsupported feelings;
 these observations do not establish semantic fidelity for arbitrary histories.
+
+A code-task test found that replacing the host system prompt between refresh
+and model dispatch could falsely reject an already delivered delta. The
+controller now retains an in-process proof of the prior immutable non-system
+message objects and their order. It admits the pending delta across that
+generation change only when every prior object and the exact new result remain
+on the actual model surface. This proof is not persisted, cannot cross Session
+objects, and does not admit a compaction that removed earlier content. The real
+retry refreshed first and successfully wrote/read a synthetic code artifact.
 
 The installed dsh PTC executor was also checked with an already bound
 conversation: its rejection of the controller's direct refresh stopped the
