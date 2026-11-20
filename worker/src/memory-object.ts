@@ -57,7 +57,7 @@ export interface RecallArgs {
 // ToolCall is one tool call, its arguments already checked against the
 // tool's schema, as the Worker hands it to answer.
 export type ToolCall =
-  | { tool: "get_context"; model?: string; timezone?: string; client?: string }
+  | { tool: "get_context"; session_id?: string; model?: string; timezone?: string; client?: string }
   | { tool: "remember"; args: RememberArgs }
   | ({ tool: "recall" } & RecallArgs)
   | { tool: "expand"; ids: string[]; sessionId?: string }
@@ -500,21 +500,28 @@ export class Memory extends DurableObject<Env> {
     return zone ?? UTC;
   }
 
-  // getContext starts a session and returns what it is shown. A time zone
-  // the runtime does not know is not kept.
-  getContext(args: { model?: string; client?: string; timezone?: string }): ContextView | Invalid {
+  // getContext starts a session or refreshes the existing one. A time zone
+  // the runtime does not know is not kept; refresh preserves session metadata.
+  getContext(args: { session_id?: string; model?: string; client?: string; timezone?: string }): ContextView | Invalid {
     return outcome(() => this.startContext(args).view);
   }
 
-  private startContext(args: { model?: string; client?: string; timezone?: string }): {
+  private startContext(args: { session_id?: string; model?: string; client?: string; timezone?: string }): {
     view: ContextView;
     zone: string;
     unknownZone?: string;
   } {
     const asked = trimSpace(args.timezone ?? "");
     const known = asked === "" ? undefined : knownZone(asked);
-    const view = this.service.context(args.model ?? "", args.client ?? "", known ?? "");
-    const zone = known ?? this.zoneFor(undefined);
+    const sessionId = trimSpace(args.session_id ?? "");
+    if (sessionId !== "" && this.store.session(sessionId) === undefined) {
+      throw new InvalidInput("unknown session_id: refresh requires the session id returned for this memory in this conversation");
+    }
+    const view = sessionId === ""
+      ? this.service.context(args.model ?? "", args.client ?? "", known ?? "")
+      : this.service.contextFor(sessionId);
+    // Refresh retains the original session metadata and never rebinds a session.
+    const zone = sessionId === "" ? (known ?? this.zoneFor(undefined)) : this.zoneFor(sessionId);
     return asked !== "" && known === undefined ? { view, zone, unknownZone: asked } : { view, zone };
   }
 

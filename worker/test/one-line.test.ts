@@ -3,7 +3,7 @@
 // hold their text as it came. Texts are the tests' own.
 
 import { describe, expect, it } from "vitest";
-import { formatContext, formatExpand, formatRecall, serverSpeaks, writeUnasked } from "../src/mcp/format";
+import { formatContext, formatExpand, formatRecall, refreshEachTurn, serverSpeaks, writeUnasked } from "../src/mcp/format";
 import { clean } from "../src/memory/clean";
 import { ok, start } from "./service-helpers";
 
@@ -38,7 +38,7 @@ describe("a text shown on one line", () => {
       const text = formatContext(view, "UTC");
       const lines = text.split("\n");
       expect(lines.filter((l) => l === said)).toHaveLength(1);
-      expect(text.endsWith(serverSpeaks + writeUnasked)).toBe(true);
+      expect(text.endsWith(serverSpeaks + refreshEachTurn + writeUnasked)).toBe(true);
       expect(lines.filter((l) => l.includes("OLD"))).toEqual([
         expect.stringMatching(/^  \[p_[a-z0-9]+\] OLDPREF first /),
         expect.stringMatching(/^\[m_[a-z0-9]+\] .*: OLD first /),
