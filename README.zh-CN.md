@@ -50,6 +50,7 @@ ziwo 是一个小型服务,AI 的各个客户端都连到它。现成的运行�
 ## 更多
 
 - [原生 Codex CLI 代码工作区](adapters/codex/native/README.md)：开发版可选入口，在原生终端界面中编辑代码、运行离线测试和本地 Git，并逐轮同步绑定主体的人格与记忆；桌面接入后续推进。
+- [DeepSeek Harness MCP 实测](docs/dsh-mcp-validation.md)：真实 Web 测试已通过基础记忆读写，但逐轮自动同步和临时子会话隔离尚未通过。
 
 - [人格形成与环境对照](docs/persona-evolution.md)：开发版的证据不足处理、独立评审建议、变化分类和跨模型合成对照；不自动修订人格。
 
