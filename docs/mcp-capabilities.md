@@ -55,12 +55,19 @@ Real Web evidence includes the bounded summary and a subset of the trusted lifec
 Separate local dsh headless runs verified resuming the same durable conversation
 in a new process, writing a new memory after an empty delta, and synchronizing
 corrections and deletion to another conversation. Two fresh evaluation sessions
-read every snapshot page and submitted proposals; actual user confirmation and
-adoption in that experiment remain pending. One evaluator's summary omitted
+read every snapshot page and submitted proposals. The user then approved one
+exact synthetic proposal; private adoption produced v2, which both existing
+conversations loaded without changing subjects. One evaluator's summary omitted
 changes present in its document, reinforcing the need to review the exact
 [proposal document](persona.md#propose-review-confirm-adopt). The connector's
 automatic notice now states that refresh already ran while preserving new
 memory writes; this guidance reduces, but cannot prohibit, redundant model reads.
+Separate recovery runs covered changed-route and same-route replacement
+instances, a successful remote transition with a lost response, durable retry,
+and new memory written by one restored conversation and read by the other.
+The old recovery request was rejected after the second transition, without
+rewinding the current binding. These are synthetic mechanism tests, not evidence
+of improved real personality continuity.
 
 ## Trusted conversation lifecycle over MCP
 
@@ -208,15 +215,33 @@ and rejected `subagent_fork` without creating a child. After fixing history-tool
 visibility, a fresh helper received neither the parent's synthetic memory
 marker nor the protected tool schemas. A neutral
 control chat made no memory calls. These are bounded test observations, not
-proof of arbitrary model behavior. Whole-host restart, concurrent persona
-revision and the complete independent-evaluator workflow still need Web
-acceptance. Configured history-copy tools now have a pre-execution gate, and
+proof of arbitrary model behavior. New-process resume and the complete
+independent-evaluator proposal, exact user approval, adoption and two-consumer
+sync workflow also passed in isolated headless sessions of the same runtime.
+Another synthetic subject covered competing proposals, an offline consumer
+catching up to a later persona version, and a revision between two refresh
+pages. The invalidated page set stopped generation; retry started at the old
+admitted cursor and delivered all changes with the new persona. A persistent
+child with operator-provided, validated parent lineage also inherited the same
+subject and independently reloaded its current persona and memory. This fixture
+does not add parent lineage to the ordinary UI fork.
+Configured history-copy tools now have a pre-execution gate, and
 temporary helpers cannot see or use the scoped history reader. A fallback also
 rejects seeded temporary helpers before generation when their parent is bound
 or their workspace enables this capability; it can run after seed persistence.
 Direct host APIs, UI fork commands, unlisted copy tools and in-process plugins
 remain outside the copy-before-storage guarantee. Universal copy isolation
 requires a host admission hook before creating any inherited seed.
+
+The installed dsh PTC executor was also checked with an already bound
+conversation: its rejection of the controller's direct refresh stopped the
+turn before any model output or tool call. Resuming that same conversation
+with the native executor succeeded, preserving the subject, persona version
+and memory. PTC is therefore not a supported enforced-lifecycle mode in this
+implementation; the failure is not silently downgraded to best-effort sync.
+Missing parent lineage and missing copy-admission hooks are similarly explicit
+host capability limits. A connector must not infer those capabilities from
+similar transcript text or from a successful ordinary MCP connection.
 
 ## Independent evaluation over MCP
 

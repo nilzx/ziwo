@@ -144,3 +144,22 @@ describe('N2 synthetic persona isolation', () => {
   });
 
 });
+
+it('keeps independent consumer cursors coherent across persona revisions and concurrent pages', async () => {
+  const m=await createMemory(), t=await target(m.name), h=await harness(), writer=new Client('new',m), online=new Client('new',m), offline=new Client('new',m);
+  await writer.connect(); await online.connect(); await offline.connect();
+  const adoptVersion=async (label:string) => {const e=await start(h,spec(t)),p=await propose(t,e,label);expect((await confirm(t,p)).status).toBe(200);expect((await adopt(t,p)).status).toBe(200);};
+  await adoptVersion('Revision one');
+  const read=async (client:Client,args:Record<string,unknown>={}) => JSON.parse(await client.ok('sync_context',args)) as {cursor:string;complete:boolean;persona?:{version:number;loadText:string};changes:unknown[]};
+  const firstOnline=await read(online), firstOffline=await read(offline);expect(firstOnline.persona?.version).toBe(1);expect(firstOffline.persona?.version).toBe(1);
+  const sid=idIn(await writer.ok('get_context',{}),'s_');for(let i=0;i<3;i++)await writer.ok('remember',{session_id:sid,gist:`concurrent ${i}`,body:`synthetic ${i}`});
+  const pending=await read(online,{cursor:firstOnline.cursor,page_size:1});expect(pending.complete).toBe(false);expect(pending.persona).toBeUndefined();
+  await adoptVersion('Revision two');
+  expect((await online.tool('sync_context',{cursor:pending.cursor,page_size:1})).isError).toBe(true);
+  const reloaded=await read(online,{cursor:pending.cursor,reload:true,page_size:100});expect(reloaded.complete).toBe(true);expect(reloaded.persona?.version).toBe(2);
+  await adoptVersion('Revision three');
+  const delayed=await read(offline,{cursor:firstOffline.cursor,page_size:100});expect(delayed.persona?.version).toBe(3);expect(JSON.stringify(delayed.persona)).toContain('Revision three');expect(delayed.changes.length).toBe(3);
+  const unchanged=await read(online,{cursor:reloaded.cursor,page_size:100});expect(unchanged.persona?.version).toBe(3);
+  await writer.ok('remember',{session_id:sid,gist:'ordinary after revision',body:'does not change persona'});
+  const ordinary=await read(online,{cursor:unchanged.cursor});expect(ordinary.persona).toBeUndefined();expect(ordinary.changes.length).toBe(1);
+});
