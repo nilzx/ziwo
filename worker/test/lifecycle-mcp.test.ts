@@ -12,7 +12,7 @@ async function fixture() {
  expect((await admin(`${path}/confirm`,{...exact,confirmationId:crypto.randomUUID(),decision:'approve'})).status).toBe(200); expect((await admin(`${path}/adopt`,exact)).status).toBe(200);
  const h=await (await admin('/admin/harnesses',{name:'lifecycle-test'})).json() as {id:string;token:string}; return {m,h};
 }
-type Meta={id:string;createdAt:number;parentId:string|null;temporary:boolean;seeded:boolean;turn:string;history?:{cutoff:null|{turnId:string;itemId:string;sequence:number};coverage:'complete';gaps:never[];items:Record<string,unknown>[]}};
+type Meta={id:string;createdAt:number;parentId:string|null;temporary:boolean;seeded:boolean;turn:string;history?:{cutoff:null|{turnId:string;itemId:string;sequence:number};coverage:'complete'|'partial';gaps:{id:string;from:number|null;to:number|null;reason:'unavailable'}[];items:Record<string,unknown>[]}};
 const meta=(id:string):Meta=>({id,createdAt:123,parentId:null,temporary:false,seeded:false,turn:'turn-1',history:{cutoff:null,coverage:'complete',gaps:[],items:[]}});
 async function rpc(f:Awaited<ReturnType<typeof fixture>>, protocol:string, name:string, args:Record<string,unknown>, claim?:Meta, token=f.h.token) {
  const params:Record<string,unknown>={name,arguments:args}; if(claim) params._meta={'io.ziwo/conversation':claim,...(protocol===modern?{'io.modelcontextprotocol/protocolVersion':modern,'io.modelcontextprotocol/clientInfo':{name:'test',version:'1'},'io.modelcontextprotocol/clientCapabilities':{}}:{})};
@@ -72,6 +72,22 @@ describe.each([legacy,modern])('trusted lifecycle %s', protocol=>{
   const p=await pr.json() as {proposalId:string;digest:string}, path=`/admin/persona/${f.m.name}/proposals/${p.proposalId}`, exact={...target,digest:p.digest};
   expect((await admin(`${path}/confirm`,{...exact,confirmationId:'confirm2',decision:'approve'})).status).toBe(200); expect((await admin(`${path}/adopt`,exact)).status).toBe(200);
   const revised=value(await rpc(f,protocol,'refresh_context',{cursor:first.cursor}, {...a,turn:'turn-2'})); expect(revised.identity).toEqual(original); expect(JSON.stringify(revised.persona)).toContain('Revised persona');
+ });
+ it('resumes only an existing root or verified child without switching subjects',async()=>{
+  const f=await fixture(), other=await fixture(), a=meta('resume-root');
+  const neutral=value(await rpc(f,protocol,'resume_context',{},a)); expect(neutral.activationEstablished).toBe(false);
+  await initialize(f,protocol,a); const resumed=value(await rpc(f,protocol,'resume_context',{},a)); expect(resumed.identity).toBeDefined();
+  failed(await rpc({...f,m:other.m},protocol,'resume_context',{},a));
+  const child:Meta={...meta('resume-child'),parentId:a.id,seeded:true}; const inherited=value(await rpc(f,protocol,'resume_context',{},child)); expect(inherited.identity).toBeDefined(); expect(inherited.identity).toEqual(resumed.identity);
+  failed(await rpc(f,protocol,'resume_context',{}, {...meta('bad-child'),parentId:'missing',seeded:true}));
+  failed(await rpc(f,protocol,'resume_context',{}, {...meta('temporary'),temporary:true}));
+ });
+ it('acknowledges notice without erasing unresolved history gaps',async()=>{
+  const f=await fixture(), a=meta('gap-root'); a.history={cutoff:null,coverage:'partial',gaps:[{id:'gap',from:null,to:null,reason:'unavailable'}],items:[]};
+  const p=value(await rpc(f,protocol,'activate_context',{},a)).persona; value(await rpc(f,protocol,'initialize_context',{personaVersion:p.version,personaDigest:p.digest},a));
+  const done=value(await rpc(f,protocol,'complete_context',{requestId:'complete-gap'},a)); expect(done.historyIncomplete).toBe(true); expect(done.noticePending).toBe(true);
+  const acknowledged=value(await rpc(f,protocol,'acknowledge_history_notice',{},a)); expect(acknowledged.noticePending).toBe(false); expect(acknowledged.historyIncomplete).toBe(true);
+  const resumed=value(await rpc(f,protocol,'resume_context',{},a)); expect(resumed.activation.historyIncomplete).toBe(true); expect(resumed.activation.noticePending).toBe(false);
  });
  it('enforces metadata, activation gates, turn cursor and immutable identity',async()=>{
   const f=await fixture(), a=meta('conversation-a'); expect((await rpc(f,protocol,'activate_context',{},a,f.m.token)).status).toBe(401);

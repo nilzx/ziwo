@@ -61,6 +61,28 @@ export function lifecycleServer(env: Env, hash: string, target: BindingTarget): 
     if (b.identityId !== target.identityId || b.instance !== target.instance || b.memory !== target.memory) throw new PersonaError(409, 'this conversation is already bound to a different subject or instance');
     return b;
   }
+  async function loadingState(b: ThreadBinding): Promise<Record<string, unknown>> {
+    return { activationEstablished: true, identity: { id: b.identityId, instance: b.instance }, activationId: b.activationId,
+      persona: unwrap(await stub.loadPersona(b.identityId, b.instance)),
+      activation: unwrap(await stub.activationRequest(b, 'status', undefined)) };
+  }
+  server.registerTool('resume_context', {
+    title: 'Resume the original subject workflow',
+    description: 'Inspect the original conversation binding and load its current confirmed persona and initialization progress. A verified persistent fork inherits its parent subject; an unbound root stays neutral. This never switches subjects or releases an established binding.',
+    inputSchema: z.object({}).strict(), annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, (_raw, ctx) => result(async () => {
+    const meta = metadata(ctx), { history: _history, turn: _turn, ...claim } = meta;
+    const prior = await registry.mcpConversation(hash, claim, null, '', Date.now());
+    if ('error' in prior) throw new PersonaError(409, prior.error);
+    if (prior.value === null && meta.parentId === null) return { activationEstablished: false,
+      activation: { phase: 'unbound', canRun: false, initializationComplete: false } };
+    if (prior.value === null) {
+      // A fork may only inherit an authenticated parent's existing target. Load
+      // the confirmed persona before creating its immutable child binding.
+      unwrap(await stub.loadPersona(target.identityId, target.instance));
+    }
+    return loadingState(await bound(meta, prior.value === null));
+  }));
   server.registerTool('activate_context', {
     title: 'Activate this subject', description: 'Bind this persistent conversation to this endpoint subject and load its confirmed persona. Existing bindings cannot be changed. This does not finish initial history processing.',
     inputSchema: z.object({}).strict(), annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: false },
@@ -78,7 +100,7 @@ export function lifecycleServer(env: Env, hash: string, target: BindingTarget): 
     // Once a binding RPC starts, a failed response is not proof of rollback.
     definitelyUnbound = false;
     const b = await bound(meta, true);
-    return { identity: { id: b.identityId, instance: b.instance }, activationId: b.activationId, persona,
+    return { activationEstablished: true, identity: { id: b.identityId, instance: b.instance }, activationId: b.activationId, persona,
       activation: unwrap(await stub.activationRequest(b, 'status', undefined)) };
     }, () => definitelyUnbound ? { activationEstablished: false } : {});
   });
@@ -118,6 +140,11 @@ export function lifecycleServer(env: Env, hash: string, target: BindingTarget): 
     title: 'Acknowledge a persona revision during initialization', description: 'Use only after loading the exact current persona version when initialization is interrupted by a revision.',
     inputSchema: z.object(personaReceipt).strict(), annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, (input, ctx) => result(async () => { const b = await bound(metadata(ctx)); return unwrap(await stub.activationRequest(b, 'persona', { ...input, threadId: b.threadId })); }));
+  server.registerTool('acknowledge_history_notice', {
+    title: 'Acknowledge the history gap notice',
+    description: 'After communicating the persisted incomplete-history notice, acknowledge it so resume does not repeat the same notice. This does not resolve or erase any gap.',
+    inputSchema: z.object({}).strict(), annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, (_input, ctx) => result(async () => { const b = await bound(metadata(ctx)); return unwrap(await stub.activationRequest(b, 'notice', { threadId: b.threadId })); }));
   server.registerTool('refresh_context', {
     title: 'Refresh this turn before answering', description: 'Read confirmed persona revisions and material memory changes for the bound conversation. Apply all pages until complete=true. Pass the returned cursor to bound memory tools in this user turn. Empty changes do not disable new memory writes.',
     inputSchema: contextSyncInput, annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
