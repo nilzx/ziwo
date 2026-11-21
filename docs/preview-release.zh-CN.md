@@ -2,11 +2,11 @@
 
 [English](preview-release.md)
 
-候选版本为`@ziwo/memory@0.3.0-rc.1`和`@nilzx/dsh-mcp-connector@0.3.0-rc.1`。npm发布、测试服务器部署与主实例更新是不同动作；源码或本地测试通过不代表已经发布。预览版使用`next`，稳定版保留`latest`。
+2026-11-21已发布`@ziwo/memory@0.3.0-rc.1`和`@nilzx/dsh-mcp-connector@0.3.0-rc.2`，均使用`next`。稳定版`latest`保留Ziwo0.2.0与连接器0.2.2。npm发布、测试服务器部署与主实例更新是不同动作；精确标签和验证结果见[发布记录](releases/0.3.0-preview.md)。
 
 ## 安装与更新
 
-发布后，先用独立测试实例验证精确版本：
+先用独立测试实例验证精确版本：
 
 ```sh
 npx @ziwo/memory@0.3.0-rc.1 --version
