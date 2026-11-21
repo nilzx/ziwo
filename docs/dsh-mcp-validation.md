@@ -1,6 +1,31 @@
 # DeepSeek Harness MCP validation
 
-## Current local acceptance — 2026-11-20
+## Release readiness follow-up — 2026-11-21
+
+Recoverable host registration, metadata queries and explicit credential recovery
+passed local regression and a synthetic test-server check organized by GPT-6.1
+Terra. The Worker passed 555 tests, Node tooling 164, and the installed prebuilt
+package 317 smoke checks. Connector package changes on branch
+`codex/r1-package-readiness` passed actual pack/install and isolated host builds
+on Node 22.23.5 and 26.13.1; 158 connector tests executed successfully. Those
+package changes are based on connector 0.2.2 and have not been released.
+
+The test server now runs commit `f99bc3f`, version
+`8b131604-03ea-48dc-a8c2-02565bf65c08`, tagged `r1-f99bc3f`, at 100%.
+The management check verified registration retries, rotation and revocation;
+its exact test host was revoked and its credential returned 401. A complete
+metadata listing contained only the recognized previous and current test hosts,
+both revoked. No unidentified host remained in that listing, and no additional
+cleanup was performed. This does not reconstruct the earlier network failure.
+See [the reusable check](host-registry-validation.md).
+
+The historical intermittent scale-replay failure remains unresolved: 42 targeted
+runs passed, but the old report lacks the failing assertion and input. Failure
+capture and synthetic replay tooling are now available. Passing runs do not
+establish a root cause or fix, so this remains a preview-release gate. This
+follow-up made no model calls and does not replace the six model runs below.
+
+## Capability acceptance — 2026-11-20
 
 The confirmed capability-tier scope now passes local validation: explicit
 activation, immutable subject binding, approved same-subject persona revisions,
@@ -48,12 +73,12 @@ persona revision, recovery, history and failure matrix remains supported by the
 local evidence above, not by these six runs alone.
 
 The first synthetic host registration returned a network error without a
-response; its remote outcome is unknown. Its random name and ID were not
-retained, so a possible orphan host record cannot be identified or revoked.
-That attempt created no known subjects and started no models. Subsequent setup
-saved names and operation states before requests, and all known objects from
-the successful run were cleaned up. The earlier sections below are historical
-samples and retain their original failures and narrower scopes.
+response, and its random name and ID were not retained. At the time a possible
+orphan record could not be located; the 2026-11-21 metadata audit above found
+no unidentified host. That attempt created no known subjects and started no
+models. Subsequent setup saved names and operation states before requests, and
+all known objects from the successful run were cleaned up. The earlier sections
+below are historical samples and retain their original failures and narrower scopes.
 
 ## Earlier generic turn controller follow-up — 2026-11-20
 
