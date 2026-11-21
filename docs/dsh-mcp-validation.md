@@ -1,5 +1,16 @@
 # DeepSeek Harness MCP validation
 
+## Generic contract follow-up — 2026-11-21
+
+R2 adds opt-in versioned capability profiles, explicit missing-capability
+refusals, a service-neutral inventory MCP fixture and reusable grouped checks.
+The connector passed 165 tests with real host modules and no skips; pack/install
+passed. Native Codex CLI separately passed ordinary MCP interoperability on the
+same synthetic fixture, without the Ziwo-specific gateway. See the
+[contract](mcp-client-contract-v1.md) and [client evidence matrix](mcp-client-validation.md)
+for precise scopes, isolation prerequisites and untested capabilities. These
+changes are unreleased and do not replace the prior full dsh model evidence.
+
 ## Release readiness follow-up — 2026-11-21
 
 Recoverable host registration, metadata queries and explicit credential recovery

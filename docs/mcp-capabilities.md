@@ -1,6 +1,6 @@
 # MCP lifecycle capabilities
 
-Ziwo supports ordinary MCP clients and clients with a generic lifecycle controller. A server receives tool calls, not user-turn events: standard MCP alone cannot guarantee that a client refreshes context before every answer.
+Ziwo supports ordinary MCP clients and clients with a generic lifecycle controller. A server receives tool calls, not user-turn events: standard MCP alone cannot guarantee that a client refreshes context before every answer. See the [version 1 capability contract](mcp-client-contract-v1.md), [reusable checks](../conformance/README.md), and [client evidence matrix](mcp-client-validation.md) for requirements and measured support.
 
 | Capability | Ordinary MCP | Generic turn controller | Existing trusted host integration |
 | --- | --- | --- | --- |
@@ -12,7 +12,7 @@ Ziwo supports ordinary MCP clients and clients with a generic lifecycle controll
 | Initial chat-history activation gates | Not exposed on ordinary token/OAuth MCP | Trusted lifecycle MCP endpoint and configurable initialization gate; local acceptance passed | Yes |
 | Authoritative persistent identity binding | No | Registered connector credential + host metadata on the lifecycle endpoint | Yes |
 
-The generic controller is reusable connector functionality, not a Ziwo-specific harness adapter. The first implementation is in `dsh-mcp-connector`. The feed, evaluation and trusted lifecycle endpoints do not make ordinary MCP equivalent to the full [activation](activation.md) and [turn synchronization](turn-sync.md) contract. The confirmed capability-tier scope passed local synthetic acceptance, including activation, persistent ownership, safe incremental delivery, and isolation. The strongest tier requires the host capabilities described below; stock dsh does not provide all of them. See the [current validation status](dsh-mcp-validation.md#current-local-acceptance--2026-11-20) for deployment and evidence limits.
+The generic controller is reusable connector functionality, not a Ziwo-specific harness adapter. The first implementation is in `dsh-mcp-connector`. The feed, evaluation and trusted lifecycle endpoints do not make ordinary MCP equivalent to the full [activation](activation.md) and [turn synchronization](turn-sync.md) contract. The confirmed capability-tier scope passed local synthetic acceptance, including activation, persistent ownership, safe incremental delivery, and isolation. The strongest tier requires the host capabilities described below; stock dsh does not provide all of them. See the [current validation status](dsh-mcp-validation.md) for deployment and evidence limits.
 
 ## Incremental persona and memory feed
 
