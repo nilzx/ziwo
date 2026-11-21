@@ -1,6 +1,6 @@
 # Bound turn synchronization
 
-Development API, not part of the released v0.2.0 service. It builds on [identity bindings](identity-bindings.md), [persona approval](persona.md), and [activation](activation.md).
+API included in the 0.3.0 preview source, not the stable v0.2.0 service. See the [preview guide](preview-release.md). It builds on [identity bindings](identity-bindings.md), [persona approval](persona.md), and [activation](activation.md).
 
 Each user turn checks the bound identity's current adopted persona and committed memory changes together. The host loads the persona first, then the changes, before presenting a response. A persona revision never changes the identity binding. A revision adopted during a running turn is picked up next turn; it does not interrupt that turn's normal memory writes.
 

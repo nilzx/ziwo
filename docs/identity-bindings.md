@@ -1,6 +1,6 @@
 # Stable identities and host conversation bindings
 
-This describes the N1 foundation in the development branch. It has not been deployed or released. The [N2 persona service](persona.md) adds independent initialization and version loading. The [N3 activation service](activation.md) adds gated history backfill and initialization readiness. A Codex adapter remains separate work. Binding responses derive `canRun` from the current persona and persisted initialization state.
+This describes the identity foundation included in the 0.3.0 preview source. See the [preview guide](preview-release.md) for publication, deployment and migration boundaries. The [N2 persona service](persona.md) adds independent initialization and version loading. The [N3 activation service](activation.md) adds gated history backfill and initialization readiness. Optional [Codex reference and native CLI hosts](../adapters/codex/README.md) are available; desktop integration remains separate work. Binding responses derive `canRun` from the current persona and persisted initialization state.
 
 ## Identity and instance
 
@@ -64,7 +64,7 @@ Admin-authenticated operations:
 | `POST /admin/harnesses/<id>/token` | Rotates the token while preserving the namespace and all bindings. The old token stops working. |
 | `DELETE /admin/harnesses/<id>` | Revokes the namespace's credential; preserves binding history. A revoked host cannot be reactivated by token rotation. |
 
-Only the token's SHA-256 is stored. Tokens use the `zwh_` prefix and are not accepted as ordinary memory MCP credentials. The unreleased [trusted lifecycle MCP endpoint](mcp-capabilities.md#trusted-conversation-lifecycle-over-mcp) accepts them with connector-authenticated conversation metadata. Registration without a request ID retains the legacy behavior: the same display name can create another namespace.
+Only the token's SHA-256 is stored. Tokens use the `zwh_` prefix and are not accepted as ordinary memory MCP credentials. The preview [trusted lifecycle MCP endpoint](mcp-capabilities.md#trusted-conversation-lifecycle-over-mcp) accepts them with connector-authenticated conversation metadata. Registration without a request ID retains the legacy behavior: the same display name can create another namespace.
 
 A request ID uses 1–200 ASCII letters, digits, underscore, dot, colon or hyphen.
 The same request ID and trimmed name return the same host with HTTP 200,

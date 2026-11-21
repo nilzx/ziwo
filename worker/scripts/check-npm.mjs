@@ -33,6 +33,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { commandName, fixedFiles, jsonc, localConfig, pack, packageName, workerDir } from "./pack-npm.mjs";
 import { compareUploads, dryRun, moduleName } from "./upload-form.mjs";
+import { retainCheckedTarball } from "./checked-artifact.mjs";
 
 const failures = [];
 /** @param {string} name @param {boolean} ok @param {string} [detail] */
@@ -69,6 +70,12 @@ const mib = (/** @type {number} */ n) => `${(n / 1024 / 1024).toFixed(1)} MiB`;
 const kib = (/** @type {number} */ n) => `${(n / 1024).toFixed(1)} KiB`;
 
 async function main() {
+  let artifactDir;
+  for (let i = 2; i < process.argv.length; i++) {
+    if (process.argv[i] === "--keep") continue;
+    if (process.argv[i] !== "--artifact-dir" || artifactDir || !process.argv[i + 1] || process.argv[i + 1].startsWith("--")) throw new Error("Expected --keep or --artifact-dir <directory>");
+    artifactDir = path.resolve(process.argv[++i]);
+  }
   const npm = process.platform === "win32" ? "npm.cmd" : "npm";
   const base = existsSync("/private/tmp") ? "/private/tmp" : os.tmpdir();
   const scratch = await mkdtemp(path.join(base, "ziwo-check-npm-"));
@@ -116,7 +123,8 @@ async function main() {
   const v = ziwo(["--version"]);
   check(`ziwo --version says ${packed.version}`, v.code === 0 && v.out === `${packed.version}\n`, v.out + v.err);
   const h = ziwo(["--help"]);
-  const { help } = await import(pathToFileURL(path.join(installed, "lib", "cli.mjs")).href);
+  const { helpFor } = await import(pathToFileURL(path.join(installed, "lib", "cli.mjs")).href);
+  const help = helpFor(packed.version);
   check("ziwo --help prints the help", h.code === 0 && h.out === help, h.out + h.err);
   const plain = ziwo([]);
   check("ziwo alone prints the help", plain.code === 0 && plain.out === help, plain.out + plain.err);
@@ -185,6 +193,10 @@ async function main() {
     console.log(`scratch directory, left for inspection: ${scratch}`);
     console.log(`CHECK-NPM: ${failures.length} FAILED: ${failures.join("; ")}`);
     process.exit(1);
+  }
+  if (artifactDir) {
+    const metadata = await retainCheckedTarball(tarball, artifactDir, packed.version);
+    console.log(`checked artifact retained: ${path.join(artifactDir, metadata.filename)} (${metadata.sha256})`);
   }
   // An installed copy is a third of a gigabyte: gone once everything passed.
   if (process.argv.includes("--keep")) {

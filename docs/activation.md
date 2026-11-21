@@ -1,6 +1,6 @@
 # Activation and history backfill
 
-The unreleased N3 service implements the initialization sequence: bind one identity, load and acknowledge its current persona, establish a write session without reading autobiographical memory, process the available pre-activation history, then retrieve relevant memory. It builds on [identity bindings](identity-bindings.md) and [persona adoption](persona.md). The optional [Codex hosts](../adapters/codex/README.md) implement explicit activation and [per-turn persona/memory synchronization](turn-sync.md); the native CLI workspace release activates new conversations only.
+The 0.3.0 preview service implements the initialization sequence: bind one identity, load and acknowledge its current persona, establish a write session without reading autobiographical memory, process the available pre-activation history, then retrieve relevant memory. It builds on [identity bindings](identity-bindings.md) and [persona adoption](persona.md). The optional [Codex hosts](../adapters/codex/README.md) implement explicit activation and [per-turn persona/memory synchronization](turn-sync.md); the native CLI workspace release activates new conversations only.
 
 ## Authority and readiness
 

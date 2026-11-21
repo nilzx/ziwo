@@ -1,6 +1,6 @@
 # Persona extraction and continuity evaluation
 
-This unreleased reference workflow uses Codex App Server to extract a traceable candidate from an explicitly selected corpus and compare it in isolated offline conversations. It does not connect to a Ziwo endpoint, write memories, bind an identity, confirm a proposal, or adopt a persona. The [normal activation contract](activation.md) remains unchanged.
+This source-only reference workflow uses Codex App Server to extract a traceable candidate from an explicitly selected corpus and compare it in isolated offline conversations. It does not connect to a Ziwo endpoint, write memories, bind an identity, confirm a proposal, or adopt a persona. The [normal activation contract](activation.md) remains unchanged.
 
 The bundled fixture is entirely authored synthetic dialogue. It is useful for exercising provenance checks and measurement, but is not observed behavior of a real subject. Its scores cannot establish real-persona continuity.
 

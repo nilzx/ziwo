@@ -1,6 +1,6 @@
 # ziwo on Cloudflare Workers: specification
 
-This document describes how the Worker implementation of ziwo behaves, for a developer or an AI agent who wants to operate, extend or audit a deployment. It describes the development code in `worker/` as of 2026-11-19. The identity, host-binding, persona, activation and turn-sync APIs are unreleased; see [Identity and bindings](identity-bindings.md), [Persona initialization and revision](persona.md), [Activation and history backfill](activation.md), and [Per-turn synchronization](turn-sync.md). Where it states a figure that was measured, it says when and under what conditions; where something has not been measured, it says so.
+This document describes how the Worker implementation of ziwo behaves, for a developer or an AI agent who wants to operate, extend or audit a deployment. It describes the 0.3.0 preview source in `worker/` as of 2026-11-21. The identity, host-binding, persona, activation and turn-sync APIs have separate [preview installation and migration requirements](preview-release.md); see [Identity and bindings](identity-bindings.md), [Persona initialization and revision](persona.md), [Activation and history backfill](activation.md), and [Per-turn synchronization](turn-sync.md). Where it states a figure that was measured, it says when and under what conditions; where something has not been measured, it says so.
 
 ziwo is an autobiographical memory for an AI: it records what the AI lived through, felt and learned, not the state of a project. It is served over MCP (the Model Context Protocol). Several formats here come from an earlier implementation in Go, which was removed from the repository on 2026-11-13 and is in its history up to commit `a4a8bab`; logs and exports it wrote are still read. OAuth is described in more depth, with its sources, in [worker/docs/oauth-notes.md](../worker/docs/oauth-notes.md).
 
@@ -600,7 +600,7 @@ A memory's name is 1 to 32 characters: lower-case letters, digits, `-` and `_`, 
 
 A fixed token is `ziwo_` followed by 32 random bytes in base64url (43 characters). It is shown once, in the answer that created it; the memory object keeps only its SHA-256. Replacing it makes the old token stop working at once. Replacing a token does not revoke OAuth grants.
 
-The instance id is drawn when a memory is created or imported. An export records its source instance, but import generates a new current instance. OAuth grants and authenticated fixed-token requests capture an instance; tool execution rejects a different one. A stable identity is separate and survives a v2/v3/v4 restore. See [identity migration and binding](identity-bindings.md) for the unreleased N1 APIs and legacy compatibility boundary.
+The instance id is drawn when a memory is created or imported. An export records its source instance, but import generates a new current instance. OAuth grants and authenticated fixed-token requests capture an instance; tool execution rejects a different one. A stable identity is separate and survives a v2/v3/v4 restore. See [identity migration and binding](identity-bindings.md) for the preview identity APIs and legacy compatibility boundary.
 
 ### The admin secret
 

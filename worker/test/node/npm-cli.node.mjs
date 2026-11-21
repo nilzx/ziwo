@@ -128,6 +128,20 @@ describe("the command line", () => {
   });
 });
 
+describe("preview channel guidance", () => {
+  it("pins preview help, errors and update instructions to the current version", async () => {
+    for (const argv of [["--help"], ["--unknown"], ["deploy", "--name", "preview"]]) {
+      const f = fake({ argv });
+      f.io.version = "0.3.0-rc.1";
+      await run(f.io);
+      const output = f.seen.out + f.seen.err;
+      assert.match(output, /npx @ziwo\/memory@0\.3\.0-rc\.1/);
+      assert.doesNotMatch(output, /@latest/);
+      if (argv[0] === "deploy") assert.match(output, /deploy --name preview/);
+    }
+  });
+});
+
 describe("the language", () => {
   const intl = (/** @type {string} */ l) => () => l;
   it("follows LC_ALL, then LC_MESSAGES, then LANG, then Intl", () => {

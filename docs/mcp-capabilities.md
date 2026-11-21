@@ -16,7 +16,7 @@ The generic controller is reusable connector functionality, not a Ziwo-specific 
 
 ## Incremental persona and memory feed
 
-The unreleased `sync_context` tool is available through the existing fixed-token and OAuth memory endpoint, on both supported MCP protocol generations. Existing tools and text replies remain compatible. It accepts:
+The preview `sync_context` tool is available through the existing fixed-token and OAuth memory endpoint, on both supported MCP protocol generations. Existing tools and text replies remain compatible. It accepts:
 
 ```json
 { "cursor": "opaque cursor from this conversation", "reload": false, "page_size": 32 }
@@ -71,7 +71,7 @@ of improved real personality continuity.
 
 ## Trusted conversation lifecycle over MCP
 
-The unreleased `/<memory>/agent/mcp` endpoint uses the same MCP tool protocol, but
+The preview `/<memory>/agent/mcp` endpoint uses the same MCP tool protocol, but
 requires a registered `zwh_` connector credential. Ordinary memory tokens and
 OAuth grants remain on `/<memory>/mcp` and cannot call this endpoint. Register
 and rotate the private credential through the existing [host administration
@@ -301,7 +301,7 @@ Clients should use structured state rather than parse session IDs from prose. Re
 
 ## Generic connector configuration
 
-The unreleased connector branch supports an opt-in `turnContext` setting on any configured server:
+The 0.3.0 preview connector supports an opt-in `turnContext` setting on any configured server:
 
 ```yaml
 servers:

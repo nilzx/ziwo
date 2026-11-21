@@ -1,6 +1,6 @@
 # Persona formation and environment comparisons
 
-These unreleased N6 reference tools extend the [offline continuity workflow](continuity-evaluation.md). They support a separate formation review for a new or changing subject and a frozen experiment across explicitly selected environments. They do not adopt a persona or prove real, long-term continuity. The [live confirmation and adoption contract](persona.md) remains authoritative.
+These source-only N6 reference tools extend the [offline continuity workflow](continuity-evaluation.md). They support a separate formation review for a new or changing subject and a frozen experiment across explicitly selected environments. They do not adopt a persona or prove real, long-term continuity. The [live confirmation and adoption contract](persona.md) remains authoritative.
 
 ## Formation without invented traits
 

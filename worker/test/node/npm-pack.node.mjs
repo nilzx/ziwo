@@ -10,6 +10,7 @@ import { after, before, describe, it } from "node:test";
 import { assemble, fixedFiles, localConfig, lockedWrangler, packagedConfig } from "../../scripts/pack-npm.mjs";
 import { compareUploads, parseUpload } from "../../scripts/upload-form.mjs";
 import { removeScratch, scratch, workerDir } from "./go.mjs";
+import { releaseChannel } from "../../scripts/release-policy.mjs";
 
 const { version } = JSON.parse(await readFile(path.join(workerDir, "package.json"), "utf8"));
 const wranglerPkg = JSON.parse(await readFile(path.join(workerDir, "node_modules", "wrangler", "package.json"), "utf8"));
@@ -59,7 +60,7 @@ describe("the package pack-npm writes", () => {
     const pkg = JSON.parse(await readFile(path.join(out, "package.json"), "utf8"));
     assert.deepEqual(Object.keys(pkg).sort(), ["bin", "dependencies", "description", "engines", "files", "homepage", "license", "name", "publishConfig", "repository", "type", "version"]);
     assert.equal(pkg.name, "@ziwo/memory");
-    assert.deepEqual(pkg.publishConfig, { access: "public" });
+    assert.deepEqual(pkg.publishConfig, { access: "public", tag: releaseChannel(version) });
     assert.equal(pkg.version, version);
     assert.equal(pkg.license, "MIT");
     assert.equal(pkg.type, "module");
