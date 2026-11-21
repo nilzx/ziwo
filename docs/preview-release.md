@@ -2,15 +2,15 @@
 
 [简体中文](preview-release.zh-CN.md)
 
-The candidate is `@ziwo/memory@0.3.0-rc.1`, paired with
-`@nilzx/dsh-mcp-connector@0.3.0-rc.1`. Publication and deployment are separate
-actions. The `next` npm channel is for previews; `latest` remains stable. A
-source checkout or successful local test does not mean a version is published.
+The published preview is `@ziwo/memory@0.3.0-rc.1`, paired with
+`@nilzx/dsh-mcp-connector@0.3.0-rc.2`. Both were released on November 21, 2026
+through the `next` npm channel. `latest` remains Ziwo 0.2.0 and connector 0.2.2.
+Publication and deployment are separate actions; see the
+[release record](releases/0.3.0-preview.md) for exact tags and verification.
 
 ## Install deliberately
 
-Once the candidate is published, use the exact version in a separate test
-deployment first:
+Use the exact version in a separate test deployment first:
 
 ```sh
 npx @ziwo/memory@0.3.0-rc.1 --version
@@ -31,7 +31,7 @@ not npm's `latest` channel.
 | Component | Preview scope |
 | --- | --- |
 | Ziwo 0.3.0-rc.1 | Ordinary token/OAuth MCP and text tools remain; adds stable identity, persona evaluation/approval, activation, incremental feed, trusted lifecycle and recoverable host registration |
-| Connector 0.3.0-rc.1 | Ordinary configuration remains; explicit version 1 `turn-sync` / `trusted-lifecycle` profiles validate required capabilities |
+| Connector 0.3.0-rc.2 | Ordinary configuration remains; explicit version 1 `turn-sync` / `trusted-lifecycle` profiles validate required capabilities |
 | dsh 0.2.2-rc.5 | Tested generic controller with native executor; strongest profile requires the optional reviewed preparation-admission build, which is not in stock dsh |
 | Node | Ziwo uses its packaged Wrangler's declared minimum; connector declares >=20; dsh 0.2.2-rc.5 declares >=24.9.0. Node 22.23.5 evidence covers the optional build and selected host modules, not support for the full dsh runtime |
 | Native Codex CLI 0.171.0 | Ordinary MCP synthetic read/write passed; this does not enable forced per-turn synchronization in arbitrary CLI or desktop chats |

@@ -10,8 +10,8 @@ What it is, how to connect an AI to it, and everything else: https://github.com/
 
 ## Preview channel
 
-This package is the `0.3.0-rc.1` candidate. After publication, use the exact
-version deliberately on a separate test deployment:
+This package is the `0.3.0-rc.1` preview. Use the exact version deliberately
+on a separate test deployment:
 
 ```sh
 npx @ziwo/memory@0.3.0-rc.1 deploy --dry-run --name ziwo-preview

@@ -12,8 +12,8 @@ ziwo (自我, "self") is a memory for an AI. It joins what an AI remembers acros
 
 ## Get started
 
-The `0.3.0-rc.1` preview candidate adds explicit persona and lifecycle capabilities.
-It uses the separate `next` channel when published. See the
+The published `0.3.0-rc.1` preview adds explicit persona and lifecycle capabilities.
+It uses the separate `next` channel. See the
 [preview installation and recovery guide](docs/preview-release.md) before opting
 in; the stable installation below continues to use `latest`.
 
