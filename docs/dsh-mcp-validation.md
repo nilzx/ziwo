@@ -4,7 +4,7 @@
 
 Recoverable host registration, metadata queries and explicit credential recovery
 passed local regression and a synthetic test-server check organized by GPT-6.1
-Terra. The Worker passed 555 tests, Node tooling 164, and the installed prebuilt
+Terra. The Worker passed 556 tests, Node tooling 164, and the installed prebuilt
 package 317 smoke checks. Connector package changes on branch
 `codex/r1-package-readiness` passed actual pack/install and isolated host builds
 on Node 22.23.5 and 26.13.1; 158 connector tests executed successfully. Those
@@ -19,11 +19,17 @@ both revoked. No unidentified host remained in that listing, and no additional
 cleanup was performed. This does not reconstruct the earlier network failure.
 See [the reusable check](host-registry-validation.md).
 
-The historical intermittent scale-replay failure remains unresolved: 42 targeted
-runs passed, but the old report lacks the failing assertion and input. Failure
-capture and synthetic replay tooling are now available. Passing runs do not
-establish a root cause or fix, so this remains a preview-release gate. This
-follow-up made no model calls and does not replace the six model runs below.
+The scale-test investigation reproduced a fixture defect: a random sort
+comparator changed the generated operation stream despite a fixed seed, and a
+captured run failed its session-count coverage threshold while its rebuilt data
+matched exactly. Fisher-Yates shuffling now fixes the random draw count. Both
+the original seed and the failing seed run twice in fresh objects, with matching
+generation fingerprints and every original coverage/rebuild assertion retained.
+The old shuffle failed the regression; the fix passed the full suite, independently
+checked by GPT-6.1 Terra. This closes the reproducible B02 fixture defect and the
+R1 gate. The original three historical failures have no saved inputs, so they
+cannot be attributed individually. No production data-rebuild fix is claimed.
+This follow-up made no model calls and does not replace the six model runs below.
 
 ## Capability acceptance — 2026-11-20
 

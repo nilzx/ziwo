@@ -4,6 +4,7 @@
 // refusals the model could have caused (a target already erased or replaced,
 // an entry resting on what no longer stands) are allowed and counted.
 
+import { createHash } from "node:crypto";
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import type { EntryRequest, ReflectView } from "../src/memory/amend";
@@ -11,10 +12,11 @@ import { Embedding, fullEvery } from "../src/memory/embedding";
 import type { Memory as MemoryObject } from "../src/memory-object";
 import { packSize } from "../src/store/vectors";
 import { farFuture, queryVectorOf, TopicEmbedder, topicSettings } from "./embed-helpers";
-import { dump, freshObject, minute, t0, testParams } from "./helpers";
+import { dump, freshObject, minute, t0, testParams, type Stub } from "./helpers";
 import { isInvalid, ok } from "./service-helpers";
 
-// mulberry32: a small seeded generator, so that a failure can be replayed.
+// mulberry32: the action stream is seeded; failure records also retain the
+// events and contents because record IDs are intentionally still random.
 function rng(seed: number): () => number {
   return () => {
     seed = (seed + 0x6d2b79f5) | 0;
@@ -25,6 +27,153 @@ function rng(seed: number): () => number {
 }
 
 const words = ["猫", "部署", "纠正", "proxy", "天气", "项目", "alpha", "beta", "gamma", "delta", "年糕", "上线", "误解", "release", "kitten", "记忆"];
+
+// A random sort comparator violates the sorting contract and lets runtime
+// sorting choices consume a different number of random values. Fisher-Yates
+// makes each permutation and the following action stream reproducible.
+function shuffled<T>(values: T[], random: () => number): T[] {
+  const out = [...values];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(random() * (i + 1));
+    [out[i], out[j]] = [out[j]!, out[i]!];
+  }
+  return out;
+}
+
+// Capture the generated path as well as the rebuilt data: a seed must describe
+// the same operations in fresh objects, independently of random object/record IDs.
+function generatedScale(stub: Stub, seed: number) {
+  return runInDurableObject(stub, (obj: MemoryObject, state) => {
+    obj.store.setParams(testParams());
+    const random = rng(seed);
+    let draws = 0;
+    const r = () => { draws++; return random(); };
+    const trace: number[][] = [];
+    const pick = <T>(xs: T[]): T => xs[Math.floor(r() * xs.length)]!;
+    let now = t0;
+    obj.now = () => now;
+    const sessions: string[] = [];
+    const written: string[] = [];
+    const prefs: string[] = [];
+    const people = ["年糕", "阿明", "小红"];
+    // A handful of subjects, each in two spellings.
+    const subjectNames = ["garden", "Garden!", "猫的事", "猫 的 事", "cooking", "COOKING", "吉他", "吉 他"];
+    const phrase = () => `${pick(words)} ${pick(words)}`;
+    let invalid = 0;
+    const done: Record<string, number> = {};
+    const refused: Record<string, number> = {};
+    const tally = <T>(what: string, x: T): T => {
+      const into = isInvalid(x) ? refused : done;
+      into[what] = (into[what] ?? 0) + 1;
+      return x;
+    };
+    // Subject items are remember events too: the run is longer than it
+    // was before them, so that every other kind is as frequent.
+    for (let step = 0; obj.store.counts().events < 3400; step++) {
+      now += Math.floor(r() * 20 * minute);
+      const roll = r();
+      trace.push([step, draws, roll]);
+      if (sessions.length === 0 || roll < 0.04) {
+        sessions.push(ok(obj.getContext({ model: pick(["model-a", "model-b", ""]), client: pick(["cli", "web"]) })).session.id);
+      } else if (roll < 0.45) {
+        const source = pick(["lived", "lived", "told", "inferred", "reconstructed"]);
+        const felt = r() < 0.2;
+        const res = obj.remember({
+          sessionId: pick(sessions),
+          // Some repeat an earlier write, as a retried call would.
+          gist: r() < 0.05 && written.length > 0 ? "重复的一件事" : `${phrase()} ${step}`,
+          body: r() < 0.05 ? "重复的正文" : `${phrase()} ${phrase()}`,
+          source,
+          happenedAt: source === "reconstructed" ? new Date(now - Math.floor(r() * 1e9)).toISOString() : undefined,
+          importance: pick([0, 0.2, 0.5, 0.7, 0.85, 0.95]),
+          feeling: felt ? "某种感觉" : undefined,
+          intensity: felt ? pick([0.3, 0.6, 0.95]) : undefined,
+          people: r() < 0.3 ? [pick(people)] : undefined,
+          subject: r() < 0.6 ? pick([...subjectNames, "unsorted"]) : undefined,
+        });
+        if (isInvalid(res)) invalid++;
+        else if (!res.dup) written.push(res.id);
+      } else if (roll < 0.65) {
+        ok(obj.recall({ query: phrase(), deep: r() < 0.2, limit: pick([0, 3, 10]), sessionId: pick([...sessions, "", "s_nope"]) }));
+      } else if (roll < 0.75) {
+        const n = 1 + Math.floor(r() * 4);
+        const ids = Array.from({ length: n }, () => (r() < 0.9 && written.length > 0 ? pick(written) : "m_unknown"));
+        ok(obj.expand({ ids, sessionId: pick([...sessions, ""]) }));
+      } else if (roll < 0.87 && written.length > 0) {
+        const action = pick(["retract", "restore", "pin", "unpin", "reweigh", "correct", "prefer", "unprefer"]);
+        const res = tally(action, obj.amend({
+          sessionId: pick(sessions), action, id: action === "unprefer" ? pick([...prefs, "p_gone"]) : pick(written),
+          importance: pick([0.1, 0.5, 0.9, 1]), text: `规则 ${phrase()}`, reason: r() < 0.5 ? "the user asked" : undefined,
+          gist: r() < 0.7 ? `${phrase()} 更正 ${step}` : undefined, body: r() < 0.5 ? phrase() : undefined,
+        }));
+        if (typeof res === "string") {
+          const made = /^(?:preference saved as|corrected:) (\S+?);? /.exec(res);
+          if (made !== null) (action === "prefer" ? prefs : written).push(made[1]!);
+          if (action === "unprefer") prefs.splice(prefs.indexOf(res.split(" ")[1]!), 1);
+        }
+      } else if (roll < 0.9 && written.length > 0) {
+        tally("erase", obj.erase({ sessionId: pick(sessions), id: pick(written), reason: r() < 0.5 ? "the user asked" : undefined }));
+      } else {
+        const sess = pick(sessions);
+        const view = tally("begin", obj.beginReflect({
+          sessionId: sess, limit: pick([0, 3, 8]), subject: r() < 0.3 ? pick([...subjectNames, "unsorted"]) : undefined,
+        }));
+        if (isInvalid(view) || view.batch === "") continue;
+        const frags = shuffled(view.fragments.map((m) => m.id), r);
+        const numbers = new Map(view.fragments.map((m) => [m.id, m.n]));
+        trace.push(frags.map((id) => numbers.get(id)!));
+        const entries: EntryRequest[] = [];
+        if (frags.length >= 2 && r() < 0.5) {
+          entries.push({
+            kind: "episode", gist: `${phrase()} 经历`, body: phrase(), from: frags.slice(0, 2 + Math.floor(r() * 2)), milestone: r() < 0.1,
+            subject: r() < 0.3 ? pick(subjectNames) : undefined,
+          });
+        }
+        if (r() < 0.3) {
+          entries.push({
+            kind: "lesson", gist: `${phrase()} 经验`, body: phrase(), from: [pick(frags), pick(frags)],
+            subject: r() < 0.3 ? pick([...subjectNames, `${pick(words)} 新主题 ${step}`]) : undefined,
+          });
+        }
+        // Subjects renamed, merged and filled.
+        const heads = obj.store.subjectsRecent(50).map((x) => x.id);
+        if (r() < 0.3 && heads.length > 0) {
+          const op = r();
+          if (op < 0.35) entries.push({ kind: "subject", subject: `${pick(words)} 主题 ${step}`, gist: phrase(), replaces: [pick(heads)] });
+          else if (op < 0.7) entries.push({ kind: "subject", subject: pick(subjectNames), gist: phrase(), replaces: [pick(heads)] });
+          else entries.push({ kind: "subject", subject: pick([...subjectNames, pick(heads)]), gist: phrase(), from: [pick(frags), pick(written)] });
+        }
+        if (r() < 0.4) entries.push({ kind: "impression", gist: `${phrase()} 印象`, about: pick(people), from: [pick(frags)] });
+        if (r() < 0.15 && frags.length >= 3) {
+          const ref = r() < 0.5 && view.selves.length > 0 ? pick(view.selves).id : undefined;
+          entries.push({ kind: "self", gist: `${phrase()} 自述`, context: "c", from: frags.slice(-3), ref });
+        }
+        if (r() < 0.15) entries.push({ kind: "reading", gist: `${phrase()} 理解`, ref: pick(written) });
+        const pass = frags.filter(() => r() < 0.5);
+        if (entries.length === 0 && pass.length === 0) continue;
+        let made = tally("finish", obj.finishReflect({ sessionId: sess, batch: view.batch, entries, pass }));
+        // Refused over an entry: the round is still open; write back the passes alone.
+        if (isInvalid(made) && pass.length > 0) made = tally("finish", obj.finishReflect({ sessionId: sess, batch: view.batch, pass }));
+        if (!isInvalid(made)) written.push(...made);
+      }
+    }
+    const kinds = Object.fromEntries(
+      state.storage.sql.exec<{ kind: string; c: number }>(`SELECT kind, count(*) AS c FROM events GROUP BY kind`).toArray().map((x) => [x.kind, x.c]),
+    );
+    const tiers = obj.store.tierCounts(obj.store.clock());
+    const before = dump(obj.store, state.storage);
+    obj.store.rebuild();
+    const after = dump(obj.store, state.storage);
+    const written2 = Object.fromEntries(
+      state.storage.sql.exec<{ k: string; c: number }>(`SELECT kind || ' ' || state AS k, count(*) AS c FROM memories GROUP BY 1`).toArray().map((x) => [x.k, x.c]),
+    );
+    const replacing = state.storage.sql.exec<{ c: number }>(`SELECT count(*) AS c FROM events WHERE payload LIKE '%"replaces":%'`).one().c;
+    const filed = state.storage.sql.exec<{ c: number }>(`SELECT count(*) AS c FROM events WHERE kind = 'remember' AND json_extract(payload, '$.subject') IS NOT NULL`).one().c;
+    const under = state.storage.sql.exec<{ c: number }>(`SELECT count(*) AS c FROM memories WHERE subject <> '' AND kind <> 'subject'`).one().c;
+    return { same: before === after, before, after, kinds, tiers, invalid, done, refused, written: written2, replacing, filed, under, check: obj.check(),
+      generation: { draws, digest: createHash("sha256").update(JSON.stringify(trace)).digest("hex") } };
+  });
+}
 
 describe("scale", () => {
   it("rebuild preserves equal-score search results at one timestamp", async () => {
@@ -42,160 +191,52 @@ describe("scale", () => {
     expect(result.after).toEqual(result.before);
   });
 
-  it("a rebuild after thousands of generated events reproduces the derived tables", async (ctx) => {
-    const stub = freshObject();
-    let result: Record<string, any> | undefined;
-    try {
-    result = await runInDurableObject(stub, (obj: MemoryObject, state) => {
-      obj.store.setParams(testParams());
-      const r = rng(20261111);
-      const pick = <T>(xs: T[]): T => xs[Math.floor(r() * xs.length)]!;
-      let now = t0;
-      obj.now = () => now;
-      const sessions: string[] = [];
-      const written: string[] = [];
-      const prefs: string[] = [];
-      const people = ["年糕", "阿明", "小红"];
-      // A handful of subjects, each in two spellings.
-      const subjectNames = ["garden", "Garden!", "猫的事", "猫 的 事", "cooking", "COOKING", "吉他", "吉 他"];
-      const phrase = () => `${pick(words)} ${pick(words)}`;
-      let invalid = 0;
-      const done: Record<string, number> = {};
-      const refused: Record<string, number> = {};
-      const tally = <T>(what: string, x: T): T => {
-        const into = isInvalid(x) ? refused : done;
-        into[what] = (into[what] ?? 0) + 1;
-        return x;
-      };
-      // Subject items are remember events too: the run is longer than it
-      // was before them, so that every other kind is as frequent.
-      for (let step = 0; obj.store.counts().events < 3400; step++) {
-        now += Math.floor(r() * 20 * minute);
-        const roll = r();
-        if (sessions.length === 0 || roll < 0.04) {
-          sessions.push(ok(obj.getContext({ model: pick(["model-a", "model-b", ""]), client: pick(["cli", "web"]) })).session.id);
-        } else if (roll < 0.45) {
-          const source = pick(["lived", "lived", "told", "inferred", "reconstructed"]);
-          const felt = r() < 0.2;
-          const res = obj.remember({
-            sessionId: pick(sessions),
-            // Some repeat an earlier write, as a retried call would.
-            gist: r() < 0.05 && written.length > 0 ? "重复的一件事" : `${phrase()} ${step}`,
-            body: r() < 0.05 ? "重复的正文" : `${phrase()} ${phrase()}`,
-            source,
-            happenedAt: source === "reconstructed" ? new Date(now - Math.floor(r() * 1e9)).toISOString() : undefined,
-            importance: pick([0, 0.2, 0.5, 0.7, 0.85, 0.95]),
-            feeling: felt ? "某种感觉" : undefined,
-            intensity: felt ? pick([0.3, 0.6, 0.95]) : undefined,
-            people: r() < 0.3 ? [pick(people)] : undefined,
-            subject: r() < 0.6 ? pick([...subjectNames, "unsorted"]) : undefined,
-          });
-          if (isInvalid(res)) invalid++;
-          else if (!res.dup) written.push(res.id);
-        } else if (roll < 0.65) {
-          ok(obj.recall({ query: phrase(), deep: r() < 0.2, limit: pick([0, 3, 10]), sessionId: pick([...sessions, "", "s_nope"]) }));
-        } else if (roll < 0.75) {
-          const n = 1 + Math.floor(r() * 4);
-          const ids = Array.from({ length: n }, () => (r() < 0.9 && written.length > 0 ? pick(written) : "m_unknown"));
-          ok(obj.expand({ ids, sessionId: pick([...sessions, ""]) }));
-        } else if (roll < 0.87 && written.length > 0) {
-          const action = pick(["retract", "restore", "pin", "unpin", "reweigh", "correct", "prefer", "unprefer"]);
-          const res = tally(action, obj.amend({
-            sessionId: pick(sessions), action, id: action === "unprefer" ? pick([...prefs, "p_gone"]) : pick(written),
-            importance: pick([0.1, 0.5, 0.9, 1]), text: `规则 ${phrase()}`, reason: r() < 0.5 ? "the user asked" : undefined,
-            gist: r() < 0.7 ? `${phrase()} 更正 ${step}` : undefined, body: r() < 0.5 ? phrase() : undefined,
-          }));
-          if (typeof res === "string") {
-            const made = /^(?:preference saved as|corrected:) (\S+?);? /.exec(res);
-            if (made !== null) (action === "prefer" ? prefs : written).push(made[1]!);
-            if (action === "unprefer") prefs.splice(prefs.indexOf(res.split(" ")[1]!), 1);
+  // The second seed exposed the old session-count coverage failure while the
+  // rebuilt data still matched. Both retain every original coverage assertion.
+  for (const seed of [20261111, 20261136]) {
+    it(`replays thousands of generated events with repeatable coverage (seed ${seed})`, async (ctx) => {
+      let firstGeneration: { draws: number; digest: string } | undefined;
+      for (let sample = 0; sample < 2; sample++) {
+        const stub = freshObject();
+        let captured: unknown;
+        try {
+          const result = await generatedScale(stub, seed);
+          captured = result;
+          ctx.annotate(`sample ${sample}; generation ${JSON.stringify(result.generation)}; events by kind ${JSON.stringify(result.kinds)}; done ${JSON.stringify(result.done)}; refused ${JSON.stringify(result.refused)}; tiers ${JSON.stringify(result.tiers)}`);
+          expect(result.same).toBe(true);
+          // Every kind of call happened, and every tier was reached.
+          expect(result.invalid).toBe(0);
+          for (const kind of ["session", "remember", "recall", "expand", "amend", "reflect"]) expect(result.kinds[kind], kind).toBeGreaterThan(100);
+          expect(result.kinds.erase).toBeGreaterThan(30);
+          // Every kind of memory was written back, and was replaced or erased.
+          for (const k of ["episode ", "lesson ", "impression ", "impression superseded", "self ", "reading ", "fragment absorbed",
+            "fragment superseded", "fragment erased", "episode erased", "impression erased", "subject ", "subject superseded", "subject erased"]) {
+            expect(result.written[k], `memories ${k}: ${JSON.stringify(result.written)}`).toBeGreaterThan(0);
           }
-        } else if (roll < 0.9 && written.length > 0) {
-          tally("erase", obj.erase({ sessionId: pick(sessions), id: pick(written), reason: r() < 0.5 ? "the user asked" : undefined }));
-        } else {
-          const sess = pick(sessions);
-          const view = tally("begin", obj.beginReflect({
-            sessionId: sess, limit: pick([0, 3, 8]), subject: r() < 0.3 ? pick([...subjectNames, "unsorted"]) : undefined,
-          }));
-          if (isInvalid(view) || view.batch === "") continue;
-          const frags = view.fragments.map((m) => m.id).sort(() => r() - 0.5);
-          const entries: EntryRequest[] = [];
-          if (frags.length >= 2 && r() < 0.5) {
-            entries.push({
-              kind: "episode", gist: `${phrase()} 经历`, body: phrase(), from: frags.slice(0, 2 + Math.floor(r() * 2)), milestone: r() < 0.1,
-              subject: r() < 0.3 ? pick(subjectNames) : undefined,
-            });
+          expect(result.replacing).toBeGreaterThan(0);
+          expect([result.filed, result.under].every((x) => x > 100)).toBe(true);
+          for (const what of ["retract", "restore", "pin", "unpin", "reweigh", "correct", "prefer", "unprefer", "erase", "finish"]) {
+            expect(result.done[what], `${what} done: ${JSON.stringify(result)}`).toBeGreaterThan(5);
           }
-          if (r() < 0.3) {
-            entries.push({
-              kind: "lesson", gist: `${phrase()} 经验`, body: phrase(), from: [pick(frags), pick(frags)],
-              subject: r() < 0.3 ? pick([...subjectNames, `${pick(words)} 新主题 ${step}`]) : undefined,
-            });
-          }
-          // Subjects renamed, merged and filled.
-          const heads = obj.store.subjectsRecent(50).map((x) => x.id);
-          if (r() < 0.3 && heads.length > 0) {
-            const op = r();
-            if (op < 0.35) entries.push({ kind: "subject", subject: `${pick(words)} 主题 ${step}`, gist: phrase(), replaces: [pick(heads)] });
-            else if (op < 0.7) entries.push({ kind: "subject", subject: pick(subjectNames), gist: phrase(), replaces: [pick(heads)] });
-            else entries.push({ kind: "subject", subject: pick([...subjectNames, pick(heads)]), gist: phrase(), from: [pick(frags), pick(written)] });
-          }
-          if (r() < 0.4) entries.push({ kind: "impression", gist: `${phrase()} 印象`, about: pick(people), from: [pick(frags)] });
-          if (r() < 0.15 && frags.length >= 3) {
-            const ref = r() < 0.5 && view.selves.length > 0 ? pick(view.selves).id : undefined;
-            entries.push({ kind: "self", gist: `${phrase()} 自述`, context: "c", from: frags.slice(-3), ref });
-          }
-          if (r() < 0.15) entries.push({ kind: "reading", gist: `${phrase()} 理解`, ref: pick(written) });
-          const pass = frags.filter(() => r() < 0.5);
-          if (entries.length === 0 && pass.length === 0) continue;
-          let made = tally("finish", obj.finishReflect({ sessionId: sess, batch: view.batch, entries, pass }));
-          // Refused over an entry: the round is still open; write back the passes alone.
-          if (isInvalid(made) && pass.length > 0) made = tally("finish", obj.finishReflect({ sessionId: sess, batch: view.batch, pass }));
-          if (!isInvalid(made)) written.push(...made);
+          expect(Math.min(result.tiers.core, result.tiers.active, result.tiers.faded, result.tiers.archived)).toBeGreaterThan(0);
+          expect(result.check.findings.filter((f) => f.level === "problem")).toEqual([]);
+          if (firstGeneration !== undefined) expect(result.generation, "same seed must generate the same operation trace").toEqual(firstGeneration);
+          firstGeneration = result.generation;
+        } catch (error) {
+          let input: unknown;
+          let captureError: string | undefined;
+          try {
+            input = await runInDurableObject(stub, (_obj: MemoryObject, state) => ({
+              events: state.storage.sql.exec(`SELECT * FROM events ORDER BY seq`).toArray(),
+              contents: state.storage.sql.exec(`SELECT * FROM contents ORDER BY id`).toArray(),
+            }));
+          } catch (failure) { captureError = String(failure); }
+          console.error(`REPLAY_FAILURE ${JSON.stringify({ objectId: stub.id.toString(), seed, sample, startedAt: t0, result: captured, input, captureError, error: String(error) })}`);
+          throw error;
         }
       }
-      const kinds = Object.fromEntries(
-        state.storage.sql.exec<{ kind: string; c: number }>(`SELECT kind, count(*) AS c FROM events GROUP BY kind`).toArray().map((x) => [x.kind, x.c]),
-      );
-      const tiers = obj.store.tierCounts(obj.store.clock());
-      const before = dump(obj.store, state.storage);
-      obj.store.rebuild();
-      const after = dump(obj.store, state.storage);
-      const written2 = Object.fromEntries(
-        state.storage.sql.exec<{ k: string; c: number }>(`SELECT kind || ' ' || state AS k, count(*) AS c FROM memories GROUP BY 1`).toArray().map((x) => [x.k, x.c]),
-      );
-      const replacing = state.storage.sql.exec<{ c: number }>(`SELECT count(*) AS c FROM events WHERE payload LIKE '%"replaces":%'`).one().c;
-      const filed = state.storage.sql.exec<{ c: number }>(`SELECT count(*) AS c FROM events WHERE kind = 'remember' AND json_extract(payload, '$.subject') IS NOT NULL`).one().c;
-      const under = state.storage.sql.exec<{ c: number }>(`SELECT count(*) AS c FROM memories WHERE subject <> '' AND kind <> 'subject'`).one().c;
-      return { same: before === after, before, after, kinds, tiers, invalid, done, refused, written: written2, replacing, filed, under, check: obj.check() };
-    });
-    ctx.annotate(`events by kind ${JSON.stringify(result.kinds)}; done ${JSON.stringify(result.done)}; refused ${JSON.stringify(result.refused)}; tiers ${JSON.stringify(result.tiers)}`);
-    expect(result.same).toBe(true);
-    // Every kind of call happened, and every tier was reached.
-    expect(result.invalid).toBe(0);
-    for (const kind of ["session", "remember", "recall", "expand", "amend", "reflect"]) expect(result.kinds[kind], kind).toBeGreaterThan(100);
-    expect(result.kinds.erase).toBeGreaterThan(30);
-    // Every kind of memory was written back, and was replaced or erased.
-    for (const k of ["episode ", "lesson ", "impression ", "impression superseded", "self ", "reading ", "fragment absorbed",
-      "fragment superseded", "fragment erased", "episode erased", "impression erased", "subject ", "subject superseded", "subject erased"]) {
-      expect(result.written[k], `memories ${k}: ${JSON.stringify(result.written)}`).toBeGreaterThan(0);
-    }
-    expect(result.replacing).toBeGreaterThan(0);
-    expect([result.filed, result.under].every((x) => x > 100)).toBe(true);
-    for (const what of ["retract", "restore", "pin", "unpin", "reweigh", "correct", "prefer", "unprefer", "erase", "finish"]) {
-      expect(result.done[what], `${what} done: ${JSON.stringify(result)}`).toBeGreaterThan(5);
-    }
-    expect(Math.min(result.tiers.core, result.tiers.active, result.tiers.faded, result.tiers.archived)).toBeGreaterThan(0);
-    expect(result.check.findings.filter((f: { level: string }) => f.level === "problem")).toEqual([]);
-    } catch (error) {
-      const input = await runInDurableObject(stub, (_obj: MemoryObject, state) => ({
-        events: state.storage.sql.exec(`SELECT * FROM events ORDER BY seq`).toArray(),
-        contents: state.storage.sql.exec(`SELECT * FROM contents ORDER BY id`).toArray(),
-      }));
-      console.error(`REPLAY_FAILURE ${JSON.stringify({ objectId: stub.id.toString(), seed: 20261111, startedAt: t0, result, input, error: String(error) })}`);
-      throw error;
-    }
-  }, 120_000);
+    }, 120_000);
+  }
 
   it("one call at 2,000 memories reads and writes few rows", async (ctx) => {
     const stub = freshObject();
