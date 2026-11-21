@@ -82,6 +82,13 @@ export function makeApi({ base = "", secret, fetch: doFetch = globalThis.fetch.b
   /** @param {string} method @param {string} path @param {{ body?: BodyInit, type?: string }} [o] */
   const call = async (method, path, o) => (await send(method, path, o)).json();
   return {
+    /** @param {Record<string, string>} [query] */
+    hosts: (query = {}) => call('GET', '/admin/harnesses' + (Object.keys(query).length ? '?' + new URLSearchParams(query) : '')),
+    host: (/** @type {string} */ id) => call('GET', `/admin/harnesses/${encodeURIComponent(id)}`),
+    /** @param {string} name @param {string} requestId */
+    registerHost: (name, requestId) => call('POST', '/admin/harnesses', { body: JSON.stringify({ name, requestId }), type: 'application/json' }),
+    rotateHost: (/** @type {string} */ id) => call('POST', `/admin/harnesses/${encodeURIComponent(id)}/token`),
+    revokeHost: (/** @type {string} */ id) => call('DELETE', `/admin/harnesses/${encodeURIComponent(id)}`),
     list: () => call("GET", "/admin/memories"),
     describe: (/** @type {string} */ name) => call("GET", memoryPath(name)),
     create: (/** @type {string} */ name) => call("POST", memoryPath(name)),

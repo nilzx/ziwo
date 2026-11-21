@@ -13,6 +13,10 @@ export interface ThreadBinding {
   updatedAt: number;
 }
 export interface BindingTarget { identityId: string; memory: string; instance: string }
+export interface HarnessInfo {
+  id: string; name: string; createdAt: number; revoked: boolean; bindingCount: number; requestId: string | null;
+}
+export interface HarnessQuery { name?: string; requestId?: string; after?: string; limit: number }
 export interface McpConversationClaim { id: string; createdAt: number; parentId: string | null; temporary: boolean; seeded: boolean }
 export interface McpRestoreApproval {
   requestId: string; harnessId: string; threadId: string; createdAt: number; parentThreadId: string | null;
@@ -58,6 +62,13 @@ CREATE TABLE IF NOT EXISTS harnesses (
   id TEXT PRIMARY KEY, name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE,
   created_at INTEGER NOT NULL, revoked INTEGER NOT NULL DEFAULT 0
 ) STRICT;
+CREATE TABLE IF NOT EXISTS harness_registrations (
+  request_id TEXT PRIMARY KEY, harness_id TEXT NOT NULL UNIQUE, name TEXT NOT NULL
+) STRICT, WITHOUT ROWID;
+CREATE TRIGGER IF NOT EXISTS harness_registration_no_update BEFORE UPDATE ON harness_registrations
+BEGIN SELECT RAISE(ABORT, 'host registration receipts are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS harness_registration_no_delete BEFORE DELETE ON harness_registrations
+BEGIN SELECT RAISE(ABORT, 'host registration receipts are immutable'); END;
 CREATE TABLE IF NOT EXISTS thread_bindings (
   harness_id TEXT NOT NULL, thread_id TEXT NOT NULL, identity_id TEXT NOT NULL,
   memory TEXT NOT NULL, instance TEXT NOT NULL,
@@ -101,6 +112,13 @@ function binding(r: Row): ThreadBinding {
 }
 const conflict = (error: string): BindingResult<never> => ({ error, status: 409 });
 const unauthorized = (): BindingResult<never> => ({ error: "invalid or revoked harness credential", status: 401 });
+const harnessColumns = `h.id, h.name, h.created_at, h.revoked, r.request_id,
+  (SELECT count(*) FROM thread_bindings b WHERE b.harness_id = h.id) AS binding_count`;
+const harnessFrom = 'FROM harnesses h LEFT JOIN harness_registrations r ON r.harness_id = h.id';
+function harnessInfo(r: Row): HarnessInfo {
+  return { id: String(r.id), name: String(r.name), createdAt: Number(r.created_at), revoked: Number(r.revoked) !== 0,
+    bindingCount: Number(r.binding_count), requestId: r.request_id === null ? null : String(r.request_id) };
+}
 
 // This registry is the authority across memory objects. All authorization
 // and writes happen in the same synchronous transaction, including retries.
@@ -117,10 +135,37 @@ export class Bindings {
     this.sql.exec(`INSERT INTO binding_events(harness_id, thread_id, at, kind, record) VALUES(?, ?, ?, ?, ?)`,
       b.harnessId, b.threadId, at, kind, JSON.stringify(b));
   }
-  register(name: string, hash: string, at: number): { id: string; name: string; createdAt: number } {
-    const id = "h_" + crypto.randomUUID();
-    this.sql.exec(`INSERT INTO harnesses(id, name, token_hash, created_at) VALUES(?, ?, ?, ?)`, id, name, hash, at);
-    return { id, name, createdAt: at };
+  register(name: string, hash: string, at: number, requestId?: string): BindingResult<{ host: HarnessInfo; created: boolean }> {
+    return this.storage.transactionSync(() => {
+      if (requestId !== undefined) {
+        const receipt = this.sql.exec<Row>('SELECT harness_id, name FROM harness_registrations WHERE request_id = ?', requestId).toArray()[0];
+        if (receipt !== undefined) {
+          if (receipt.name !== name) return conflict('registration request was reused with a different name');
+          const host = this.describe(String(receipt.harness_id));
+          if (host === null) throw new Error('host registration receipt has no host');
+          // Replaying registration never rotates a credential or revives a revoked host.
+          return { value: { host, created: false } };
+        }
+      }
+      const id = 'h_' + crypto.randomUUID();
+      this.sql.exec('INSERT INTO harnesses(id, name, token_hash, created_at) VALUES(?, ?, ?, ?)', id, name, hash, at);
+      if (requestId !== undefined) this.sql.exec('INSERT INTO harness_registrations(request_id, harness_id, name) VALUES(?, ?, ?)', requestId, id, name);
+      return { value: { host: this.describe(id)!, created: true } };
+    });
+  }
+  describe(id: string): HarnessInfo | null {
+    const row = this.sql.exec<Row>(`SELECT ${harnessColumns} ${harnessFrom} WHERE h.id = ?`, id).toArray()[0];
+    return row === undefined ? null : harnessInfo(row);
+  }
+  list(query: HarnessQuery): { harnesses: HarnessInfo[]; nextAfter: string | null } {
+    const where: string[] = [], args: (string | number)[] = [];
+    for (const [field, value] of [['h.name', query.name], ['r.request_id', query.requestId], ['h.id', query.after]] as const) {
+      if (value !== undefined) { where.push(`${field} ${field === 'h.id' ? '>' : '='} ?`); args.push(value); }
+    }
+    const rows = this.sql.exec<Row>(`SELECT ${harnessColumns} ${harnessFrom}
+      ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY h.id LIMIT ?`, ...args, query.limit + 1).toArray();
+    const harnesses = rows.slice(0, query.limit).map(harnessInfo);
+    return { harnesses, nextAfter: rows.length > query.limit ? harnesses.at(-1)!.id : null };
   }
   revoke(id: string): boolean {
     return this.sql.exec(`UPDATE harnesses SET revoked = 1 WHERE id = ? RETURNING id`, id).toArray().length > 0;

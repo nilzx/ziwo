@@ -27,9 +27,26 @@ function rng(seed: number): () => number {
 const words = ["猫", "部署", "纠正", "proxy", "天气", "项目", "alpha", "beta", "gamma", "delta", "年糕", "上线", "误解", "release", "kitten", "记忆"];
 
 describe("scale", () => {
+  it("rebuild preserves equal-score search results at one timestamp", async () => {
+    const stub = freshObject();
+    const result = await runInDurableObject(stub, (obj: MemoryObject) => {
+      obj.now = () => t0;
+      const session = ok(obj.getContext({ model: "model-a", client: "cli" })).session.id;
+      for (let i = 0; i < 20; i++) ok(obj.remember({ sessionId: session, gist: `proxy item${i}`, body: "padding", importance: 0.95 }));
+      const search = () => obj.store.searchText("proxy", obj.store.clock(), true, 10);
+      const before = search();
+      obj.store.rebuild();
+      return { before, after: search() };
+    });
+    expect(new Set(result.before.map((hit) => hit.score)).size).toBe(1);
+    expect(result.after).toEqual(result.before);
+  });
+
   it("a rebuild after thousands of generated events reproduces the derived tables", async (ctx) => {
     const stub = freshObject();
-    const result = await runInDurableObject(stub, (obj: MemoryObject, state) => {
+    let result: Record<string, any> | undefined;
+    try {
+    result = await runInDurableObject(stub, (obj: MemoryObject, state) => {
       obj.store.setParams(testParams());
       const r = rng(20261111);
       const pick = <T>(xs: T[]): T => xs[Math.floor(r() * xs.length)]!;
@@ -150,7 +167,7 @@ describe("scale", () => {
       const replacing = state.storage.sql.exec<{ c: number }>(`SELECT count(*) AS c FROM events WHERE payload LIKE '%"replaces":%'`).one().c;
       const filed = state.storage.sql.exec<{ c: number }>(`SELECT count(*) AS c FROM events WHERE kind = 'remember' AND json_extract(payload, '$.subject') IS NOT NULL`).one().c;
       const under = state.storage.sql.exec<{ c: number }>(`SELECT count(*) AS c FROM memories WHERE subject <> '' AND kind <> 'subject'`).one().c;
-      return { same: before === after, kinds, tiers, invalid, done, refused, written: written2, replacing, filed, under, check: obj.check() };
+      return { same: before === after, before, after, kinds, tiers, invalid, done, refused, written: written2, replacing, filed, under, check: obj.check() };
     });
     ctx.annotate(`events by kind ${JSON.stringify(result.kinds)}; done ${JSON.stringify(result.done)}; refused ${JSON.stringify(result.refused)}; tiers ${JSON.stringify(result.tiers)}`);
     expect(result.same).toBe(true);
@@ -169,7 +186,15 @@ describe("scale", () => {
       expect(result.done[what], `${what} done: ${JSON.stringify(result)}`).toBeGreaterThan(5);
     }
     expect(Math.min(result.tiers.core, result.tiers.active, result.tiers.faded, result.tiers.archived)).toBeGreaterThan(0);
-    expect(result.check.findings.filter((f) => f.level === "problem")).toEqual([]);
+    expect(result.check.findings.filter((f: { level: string }) => f.level === "problem")).toEqual([]);
+    } catch (error) {
+      const input = await runInDurableObject(stub, (_obj: MemoryObject, state) => ({
+        events: state.storage.sql.exec(`SELECT * FROM events ORDER BY seq`).toArray(),
+        contents: state.storage.sql.exec(`SELECT * FROM contents ORDER BY id`).toArray(),
+      }));
+      console.error(`REPLAY_FAILURE ${JSON.stringify({ objectId: stub.id.toString(), seed: 20261111, startedAt: t0, result, input, error: String(error) })}`);
+      throw error;
+    }
   }, 120_000);
 
   it("one call at 2,000 memories reads and writes few rows", async (ctx) => {

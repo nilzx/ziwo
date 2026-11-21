@@ -17,6 +17,12 @@ function json(status: number, body: Record<string, unknown>): Response {
 // Only a registered, trusted host process holds this credential. It is not
 // an MCP tool credential and must never be placed in model context.
 const identifier = z.string().min(1).max(200).regex(/^[A-Za-z0-9_.:-]+$/);
+const harnessId = z.string().regex(/^h_[a-f0-9-]{36}$/);
+const registrationInput = z.object({ name: z.string().trim().min(1).max(80), requestId: identifier.optional() }).strict();
+const harnessQuery = z.object({
+  name: z.string().min(1).max(80).optional(), requestId: identifier.optional(), after: harnessId.optional(),
+  limit: z.string().regex(/^[1-9][0-9]*$/).transform(Number).pipe(z.number().int().min(1).max(100)).optional(),
+}).strict();
 const target = z.object({ memory: z.string().refine(validName), identityId: identifier, instance: identifier });
 const bindInput = target.extend({ threadId: identifier, activationId: identifier, source: z.enum(["conversation", "temporary"]) }).strict();
 const restoreInput = target.extend({ threadId: identifier, previousInstance: identifier, requestId: identifier }).strict();
@@ -43,8 +49,8 @@ export async function readObject(request: Request, maxBytes = 8192): Promise<unk
 
 export function harnessAdminRoute(parts: string[], method: string): boolean {
   return parts[2] === "harnesses" && (
-    (parts.length === 3 && method === "POST") ||
-    (parts.length === 4 && /^h_[a-f0-9-]{36}$/.test(parts[3]!) && method === "DELETE") ||
+    (parts.length === 3 && ['POST', 'GET'].includes(method)) ||
+    (parts.length === 4 && harnessId.safeParse(parts[3]).success && ['DELETE', 'GET'].includes(method)) ||
     (parts.length === 5 && /^h_[a-f0-9-]{36}$/.test(parts[3]!) && ['token', 'restores'].includes(parts[4]!) && method === "POST") ||
     (parts.length === 6 && /^h_[a-f0-9-]{36}$/.test(parts[3]!) && parts[4] === 'restores' && identifier.safeParse(parts[5]).success && method === 'DELETE')
   );
@@ -53,6 +59,18 @@ export function harnessAdminRoute(parts: string[], method: string): boolean {
 // Called only after the existing admin authentication and guessing limit.
 export async function serveHarnessAdmin(request: Request, env: Env, parts: string[]): Promise<Response> {
   const registry = env.DIRECTORY.getByName(directoryName);
+  if (request.method === 'GET') {
+    const params = new URL(request.url).searchParams;
+    if (parts.length === 4) {
+      if (params.size !== 0) return json(400, { error: 'host details do not accept query parameters' });
+      const host = await registry.describeHarness(parts[3]!);
+      return host === null ? json(404, { error: 'host not found' }) : json(200, { ...host });
+    }
+    if (new Set(params.keys()).size !== params.size) return json(400, { error: 'duplicate host query parameter' });
+    const query = harnessQuery.safeParse(Object.fromEntries(params));
+    if (!query.success) return json(400, { error: 'invalid host query' });
+    return json(200, { ...await registry.listHarnesses({ ...query.data, limit: query.data.limit ?? 50 }) });
+  }
   if (parts[4] === 'restores') {
     if (request.method === 'DELETE') return await registry.revokeMcpRestore(parts[3]!, parts[5]!, Date.now()) ? json(200, { revoked: parts[5] }) : notFound();
     const parsed = mcpRestoreInput.safeParse(await readObject(request));
@@ -71,10 +89,14 @@ export async function serveHarnessAdmin(request: Request, env: Env, parts: strin
   if (parts.length === 5) {
     return await registry.rotateHarness(parts[3]!, hash) ? json(200, { id: parts[3], token }) : notFound();
   }
-  const parsed = z.object({ name: z.string().trim().min(1).max(80) }).strict().safeParse(await readObject(request));
-  if (!parsed.success) return json(400, { error: "a harness name is required" });
-  const host = await registry.registerHarness(parsed.data.name, hash, Date.now());
-  return json(201, { ...host, token });
+  const parsed = registrationInput.safeParse(await readObject(request));
+  if (!parsed.success) return json(400, { error: 'a harness name and an optional valid registration requestId are required' });
+  const result = await registry.registerHarness(parsed.data.name, hash, Date.now(), parsed.data.requestId);
+  if ('error' in result) return json(result.status, { error: result.error });
+  const { host, created } = result.value;
+  if (!created) return json(200, { ...host, replayed: true, tokenAvailable: false });
+  return json(201, { id: host.id, name: host.name, createdAt: host.createdAt, token,
+    ...(parsed.data.requestId === undefined ? {} : { requestId: parsed.data.requestId, replayed: false }) });
 }
 
 async function targetAvailable(env: Env, t: BindingTarget): Promise<boolean> {

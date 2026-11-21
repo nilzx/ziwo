@@ -58,11 +58,45 @@ Admin-authenticated operations:
 
 | Request | Body / result |
 | --- | --- |
-| `POST /admin/harnesses` | `{name}` → `{id, name, createdAt, token}`. The server creates the namespace; the token is shown once. |
+| `POST /admin/harnesses` | `{name, requestId?}`. First creation returns 201 with `{id, name, createdAt, token}`; save a unique request ID before sending to make retries recoverable. |
+| `GET /admin/harnesses` | Lists metadata, including revoked hosts. Optional exact `name` and `requestId` filters, `limit` (1–100, default 50), and `after` host ID. Returns `{harnesses, nextAfter}` in ascending ID order. |
+| `GET /admin/harnesses/<id>` | Returns `{id, name, createdAt, revoked, bindingCount, requestId}` or 404. The count includes retained historical bindings, not only currently available subjects. |
 | `POST /admin/harnesses/<id>/token` | Rotates the token while preserving the namespace and all bindings. The old token stops working. |
 | `DELETE /admin/harnesses/<id>` | Revokes the namespace's credential; preserves binding history. A revoked host cannot be reactivated by token rotation. |
 
-Only the token's SHA-256 is stored. Tokens use the `zwh_` prefix and are not accepted as ordinary memory MCP credentials. The unreleased [trusted lifecycle MCP endpoint](mcp-capabilities.md#trusted-conversation-lifecycle-over-mcp) accepts them with connector-authenticated conversation metadata. A newly registered host with the same display name gets a different namespace.
+Only the token's SHA-256 is stored. Tokens use the `zwh_` prefix and are not accepted as ordinary memory MCP credentials. The unreleased [trusted lifecycle MCP endpoint](mcp-capabilities.md#trusted-conversation-lifecycle-over-mcp) accepts them with connector-authenticated conversation metadata. Registration without a request ID retains the legacy behavior: the same display name can create another namespace.
+
+A request ID uses 1–200 ASCII letters, digits, underscore, dot, colon or hyphen.
+The same request ID and trimmed name return the same host with HTTP 200,
+`replayed: true`, and `tokenAvailable: false`. No token is returned or rotated,
+and the retry makes no registry writes. Reusing the request ID for another name
+returns 409. Receipts survive restarts, rotation and revocation; retrying an old
+registration cannot reactivate a revoked host. Metadata never includes token
+hashes, credentials or conversation contents. Host administration responses,
+including authentication errors, use `Cache-Control: no-store`.
+
+After a lost response, query the saved request ID or repeat that exact registration.
+If the token was lost, explicitly rotate the recovered host's credential rather
+than creating a new namespace. Rotation preserves bindings and invalidates the
+old token. A lost rotation response requires another explicit rotation; plaintext
+credentials are not retained for retrieval. Paginated listings are live: a host
+created before an already consumed ID position requires a fresh listing.
+
+The repository's administration CLI supports these operations:
+
+```sh
+# Set ZIWO_URL and ZIWO_ADMIN_SECRET privately. Save the request ID first.
+node worker/bin/ziwo-admin.mjs host-register "My trusted client" enrollment-001
+node worker/bin/ziwo-admin.mjs hosts --request enrollment-001
+node worker/bin/ziwo-admin.mjs host-show h_00000000-0000-0000-0000-000000000000
+node worker/bin/ziwo-admin.mjs host-token h_00000000-0000-0000-0000-000000000000
+node worker/bin/ziwo-admin.mjs host-revoke h_00000000-0000-0000-0000-000000000000
+```
+
+Use the actual returned host ID for show, rotation and revocation. Keep registration
+and rotation output private: each newly issued token is shown once. These are
+setup and recovery operations, not additional per-turn checks. A reusable synthetic
+management check is described in [host registry validation](host-registry-validation.md).
 
 ## Conversation binding API
 

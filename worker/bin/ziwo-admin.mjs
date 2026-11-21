@@ -17,6 +17,13 @@ import { minPassphrase, open, seal, SealError } from "../page/seal.mjs";
 const usage = `ziwo-admin runs a ziwo deployment through its admin API.
 
 Usage:
+  ziwo-admin hosts [--name name] [--request id] [--after host-id] [--limit n]
+                                      list host metadata, including revoked hosts; JSON with nextAfter
+  ziwo-admin host-register <name> <request-id>
+                                      register once; save this request id before calling, and reuse it on retry
+  ziwo-admin host-show <id>           show host metadata and historical binding count
+  ziwo-admin host-token <id>          explicitly rotate a host credential, preserving its bindings
+  ziwo-admin host-revoke <id>         permanently revoke a host credential, preserving its history
   ziwo-admin list                     list the memories with their figures
   ziwo-admin new <name>               create a memory and print its token, once
   ziwo-admin token <name>             replace a memory's token and print the new one, once
@@ -179,6 +186,35 @@ async function decidePersona(args, decision) {
 
 /** @type {Record<string, (args: string[]) => Promise<number | void>>} */
 const commands = {
+  async hosts(args) {
+    const names = { '--name': 'name', '--request': 'requestId', '--after': 'after', '--limit': 'limit' };
+    /** @type {Record<string, string>} */ const query = {};
+    for (let i = 0; i < args.length; i += 2) {
+      const key = names[args[i]];
+      if (!key || args[i + 1] === undefined || query[key] !== undefined) throw new UsageError('use each of --name, --request, --after and --limit at most once, with a value');
+      query[key] = args[i + 1];
+    }
+    if (query.limit !== undefined && (!/^[1-9][0-9]*$/.test(query.limit) || Number(query.limit) > 100)) throw new UsageError('--limit must be between 1 and 100');
+    const { api: a } = api(); out(JSON.stringify(await a.hosts(query), null, 2));
+  },
+  async 'host-register'(args) {
+    const [name, requestId] = positional(args, 2, 'the host name and a previously saved registration request id');
+    if (!/^[A-Za-z0-9_.:-]{1,200}$/.test(requestId)) throw new UsageError('use a stable request id containing letters, digits, _, ., : or -');
+    const { api: a } = api(); const result = await a.registerHost(name, requestId);
+    out(JSON.stringify(result, null, 2));
+    if (result.replayed) stderr.write('Registration already exists. No token was reissued. If the original token was lost, explicitly use host-token with this host id; do not register a new host.\n');
+    else stderr.write('Keep the newly created host token private. Retain the request id for registration recovery.\n');
+  },
+  async 'host-show'(args) {
+    const [id] = positional(args, 1, 'the host id'); const { api: a } = api(); out(JSON.stringify(await a.host(id), null, 2));
+  },
+  async 'host-token'(args) {
+    const [id] = positional(args, 1, 'the host id'); const { api: a } = api(); out(JSON.stringify(await a.rotateHost(id), null, 2));
+    stderr.write('Keep this new host token private. The previous token no longer works; the host namespace and bindings are unchanged.\n');
+  },
+  async 'host-revoke'(args) {
+    const [id] = positional(args, 1, 'the host id'); const { api: a } = api(); out(JSON.stringify(await a.revokeHost(id), null, 2));
+  },
   async 'persona-evaluate'(args) {
     const [name, requestId, fresh] = positional(args, 3, 'the memory, a request id, and --fresh for a new independent evaluation conversation');
     if (fresh !== '--fresh') throw new UsageError('use --fresh only for an independent conversation without Ziwo persona or inherited context');

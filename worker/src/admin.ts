@@ -330,6 +330,13 @@ function errorName(err: unknown): string {
 // serveAdmin answers a request whose path starts with /admin/. Unknown paths
 // and methods are answered 404 before the secret is weighed, as before.
 export async function serveAdmin(request: Request, env: Env, parts: string[], note: Note): Promise<Response> {
+  const response = await adminResponse(request, env, parts, note);
+  // Host metadata and credentials must not be cached, including auth failures.
+  if (parts[2] === 'harnesses') response.headers.set('cache-control', 'no-store');
+  return response;
+}
+
+async function adminResponse(request: Request, env: Env, parts: string[], note: Note): Promise<Response> {
   if (parts.length === 3 && parts[2] === "setup" && (request.method === "GET" || request.method === "POST")) {
     return serveSetup(request, env, note);
   }
