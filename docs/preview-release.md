@@ -33,7 +33,7 @@ not npm's `latest` channel.
 | Ziwo 0.3.0-rc.1 | Ordinary token/OAuth MCP and text tools remain; adds stable identity, persona evaluation/approval, activation, incremental feed, trusted lifecycle and recoverable host registration |
 | Connector 0.3.0-rc.1 | Ordinary configuration remains; explicit version 1 `turn-sync` / `trusted-lifecycle` profiles validate required capabilities |
 | dsh 0.2.2-rc.5 | Tested generic controller with native executor; strongest profile requires the optional reviewed preparation-admission build, which is not in stock dsh |
-| Node | Ziwo uses its packaged Wrangler's declared minimum; connector declares >=20; optional host build was verified on Node 22.23.5 and 26.13.1 |
+| Node | Ziwo uses its packaged Wrangler's declared minimum; connector declares >=20; dsh 0.2.2-rc.5 declares >=24.9.0. Node 22.23.5 evidence covers the optional build and selected host modules, not support for the full dsh runtime |
 | Native Codex CLI 0.171.0 | Ordinary MCP synthetic read/write passed; this does not enable forced per-turn synchronization in arbitrary CLI or desktop chats |
 
 See the [capability contract](mcp-client-contract-v1.md),

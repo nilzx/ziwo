@@ -21,7 +21,7 @@ npx @ziwo/memory@0.3.0-rc.1 deploy --name ziwo-preview
 - Ziwo保留普通token/OAuth MCP和文本工具，新增稳定主体、人格评估/确认、初始化、增量同步、可信生命周期及可恢复的host登记。
 - 连接器保留普通配置；`turn-sync`和`trusted-lifecycle`使用版本1能力要求，缺项或运行失败明确拒绝。配置成功不等于整体验收。
 - 已验证dsh 0.2.2-rc.5的native执行器；完整等级需要单独构建、审查的构造前准入提案，stock dsh不自带。PTC不能用于强制刷新。
-- Ziwo的Node最低版本由随包Wrangler声明；连接器声明Node>=20，可选宿主构建验证于Node22.23.5/26.13.1。
+- Ziwo的Node最低版本由随包Wrangler声明；连接器声明Node>=20，完整dsh 0.2.2-rc.5声明Node>=24.9.0。此前Node22.23.5只验证可选构建及部分真实宿主模块，不代表完整dsh运行支持。
 - 原生Codex CLI 0.171.0只完成普通MCP合成读写，不能据此承诺任意CLI/桌面会话的强制逐轮同步。
 
 详情见[能力契约](mcp-client-contract-v1.md)、[客户端证据](mcp-client-validation.md)及连接器`docs/PREVIEW.md`。不能删除sidecar、重置归属或关闭门禁来绕过失败。
