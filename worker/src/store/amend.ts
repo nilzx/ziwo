@@ -90,7 +90,7 @@ export function correctMemory(db: Db, append: Append, at: number, old: string, i
     {
       id, session: input.sessionId, kind, moment: input.moment, source: input.source,
       importance: input.importance, intensity: input.intensity ?? 0, hash: "", corrects: old,
-      happened: input.happened ?? 0, from: [], ref: "", milestone: false, subject,
+      happened: input.happened ?? 0, timePrecision: input.timePrecision, happenedOn: input.happenedOn, from: [], ref: "", milestone: false, subject,
     },
     {
       gist: input.gist, body: input.body, outcome: input.outcome, feeling: input.feeling,

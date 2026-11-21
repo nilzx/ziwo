@@ -45,6 +45,13 @@ function inMemory<R>(name: string, fn: (obj: MemoryObject, storage: DurableObjec
   return runInDurableObject(env.MEMORY.getByName(name), (obj: MemoryObject, state) => fn(obj, state.storage));
 }
 
+// Construct the pre-identity data shape for byte-for-byte v1 compatibility.
+async function legacyMemory(): Promise<{ name: string }> {
+  const name = freshName();
+  await inMemory(name, (obj) => obj.store.setTokenHash(refToken));
+  return { name };
+}
+
 function entry(e: Partial<Entry> & { kind: string; gist: string }): Entry {
   return {
     body: "", outcome: "", feeling: "", intensity: 0, lesson: "", people: [], pointer: "", importance: 0.5,
@@ -134,7 +141,7 @@ function exportOf(events: { seq: number; at: number; kind: string; payload: stri
 
 describe("export", () => {
   it("writes byte for byte what the Go build wrote for the same log and contents", async () => {
-    const m = await createMemory();
+    const m = await legacyMemory();
     await inMemory(m.name, (obj, storage) => {
       obj.store; // builds the tables
       loadRows(storage);
@@ -150,7 +157,7 @@ describe("export", () => {
   });
 
   it("writes what the Go build wrote for the same sequence of calls, apart from ids", async () => {
-    const m = await createMemory();
+    const m = await legacyMemory();
     const { ids, instance } = await inMemory(m.name, (obj, storage) => {
       const ids = refLife(obj.store);
       obj.now = () => go.exportedAt;
@@ -179,7 +186,17 @@ describe("export", () => {
       obj.now = () => go.handExportedAt;
     });
     const again = await (await admin(`/admin/memories/${name}/export`)).text();
-    expect(again).toBe(go.handReexport);
+    // Restored legacy data carries its source in a v2 header. Event
+    // encoding remains Go-compatible; the header now changes chain hashes.
+    const lines = again.split("\n");
+    const header = JSON.parse(lines[0]!) as Record<string, unknown>;
+    expect(header.ziwo_export).toBe(2);
+    expect(header.legacy_source_instance).toBe(go.rows.instance);
+    delete header.identity;
+    delete header.legacy_source_instance;
+    header.ziwo_export = 1;
+    lines[0] = JSON.stringify(header);
+    expect(template(lines.join("\n"), {}, "unused")).toBe(template(go.handReexport, {}, "unused"));
     // Go's re-export does not come back, in Go (handReimport) nor here.
     expect(go.handReimport).toBe("not a usable export: it was changed or damaged at event 1");
     const refused = await importAs(freshName(), again);
@@ -236,8 +253,8 @@ describe("import", () => {
       cut: lines.slice(0, -3).join(""),
       changed: good.replace("third body", "third bodx"),
       footer: good.replace(footer, footer.replace(`"end":true,"events":`, `"end":true,"events":1`)),
-      version: good.replace(`"ziwo_export":1`, `"ziwo_export":2`),
-      newer: good.replace(`"log_format":3`, `"log_format":4`),
+      version: good.replace(`"ziwo_export":1`, `"ziwo_export":999`),
+      newer: good.replace(`"log_format":3`, `"log_format":5`),
       empty: "",
       garbage: "hello\n",
     };
@@ -245,7 +262,7 @@ describe("import", () => {
       const name = freshName();
       const res = await importAs(name, file);
       expect(res.status, what).toBe(400);
-      expect(await res.json(), what).toEqual({ error: go.errors[what] });
+      expect(await res.json(), what).toEqual({ error: what === "newer" ? "written by a newer version of ziwo: its log format is 5, this build reads up to 4" : go.errors[what] });
       expect(await tablesOf(name), what).toEqual([]);
       expect((await admin(`/admin/memories/${name}`)).status, what).toBe(404);
     }
@@ -437,11 +454,13 @@ describe("settings", () => {
     expect((await put(from.name, { params: { baseStrength: 10, coreFeeling: 0.8 }, timeZone: "Asia/Shanghai" })).status).toBe(200);
     const file = await (await admin(`/admin/memories/${from.name}/export`)).text();
     const header = file.slice(0, file.indexOf("\n"));
-    expect(header).toMatch(new RegExp(
-      `^\\{"ziwo_export":1,"log_format":3,"instance":"i_[a-z2-9]{8}","exported_at":\\d+,` +
-      `"settings":\\{"params":\\{"baseStrength":10,"recallBoost":2,"fadeBelow":0\\.3,"archiveBelow":0\\.05,` +
-      `"coreImportance":0\\.9,"coreFeeling":0\\.8\\},"timezone":"Asia/Shanghai"\\}\\}$`,
-    ));
+    const decoded = JSON.parse(header) as Record<string, unknown>;
+    expect(decoded).toMatchObject({
+      ziwo_export: 2, log_format: 3, instance: expect.stringMatching(/^i_[a-z2-9]{8}$/),
+      identity: { id: expect.stringMatching(/^zi_[a-f0-9]{32}$/), origin: "created" },
+      settings: { params: { ...defaultParams(), baseStrength: 10, coreFeeling: 0.8 }, timezone: "Asia/Shanghai" },
+    });
+    expect(Object.keys(decoded).at(-1)).toBe("settings");
     const to = freshName();
     expect((await importAs(to, file)).status).toBe(201);
     // Kept in the database, not only by the instance that imported them.
@@ -456,7 +475,7 @@ describe("settings", () => {
     const [a, b] = await Promise.all([from.name, to].map((n) => inMemory(n, (obj, storage) => dump(obj.store, storage))));
     expect(b!.split("\n").filter((l) => !/^\[\d+,\d+,\d+\]$/.test(l))).toEqual(a!.split("\n").filter((l) => !/^\[\d+,\d+,\d+\]$/.test(l)));
     // The zone alone travels with the default parameters; back to the
-    // defaults, the header is Go's again.
+    // defaults, settings disappear while stable ownership remains.
     expect((await put(from.name, { params: defaultParams() })).status).toBe(200);
     let again = await (await admin(`/admin/memories/${from.name}/export`)).text();
     expect(again.slice(0, again.indexOf("\n"))).toMatch(
@@ -464,7 +483,10 @@ describe("settings", () => {
     );
     expect((await put(from.name, { timeZone: "UTC" })).status).toBe(200);
     again = await (await admin(`/admin/memories/${from.name}/export`)).text();
-    expect(again.slice(0, again.indexOf("\n"))).toMatch(/^\{"ziwo_export":1,"log_format":3,"instance":"i_[a-z2-9]{8}","exported_at":\d+\}$/);
+    const defaultsHeader = JSON.parse(again.slice(0, again.indexOf("\n"))) as Record<string, unknown>;
+    expect(defaultsHeader.ziwo_export).toBe(2);
+    expect(defaultsHeader.settings).toBeUndefined();
+    expect(defaultsHeader.identity).toEqual(decoded.identity);
     // An export without settings is brought back with the defaults.
     const plain = freshName();
     expect((await importAs(plain, go.export)).status).toBe(201);

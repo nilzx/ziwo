@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import type { Env } from "./index";
+import { Bindings, bindingSchema, type BindingTarget, type HarnessQuery, type McpConversationClaim } from "./bindings";
 
 // The one object of the directory: its name within its namespace.
 export const directoryName = "directory";
@@ -36,11 +37,15 @@ export type ClosedBy = "page" | "dashboard" | "memory";
 //
 // It also keeps the admin secret set on the admin page, while no dashboard
 // secret counts (admin.ts, adminSecretState), and the record that setting
-// one from the page is closed for good. Only the admin API and the consent
-// page reach it, never a request to a memory.
+// one from the page is closed for good. A separate registry is authoritative
+// for trusted host/thread bindings. Admin, consent and host-binding routes
+// reach it; the legacy MCP path still does not.
 export class Directory extends DurableObject<Env> {
+  private readonly bindings: Bindings;
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    ctx.storage.sql.exec(bindingSchema);
+    this.bindings = new Bindings(ctx.storage);
     ctx.storage.sql.exec(
       `CREATE TABLE IF NOT EXISTS memories (
          name       TEXT PRIMARY KEY,
@@ -63,6 +68,42 @@ export class Directory extends DurableObject<Env> {
          closed_by TEXT NOT NULL
        ) STRICT`,
     );
+  }
+
+  registerHarness(name: string, hash: string, at: number, requestId?: string) { return this.bindings.register(name, hash, at, requestId); }
+  listHarnesses(query: HarnessQuery) { return this.bindings.list(query); }
+  describeHarness(id: string) { return this.bindings.describe(id); }
+  revokeHarness(id: string) { return this.bindings.revoke(id); }
+  rotateHarness(id: string, hash: string) { return this.bindings.rotate(id, hash); }
+  threadBinding(hash: string, thread: string) { return this.bindings.read(hash, thread); }
+  mcpConversation(hash: string, claim: McpConversationClaim, target: BindingTarget | null, activation: string, at: number) {
+    return this.bindings.mcpConversation(hash, claim, target, activation, at);
+  }
+  approveMcpRestore(host: string, claim: Pick<McpConversationClaim, 'id' | 'createdAt' | 'parentId'>, target: BindingTarget, previous: string, request: string, at: number) {
+    return this.bindings.approveMcpRestore(host, claim, target, previous, request, at);
+  }
+  revokeMcpRestore(host: string, request: string, at: number) { return this.bindings.revokeMcpRestore(host, request, at); }
+  restoreMcpConversation(hash: string, claim: McpConversationClaim, target: BindingTarget, request: string, at: number) {
+    return this.bindings.restoreMcpConversation(hash, claim, target, request, at);
+  }
+  bindThread(hash: string, thread: string, target: BindingTarget, activation: string, source: string, at: number) {
+    return this.bindings.bind(hash, thread, target, activation, source, at);
+  }
+  forkThread(hash: string, parent: string, child: string, source: string, at: number) {
+    return this.bindings.fork(hash, parent, child, source, at);
+  }
+  restoreThread(hash: string, thread: string, target: BindingTarget, previous: string, request: string, at: number) {
+    return this.bindings.restore(hash, thread, target, previous, request, at);
+  }
+  replayThreadRestore(hash: string, thread: string, target: BindingTarget, previous: string, request: string) {
+    return this.bindings.replayRestore(hash, thread, target, previous, request);
+  }
+
+  reserveEvaluation(hash: string, thread: string, target: BindingTarget, source: string, at: number) {
+    return this.bindings.reserveEvaluation(hash, thread, target, source, at);
+  }
+  evaluationAccess(host: string, thread: string, target: BindingTarget) {
+    return this.bindings.evaluationAccess(host, thread, target);
   }
 
   // register records a memory. A name already listed keeps its first time.

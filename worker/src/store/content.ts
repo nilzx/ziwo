@@ -1,3 +1,4 @@
+import { latestLogFormat, metaLogFormat } from "./schema";
 // What a memory says, and how a remember event is projected. Port of
 // content.go.
 
@@ -94,6 +95,7 @@ export type Append = (at: number, kind: string, payload: string) => number;
 // takes the place of the earlier impressions of what it is about.
 export function writeMemory(db: Db, append: Append, at: number, e: RememberEvent, c: Content): void {
   const { data, hash } = encodeContent(c);
+  if (e.timePrecision !== undefined || e.historySource !== undefined) db.setMeta(metaLogFormat, String(latestLogFormat));
   const ev: RememberEvent = { ...e, hash, kind: e.kind === KindFragment ? "" : e.kind, replaces: undefined };
   const named = (ev.kind === KindImpression || ev.kind === KindLesson || ev.kind === KindSubject) && ev.corrects === ""
     ? (e.replaces ?? [])
@@ -177,7 +179,7 @@ export function applyRemember(db: Db, p: Params, seq: number, at: number, e: Rem
   let fadeAt: number | null = null; // NULL for a core memory
   let archiveAt: number | null = null;
   if (!core) ({ fadeAt, archiveAt } = crossings(p, ord, strength));
-  const happened = e.happened > 0 ? e.happened : at;
+  const happened = e.timePrecision === 'unknown' ? 0 : e.happened > 0 ? e.happened : at;
   const reviewed = kind !== KindFragment ? ord : null; // a fragment waits for reflect
 
   // The subject it is filed under: the head of the subject its event names,
@@ -200,6 +202,7 @@ export function applyRemember(db: Db, p: Params, seq: number, at: number, e: Rem
     c.gist, c.body, c.outcome, c.feeling, c.lesson, goJSON(people), c.pointer, c.about, c.context, e.ref, bit(e.milestone),
     hash, at, ord, ord, ord, bit(core), strength, fadeAt, archiveAt, reviewed, "", e.corrects, head,
   );
+  db.run('UPDATE memories SET time_precision = ?, happened_on = ? WHERE id = ?', e.timePrecision ?? 'instant', e.happenedOn ?? '', e.id);
   if (subject) {
     applySubject(db, seq, at, e, kept ? c : undefined);
     db.sessionActive(e.session, at);

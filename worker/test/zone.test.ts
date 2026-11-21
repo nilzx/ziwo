@@ -4,7 +4,7 @@
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { serverSpeaks, writeUnasked } from "../src/mcp/format";
+import { refreshEachTurn, serverSpeaks, writeUnasked } from "../src/mcp/format";
 import { parseWhen } from "../src/memory/clean";
 import type { Memory as MemoryObject } from "../src/memory-object";
 import { formatDate, formatDateTime, instantOf, knownZone } from "../src/zone";
@@ -65,7 +65,7 @@ describe("time zones through the tools", () => {
     const c = new Client("new", m);
     const ctx = await c.ok("get_context", { timezone: "Asia/Shanghai" });
     const s = idIn(ctx, "s_");
-    expect(ctx).toBe(`session: ${s}\nnow: 2026-11-11 16:00 +08:00 (Asia/Shanghai)\nNo memories yet. This is where it starts.\n${serverSpeaks}${writeUnasked}`);
+    expect(ctx).toBe(`session: ${s}\nnow: 2026-11-11 16:00 +08:00 (Asia/Shanghai)\nNo memories yet. This is where it starts.\n${serverSpeaks}${refreshEachTurn}${writeUnasked}`);
     const id = idIn(await c.ok("remember", { session_id: s, gist: "zone marker one", body: "b" }));
     // A date alone in that zone: Shanghai is a day ahead at 20:00 UTC.
     await setClock(m.name, at("2026-11-11T20:00:00Z"));
@@ -148,10 +148,10 @@ describe("time zones through the tools", () => {
       });
     });
     const shown = await c.ok("expand", { ids: [day, gap], session_id: sh });
-    expect(shown).toContain(`[${day}] 2026-03-14 00:00 +08:00 · other · reconstructed`);
+    expect(shown).toContain(`[${day}] 2026-03-14 (date only) · other · reconstructed`);
     expect(shown).toContain(`[${gap}] 2026-03-08 15:30 +08:00 · other · reconstructed`);
     const inUTC = await c.ok("expand", { ids: [day], session_id: utc });
-    expect(inUTC).toContain(`[${day}] 2026-03-13 16:00Z · other · reconstructed`);
+    expect(inUTC).toContain(`[${day}] 2026-03-14 (date only) · other · reconstructed`);
   });
 
   it("does not keep a zone it does not know, and says so", async () => {

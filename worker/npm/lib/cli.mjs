@@ -13,6 +13,12 @@ const repo = "https://github.com/nilzx/ziwo";
 // How the command is run: through npx, by the package's name on npm.
 const npx = "npx @ziwo/memory@latest";
 
+// A preview must never direct its user to the older stable deployment.
+// Pin it exactly so following the printed command cannot change channels.
+export function commandFor(version) {
+  return typeof version === "string" && version.includes("-") ? `npx @ziwo/memory@${version}` : npx;
+}
+
 export const help = `ziwo: a memory of its own for an AI. This command runs it in your Cloudflare account.
 
   ${npx} deploy      deploy, or update, ziwo
@@ -22,6 +28,10 @@ export const help = `ziwo: a memory of its own for an AI. This command runs it i
 
 ${repo}
 `;
+
+export function helpFor(version) {
+  return help.replace(/npx @ziwo\/memory@latest/g, commandFor(version));
+}
 
 /** @type {Record<"en" | "zh", Record<string, (v: Record<string, string>) => string>>} */
 export const texts = {
@@ -185,9 +195,10 @@ const signals = /** @type {Record<string, number>} */ ({ SIGHUP: 1, SIGINT: 2, S
  */
 export async function run(io) {
   const t = texts[language(io.env, io.intlLocale)];
+  const currentHelp = helpFor(io.version);
   const cmd = parse(io.argv);
   if (cmd.kind === "help") {
-    io.out(help);
+    io.out(currentHelp);
     return 0;
   }
   if (cmd.kind === "version") {
@@ -195,7 +206,7 @@ export async function run(io) {
     return 0;
   }
   if (cmd.kind === "error") {
-    io.err(`${t[cmd.text]({ arg: cmd.arg })}\n\n${help}`);
+    io.err(`${t[cmd.text]({ arg: cmd.arg })}\n\n${currentHelp}`);
     return 2;
   }
 
@@ -254,7 +265,7 @@ export async function run(io) {
   const first = at ? t.deployedAt({ address: at }) : t.deployedSomewhere({});
   // The command that updates this deployment: under another name, with it,
   // or the plain command would make a second deployment beside this one.
-  const command = `${npx} deploy${cmd.name !== undefined ? ` --name ${cmd.name}` : ""}`;
+  const command = `${commandFor(io.version)} deploy${cmd.name !== undefined ? ` --name ${cmd.name}` : ""}`;
   io.out(`\n${first}\n\n${t.next({ command })}\n`);
   return 0;
 }

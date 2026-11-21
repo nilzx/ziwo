@@ -1,0 +1,177 @@
+{
+  "schema_version": 1,
+  "contract_version": 1,
+  "status": "project-proposal",
+  "mcp_standard_extension": false,
+  "profiles": {
+    "ordinary": {
+      "required": [
+        "M01",
+        "M02"
+      ],
+      "enforces_user_turns": false
+    },
+    "turn-sync": {
+      "extends": "ordinary",
+      "required": [
+        "S01",
+        "S02",
+        "H01",
+        "H02",
+        "H03",
+        "H04"
+      ]
+    },
+    "trusted-lifecycle": {
+      "extends": "turn-sync",
+      "required": [
+        "H05",
+        "H06",
+        "H07",
+        "H08",
+        "H09"
+      ]
+    }
+  },
+  "capabilities": [
+    {
+      "id": "M01",
+      "requirement": "Standard discovery and compatible text tools",
+      "case_ids": [
+        "MCP-01"
+      ],
+      "failure": "explicit-protocol-error"
+    },
+    {
+      "id": "M02",
+      "requirement": "Scoped authentication and endpoint separation",
+      "case_ids": [
+        "MCP-02"
+      ],
+      "failure": "deny-unauthorized-request"
+    },
+    {
+      "id": "S01",
+      "requirement": "Independent paged cursors, fixed upper bound and reload on invalidation",
+      "case_ids": [
+        "SYNC-01",
+        "SYNC-03"
+      ],
+      "failure": "block-without-cursor-advance"
+    },
+    {
+      "id": "S02",
+      "requirement": "Empty sync reads do not write or suppress new memories",
+      "case_ids": [
+        "SYNC-02"
+      ],
+      "failure": "fail-conformance"
+    },
+    {
+      "id": "H01",
+      "requirement": "Stable conversation and creation identity with durable scoped state",
+      "failure": "reject-ambiguous-ownership",
+      "case_ids": [],
+      "related_service_cases": [
+        "TRUST-01"
+      ],
+      "required_external_evidence": "Observed behavior of the intended host and integration for this complete requirement; related cases alone do not establish compliance."
+    },
+    {
+      "id": "H02",
+      "requirement": "Every user turn and steering event gates generation",
+      "failure": "block-generation",
+      "case_ids": [],
+      "related_simulation_cases": [
+        "TRUST-02"
+      ],
+      "required_external_evidence": "Observed behavior of the intended host and integration for this complete requirement; related cases alone do not establish compliance."
+    },
+    {
+      "id": "H03",
+      "requirement": "Refresh through the scoped permission executor",
+      "failure": "block-generation",
+      "case_ids": [],
+      "related_simulation_cases": [
+        "TRUST-02"
+      ],
+      "required_external_evidence": "Observed behavior of the intended host and integration for this complete requirement; related cases alone do not establish compliance."
+    },
+    {
+      "id": "H04",
+      "requirement": "Verify actual complete model input before advancing; detect loss",
+      "failure": "reload-same-subject-or-block",
+      "case_ids": [],
+      "related_simulation_cases": [
+        "TRUST-02"
+      ],
+      "required_external_evidence": "Observed behavior of the intended host and integration for this complete requirement; related cases alone do not establish compliance."
+    },
+    {
+      "id": "H05",
+      "requirement": "Authoritative metadata and verified persistent parent provenance",
+      "failure": "reject-unverified-inheritance",
+      "case_ids": [],
+      "related_service_cases": [
+        "TRUST-01",
+        "ISOL-01"
+      ],
+      "required_external_evidence": "Observed behavior of the intended host and integration for this complete requirement; related cases alone do not establish compliance."
+    },
+    {
+      "id": "H06",
+      "requirement": "Frozen history scope and readiness gate on tools and output",
+      "failure": "block-until-ready",
+      "case_ids": [],
+      "related_service_cases": [
+        "TRUST-01"
+      ],
+      "related_simulation_cases": [
+        "TRUST-02"
+      ],
+      "required_external_evidence": "Observed behavior of the intended host and integration for this complete requirement; related cases alone do not establish compliance."
+    },
+    {
+      "id": "H07",
+      "requirement": "Explicit same-subject recovery with idempotent non-rewinding transitions",
+      "failure": "reject-unapproved-reassociation",
+      "case_ids": [],
+      "related_service_cases": [
+        "TRUST-03"
+      ],
+      "required_external_evidence": "Observed behavior of the intended host and integration for this complete requirement; related cases alone do not establish compliance."
+    },
+    {
+      "id": "H08",
+      "requirement": "Temporary helpers exclude protected context, tools and history",
+      "failure": "deny-protected-inheritance",
+      "case_ids": [],
+      "related_simulation_cases": [
+        "ISOL-02"
+      ],
+      "required_external_evidence": "Observed behavior of the intended host and integration for this complete requirement; related cases alone do not establish compliance."
+    },
+    {
+      "id": "H09",
+      "requirement": "Synchronous preparation admission v1 before destination construction and persistence",
+      "failure": "refuse-strong-profile-startup",
+      "case_ids": [],
+      "required_external_evidence": "Observed behavior of the intended host and integration for this complete requirement; related cases alone do not establish compliance."
+    }
+  ],
+  "evidence_categories": [
+    "server-observed",
+    "simulated-host",
+    "host-attested",
+    "host-observed",
+    "client-observed"
+  ],
+  "result_statuses": [
+    "pass",
+    "fail",
+    "blocked",
+    "not-run",
+    "unsupported"
+  ],
+  "configuration_is_certification": false
+}

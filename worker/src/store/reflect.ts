@@ -316,14 +316,16 @@ interface Basis {
   session: string;
   retracted: boolean;
   happened: number;
+  timePrecision: string;
+  happenedOn: string;
 }
 
 function loadBasis(db: Db, id: string): Basis {
-  const r = db.first(`SELECT kind, state, source, session_id, retracted, created_at FROM memories WHERE id = ?`, id);
+  const r = db.first(`SELECT kind, state, source, session_id, retracted, created_at, time_precision, happened_on FROM memories WHERE id = ?`, id);
   if (r === undefined) throw new EntryError(`${id} names no memory`);
   const b: Basis = {
     id, kind: text(r.kind), state: text(r.state), source: text(r.source), session: text(r.session_id),
-    retracted: flag(r.retracted), happened: num(r.created_at),
+    retracted: flag(r.retracted), happened: num(r.created_at), timePrecision: text(r.time_precision), happenedOn: text(r.happened_on),
   };
   if (b.state === StateErased) throw new EntryError(`${id} has been erased`);
   if (b.retracted) throw new EntryError(`${id} has been retracted`);
@@ -333,7 +335,9 @@ function loadBasis(db: Db, id: string): Basis {
 // origin names the occasion a lived or reconstructed experience belongs to:
 // the conversation it was written in, or the day it happened if it was
 // reconstructed afterwards.
-function origin(b: { source: string; session: string; happened: number }): string {
+function origin(b: { source: string; session: string; happened: number; timePrecision: string; happenedOn: string }): string {
+  if (b.timePrecision === "unknown") return "unknown occurrence";
+  if (b.timePrecision === "day") return "day " + b.happenedOn;
   if (b.source === SourceReconstructed) return "day " + new Date(b.happened).toISOString().slice(0, 10);
   return b.session;
 }
@@ -394,9 +398,9 @@ export function checkEntry(db: Db, e: Entry): Checked {
       continue;
     }
     for (const r of db.all(
-      `SELECT m.source, m.session_id, m.created_at FROM links l JOIN memories m ON m.id = l.dst WHERE l.src = ?`, b.id,
+      `SELECT m.source, m.session_id, m.created_at, m.time_precision, m.happened_on FROM links l JOIN memories m ON m.id = l.dst WHERE l.src = ?`, b.id,
     )) {
-      origins.add(origin({ source: text(r.source), session: text(r.session_id), happened: num(r.created_at) }));
+      origins.add(origin({ source: text(r.source), session: text(r.session_id), happened: num(r.created_at), timePrecision: text(r.time_precision), happenedOn: text(r.happened_on) }));
     }
   }
   if (e.ref === "") {

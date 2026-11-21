@@ -412,7 +412,7 @@ describe("a store built before subjects", () => {
       storage.sql.exec(`UPDATE memories SET recall_count = 77`);
       return { index: meta.index, derived: meta.derived!.slice(0, 3), fts, replayed };
     });
-    expect(opened).toEqual({ index: "2", derived: "12 ", fts: 1, replayed: true });
+    expect(opened).toEqual({ index: "2", derived: "13 ", fts: 1, replayed: true });
     await evictDurableObject(stub);
     const again = await inObject(stub, (_s, storage) => storage.sql.exec(`SELECT count(*) AS c FROM memories WHERE recall_count = 77`).one().c);
     expect(again).toBeGreaterThan(0);

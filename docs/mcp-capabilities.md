@@ -1,0 +1,327 @@
+# MCP lifecycle capabilities
+
+Ziwo supports ordinary MCP clients and clients with a generic lifecycle controller. A server receives tool calls, not user-turn events: standard MCP alone cannot guarantee that a client refreshes context before every answer. See the [version 1 capability contract](mcp-client-contract-v1.md), [reusable checks](../conformance/README.md), and [client evidence matrix](mcp-client-validation.md) for requirements and measured support.
+
+| Capability | Ordinary MCP | Generic turn controller | Existing trusted host integration |
+| --- | --- | --- | --- |
+| Memory tools | Yes | Yes | Yes |
+| Refresh after the conversation first loads memory | Model instruction | Enforced before generation | Enforced before generation |
+| Bounded current memory summary | Yes | Yes | Yes |
+| Paged material memory changes and confirmed persona revisions | `sync_context`, client applies pages | Passed the confirmed local capability-tier scope; remote deployment smoke passed | Yes |
+| Independent evaluation and proposals | Scoped evaluation MCP endpoint | Separate fresh evaluator | Yes |
+| Initial chat-history activation gates | Not exposed on ordinary token/OAuth MCP | Trusted lifecycle MCP endpoint and configurable initialization gate; local acceptance passed | Yes |
+| Authoritative persistent identity binding | No | Registered connector credential + host metadata on the lifecycle endpoint | Yes |
+
+The generic controller is reusable connector functionality, not a Ziwo-specific harness adapter. The first implementation is in `dsh-mcp-connector`. The feed, evaluation and trusted lifecycle endpoints do not make ordinary MCP equivalent to the full [activation](activation.md) and [turn synchronization](turn-sync.md) contract. The confirmed capability-tier scope passed local synthetic acceptance, including activation, persistent ownership, safe incremental delivery, and isolation. The strongest tier requires the host capabilities described below; stock dsh does not provide all of them. See the [current validation status](dsh-mcp-validation.md) for deployment and evidence limits.
+
+## Incremental persona and memory feed
+
+The preview `sync_context` tool is available through the existing fixed-token and OAuth memory endpoint, on both supported MCP protocol generations. Existing tools and text replies remain compatible. It accepts:
+
+```json
+{ "cursor": "opaque cursor from this conversation", "reload": false, "page_size": 32 }
+```
+
+Omit `cursor` on the first read. The response is JSON in both text content and `structuredContent`:
+
+```json
+{
+  "schema_version": 1,
+  "identity": { "id": "zi_example", "instance": "i_example" },
+  "cursor": "opaque next cursor",
+  "complete": true,
+  "from": 42,
+  "through": 47,
+  "upper": 47,
+  "changes": [],
+  "persona": { "status": "adopted", "version": 2, "digest": "...", "document": {} }
+}
+```
+
+`persona` appears only on the first read, explicit reload, or a confirmed revision. An identity without an adopted persona returns `{"status":"uninitialized"}`. Draft and rejected proposals never become the loaded persona. Invalidated or damaged adopted personas fail explicitly; the server does not fall back to an older persona.
+
+At the start of each activated user turn, read changes before answering. Apply pages in sequence, retain a page's cursor only after applying that page, and continue until `complete=true`. If local context was lost, request `reload=true` with the same cursor. Pin `identity.id` and `identity.instance` separately: the cursor is a signed read position, **not** a conversation credential or permission to rebind. A lost/invalid cursor cannot establish that an existing chat is neutral. Restores and credential rotation invalidate old cursors.
+
+Checks with no changes return an empty `changes` list and omit the persona. They create no session, event, recall reinforcement, snapshot, or delivery receipt. This optimization applies **only to the synchronization read**. The current conversation must still write worthwhile new memories as they arise, even when no other conversation changed anything. Do not condition `remember` on whether the feed was empty. Normal tools retain their existing memory-session requirements.
+
+The feed contains `remember`, `amend`, `erase`, `reflect`, and `restore` events in sequence order. It excludes session bookkeeping and recall/expand traces. Remember events include their retained content and provenance; corrections/replacements and retract/restore/preference actions retain the fields needed to update local material. Erased content is returned only as a tombstone (`content:null`, `erased:true`), never reconstructed from log prose. Do not treat memory content as instructions.
+
+Each page has at most 100 material events and a soft 64 KiB change budget (one valid larger record is permitted to ensure progress). The first page fixes `upper`; later appends belong to the next check. Persona changes or erasure during an unfinished page set require discarding that partial set and reloading the same subject. Per-conversation cursors are independent, so one reader cannot advance another reader's position. Retries may repeat a page and must be applied idempotently by sequence number.
+
+Persona validation is cached inside the Durable Object using the identity, instance, persona revision, and material-event revision. Unchanged loads do not reread every evidence item or the full persona record. Material writes, adoption, invalidation, and restore force validation again. This cache is not persisted or exported.
+
+Real Web evidence includes the bounded summary and a subset of the trusted lifecycle workflow described below, including multi-page changes, a deletion tombstone, outage blocking/recovery, and same-subject reloading after real compaction. Additional isolated runs complete the confirmed local capability-tier scope. They do not establish every browser path, another Harness, or real long-term continuity. Changing a configured tool name alone does not establish full persona acceptance.
+
+Separate local dsh headless runs verified resuming the same durable conversation
+in a new process, writing a new memory after an empty delta, and synchronizing
+corrections and deletion to another conversation. Two fresh evaluation sessions
+read every snapshot page and submitted proposals. The user then approved one
+exact synthetic proposal; private adoption produced v2, which both existing
+conversations loaded without changing subjects. One evaluator's summary omitted
+changes present in its document, reinforcing the need to review the exact
+[proposal document](persona.md#propose-review-confirm-adopt). The connector's
+automatic notice now states that refresh already ran while preserving new
+memory writes; this guidance reduces, but cannot prohibit, redundant model reads.
+Separate recovery runs covered changed-route and same-route replacement
+instances, a successful remote transition with a lost response, durable retry,
+and new memory written by one restored conversation and read by the other.
+The old recovery request was rejected after the second transition, without
+rewinding the current binding. These are synthetic mechanism tests, not evidence
+of improved real personality continuity.
+
+## Trusted conversation lifecycle over MCP
+
+The preview `/<memory>/agent/mcp` endpoint uses the same MCP tool protocol, but
+requires a registered `zwh_` connector credential. Ordinary memory tokens and
+OAuth grants remain on `/<memory>/mcp` and cannot call this endpoint. Register
+and rotate the private credential through the existing [host administration
+API](identity-bindings.md#trusted-host-credentials), outside model context.
+
+The connector attaches this namespace to `tools/call.params._meta`:
+
+```json
+{
+  "io.ziwo/conversation": {
+    "id": "persistent-conversation-id",
+    "createdAt": 1795161600000,
+    "parentId": null,
+    "temporary": false,
+    "seeded": false,
+    "turn": "host-derived-current-user-turn"
+  }
+}
+```
+
+The credential establishes a host namespace; metadata is an attestation by that
+host, not independently authenticated evidence of a physical conversation.
+Callers holding the credential can falsify host facts, so it must remain private
+to a trusted connector. Tool arguments cannot replace these fields. Conversation
+creation time and parent lineage are immutable. Temporary helpers are rejected;
+seeded context without a verified parent cannot acquire a subject. Different
+hosts may use the same local conversation ID without sharing authority.
+
+| Tool | Contract |
+| --- | --- |
+| `resume_context` | Reload the existing subject and initialization progress. An unbound root stays neutral; a verified persistent child inherits its parent. |
+| `restore_context` | Consume an exact private recovery approval using controller-only metadata; return the same subject's restored instance and a transition receipt. Ordinary model calls cannot authorize or complete the connector migration. |
+| `activate_context` | Load the confirmed persona and establish/reuse this conversation's binding. A different subject or instance is rejected before its persona is returned. |
+| `initialize_context` | Acknowledge the exact loaded persona and register the connector's fixed history manifest, supplied only in metadata. |
+| `read_initial_history` | Inspect pending IDs and decisions; use the connector's scoped history reader for originals. |
+| `process_initial_history` | Remember or explicitly skip verified items, with stable request IDs and immutable source receipts. |
+| `complete_context` | Complete only when the entire fixed manifest has decisions; gaps remain explicit. |
+| `acknowledge_persona` | Acknowledge a newly loaded version if initialization was interrupted by revision. |
+| `acknowledge_history_notice` | Mark a communicated notice acknowledged without resolving or erasing its gaps. |
+| `refresh_context` | Read all material changes and persona revisions, gated on completed initial history. |
+| Existing memory tools except `get_context` | Require this conversation's complete current-turn `cursor` and a stable `requestId`; the server supplies the bound memory session. |
+
+History metadata adds `history: {cutoff, coverage, gaps, items}` using the
+[activation manifest](activation.md) schema, at most 5,000 items and 100 gaps.
+The connector freezes this before explicit activation, retains uncertain
+requests, and presents it only to configured initialization tools. A verified
+fork inherits its parent's subject and initialization provenance. The connector
+validates the parent's durable ownership and retains original history references,
+but starts the child from an independent context cursor. Unattributed seeded
+transcripts remain blocked. dsh's ordinary UI fork does not currently persist
+`parentSession`; it cannot claim this verified inheritance capability.
+
+A complete cursor is signed for the host conversation and current user turn.
+Incomplete, ordinary-MCP, other-chat, and old-turn cursors cannot authorize bound
+memory tools. A complete cursor can refresh into the next turn; unfinished pages
+must finish in their original turn or reload. Stable request IDs deduplicate
+successful memory operations without retaining a cached response body. They
+must not be reused for different arguments. No-change refreshes remain read-only,
+and do not prevent the current turn from saving new memories.
+
+A failed activation reports `structuredContent.activationEstablished=false`
+only when the server knows no binding RPC was attempted and no binding existed.
+A successful `resume_context` also reports that field when the root is still
+unbound. This releases only a pending, never successfully established history
+boundary. Other errors, including ambiguous binding failures, do not authorize
+releasing it. Bound resume responses report `activationEstablished=true`.
+
+Restored-instance association uses the separate [private recovery
+approval](identity-bindings.md#private-approval-for-mcp-recovery) and a generic
+connector recovery journal. Merely editing an endpoint, deleting a sidecar, or
+calling the model-visible tool does not migrate an activated conversation.
+After a verified transition, the initialization gate loads and acknowledges the
+restored persona before the first complete memory refresh. Failure at either
+stage prevents ordinary work.
+
+Minimal experimental connector configuration:
+
+```yaml
+delegation: deny
+runtimeMetadata:
+  namespace: io.ziwo/conversation
+  captureTools: [activate_context, resume_context]
+  historyTools: [initialize_context]
+  captureRollback: { pointer: /activationEstablished, value: false }
+turnContext:
+  tool: refresh_context
+  state: { cursor: /cursor }
+  pins: [/identity/id, /identity/instance]
+  pagination: { complete: /complete, maxPages: 128 }
+  delivery:
+    reloadArguments: { reload: true }
+  maxBytes: 1048576
+lifecycle:
+  group: autobiographical-subject
+  startTools: [activate_context]
+  probe: resume_context
+  allowedTools: [initialize_context, read_initial_history, process_initial_history, complete_context, acknowledge_persona, acknowledge_history_notice]
+  localTools: [mcp_connector_history]
+  blockedTools: [subagent_fork]
+  ready:
+    activate_context: /activation/canRun
+    resume_context: /activation/canRun
+    initialize_context: /canRun
+    process_initial_history: /canRun
+    complete_context: /canRun
+    acknowledge_persona: /canRun
+    acknowledge_history_notice: /canRun
+```
+
+Use the trusted endpoint and private bearer credential, and deny temporary-agent
+access. The configured initialization workflow records ownership before its first
+call. Until server readiness, it rejects unrelated tools and buffers model
+streams, releasing only complete permitted initialization calls. After readiness,
+it forces the first full refresh in the same turn before ordinary work. Recovery
+uses an allowed probe through the normal scoped executor. This requires public
+model-stream middleware and the shared tool pipeline; bypassing custom executors
+and other in-process plugins are outside its enforcement boundary. No service
+names or pointers are hardcoded in the connector. `blockedTools` is a host tool
+deny list that remains effective after readiness. In dsh, list `subagent_fork`
+and any equivalent parent-history copy tools enabled in the profile. A guard
+and dispatch recheck reject them before their bodies run; fresh `subagent`
+helpers can still receive task-only materials. Changing this policy preserves
+the same binding and incremental read position.
+
+A retained workflow sidecar can recover a missing context sidecar by reloading
+the same owner. Missing workflow ownership, changed endpoints, old host bindings
+without authenticated MCP conversation records, and restore reassociation are
+not silently migrated. Explicit, operator-authorized recovery is required for a
+restored instance; local recovery evidence is described above.
+
+The generic delivery controller keeps the last admitted cursor and a pending
+receipt containing only IDs, hashes and next-state scalars. It confirms exact
+content against the actual current model surface before advancing. A failed
+admission is re-read from the old position; surface replacement/compaction causes
+a full same-subject reload. This establishes recorded input, not proof that a
+model understood it. All pages must fit configured total limits before the model
+continues. Local real dsh tests now cover activation, history processing, empty
+changes followed by new writes, cross-chat correction and same-subject persona
+revision, multi-page changes, deletion, outage recovery, and compaction reload.
+One synthetic dsh run also rejected A-to-B activation without contacting B
+and rejected `subagent_fork` without creating a child. After fixing history-tool
+visibility, a fresh helper received neither the parent's synthetic memory
+marker nor the protected tool schemas. A neutral
+control chat made no memory calls. These are bounded test observations, not
+proof of arbitrary model behavior. New-process resume and the complete
+independent-evaluator proposal, exact user approval, adoption and two-consumer
+sync workflow also passed in isolated headless sessions of the same runtime.
+Another synthetic subject covered competing proposals, an offline consumer
+catching up to a later persona version, and a revision between two refresh
+pages. The invalidated page set stopped generation; retry started at the old
+admitted cursor and delivered all changes with the new persona. A persistent
+child with operator-provided, validated parent lineage also inherited the same
+subject and independently reloaded its current persona and memory. This fixture
+does not add parent lineage to the ordinary UI fork.
+Configured history-copy tools now have a pre-execution gate, and
+temporary helpers cannot see or use the scoped history reader. A fallback also
+rejects seeded temporary helpers before generation when their parent is bound
+or their workspace enables this capability; it can run after seed persistence.
+Direct host APIs, UI fork commands, unlisted copy tools and in-process plugins
+remain outside the copy-before-storage guarantee. Universal copy isolation
+requires a host admission hook before constructing or persisting an inherited
+destination session. The connector now supports a proposed, generic
+`session/preparing` contract and `lifecycle.requireCreationAdmission: true`;
+requiring it on an unsupported host fails startup. Isolated real SessionStore
+tests verified refusal before destination construction and caller persistence,
+including unlabelled nonempty seeds. The host proposal also adds actual parent
+lineage to normal persistent forks. An isolated complete dsh process exercised
+the ordinary fork business API with 219 inherited source events and verified
+the persisted parent header; rejected synthetic destinations were not stored.
+It has not been installed into stock dsh, and browser interaction and the full
+entry-point matrix have not been accepted. The host may still read source
+history before this admission; privileged plugins bypassing SessionStore and
+tampered local ownership storage are outside the trusted-host boundary.
+
+Nonempty history tests also exercised a committed batch whose response was
+withheld, followed by a confirmed process kill and a fresh-process resume. The
+resumed conversation read the original receipt and memory ID without rewriting
+the history. An earlier sample invented a neutral feeling absent from its
+source. History tool guidance now requires unsupported optional fields to be
+omitted, preserves fictional status, and advertises the store's accepted moment
+values and numeric ranges. Later synthetic samples omitted unsupported feelings;
+these observations do not establish semantic fidelity for arbitrary histories.
+
+A code-task test found that replacing the host system prompt between refresh
+and model dispatch could falsely reject an already delivered delta. The
+controller now retains an in-process proof of the prior immutable non-system
+message objects and their order. It admits the pending delta across that
+generation change only when every prior object and the exact new result remain
+on the actual model surface. This proof is not persisted, cannot cross Session
+objects, and does not admit a compaction that removed earlier content. The real
+retry refreshed first and successfully wrote/read a synthetic code artifact.
+
+The installed dsh PTC executor was also checked with an already bound
+conversation: its rejection of the controller's direct refresh stopped the
+turn before any model output or tool call. Resuming that same conversation
+with the native executor succeeded, preserving the subject, persona version
+and memory. PTC is therefore not a supported enforced-lifecycle mode in this
+implementation; the failure is not silently downgraded to best-effort sync.
+Missing parent lineage and missing copy-admission hooks are similarly explicit
+host capability limits. A connector must not infer those capabilities from
+similar transcript text or from a successful ordinary MCP connection.
+
+## Independent evaluation over MCP
+
+A user can create a scoped evaluation connection with `ziwo-admin persona-evaluate`, use it in a fresh AI conversation, then review and approve the exact proposal through the private administration channel. The evaluation MCP exposes only `read_evaluation` and `propose_persona`; it cannot remember, activate the subject, approve, or adopt. See the [portable evaluation workflow](persona.md#portable-evaluation-with-any-mcp-client).
+
+## Structured context result
+
+`get_context` retains its text response and adds standard MCP `structuredContent`:
+
+```json
+{
+  "schema_version": 1,
+  "session_id": "s_example",
+  "identity": { "id": "zi_example", "instance": "i_example" },
+  "capabilities": {
+    "memory": "bounded_summary",
+    "persona": "requires_host_activation",
+    "turn_enforcement": "client"
+  }
+}
+```
+
+Legacy stores that have not established an identity can return a null identity field. Reading context does not migrate an identity, adopt a persona, approve a proposal, or attest conversation ownership. Failed calls have no successful structured state. The session ID identifies a memory session; it is not an authentication credential or proof of ownership by a particular host conversation.
+
+Clients should use structured state rather than parse session IDs from prose. Refresh using the previously returned `session_id`; use `recall` for relevant remembered subjects, since the context is a bounded summary, not an exhaustive change feed. Pin the stable identity and instance when the host supports it. Reject changed targets and treat a restored instance as requiring explicit reassociation.
+
+## Generic connector configuration
+
+The 0.3.0 preview connector supports an opt-in `turnContext` setting on any configured server:
+
+```yaml
+servers:
+  ziwo:
+    transport: streamable-http
+    url: https://your-instance.example/your-memory/mcp
+    delegation: deny
+    turnContext:
+      tool: get_context
+      state:
+        session_id: /session_id
+      pins:
+        - /identity/id
+        - /identity/instance
+```
+
+Use the connector's normal authentication configuration. `state` maps next-call argument names to JSON pointers in `structuredContent`; `pins` select immutable response values. This same mechanism works with other context services and does not interpret Ziwo-specific field names.
+
+Start a new, unseeded conversation after enabling this capability. Neutral conversations do not automatically load a service. A successful explicit/model-requested context call activates subsequent automatic refreshes. Each later turn, and a new user message steered into a running turn, refreshes before generation. Intermediate tool steps do not create extra refreshes. Automatic execution uses dsh's scoped tool executor and requires the context tool's policy to be `allow`; other tool policy and scope checks still apply.
+
+State is stored durably in dsh's `mcp_connector_context` domain under the real session ID and creation time. It contains endpoint fingerprints, mapped scalar arguments and pinned scalar values, not returned memory text. Context supplied to the model is recorded as connector-authored context in the conversation. A timeout, cancellation, tool error, changed identity, restricted server, invalid result, or persistence failure blocks the step. Missing state for an old, seeded or inherited transcript also blocks; silently creating a new binding would hide a continuity failure.
+
+The summary-only configuration does not migrate existing conversations or infer fork ownership. The optional trusted lifecycle workflow supports verified parent lineage as described above; session backup/restore/delete still needs explicit ownership handling. Keep the durable sidecar with its owning dsh profile. Disabling/uninstalling the controller removes enforcement; a server cannot prevent a host from responding using old context. Configuring multiple memory servers is not a substitute for the trusted host's single-identity binding contract.

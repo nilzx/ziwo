@@ -14,6 +14,7 @@ import { cp, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promi
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dryRun, moduleName, moduleTypes, sourceMapType } from "./upload-form.mjs";
+import { releaseChannel } from "./release-policy.mjs";
 
 export const workerDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 export const repoURL = "https://github.com/nilzx/ziwo";
@@ -56,7 +57,7 @@ export function packageJson(o) {
     repository: { type: "git", url: `git+${repoURL}.git` },
     homepage: repoURL,
     // A scoped package is private to its organization unless it says so.
-    publishConfig: { access: "public" },
+    publishConfig: { access: "public", tag: releaseChannel(o.version) },
   };
 }
 

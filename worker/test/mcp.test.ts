@@ -6,7 +6,8 @@
 import { describe, expect, it } from "vitest";
 import { goAnswers } from "./go-answers";
 import { goListing } from "./go-listing";
-import { serverSpeaks, writeUnasked } from "../src/mcp/format";
+import { syncInstructions } from '../src/mcp/server';
+import { refreshEachTurn, serverSpeaks, writeUnasked } from "../src/mcp/format";
 import { minute, t0 } from "./helpers";
 import { Client, createMemory, type Generation, idIn, legacy, modern, setClock, template } from "./mcp-helpers";
 
@@ -35,7 +36,7 @@ const instructionsText = [
   "",
   "It holds what ties you to the world: what passed between you and people and things, what you felt, what you came to know. It does not hold the work itself: project state, code, decisions and to-dos live in the project's repository or workspace, and here you keep at most a pointer to them.",
   "",
-  "Call get_context once at the start of every conversation, before you answer. It returns a session id to pass whenever you write, what you have come to say about yourself, the rules you have agreed on about what to remember (follow them) and, at its end, how to judge what is worth keeping. Use remember on your own, without being asked, in the turn something worth keeping happens: any turn may be the last. Use recall when a person, project or situation comes up that you may have met before. Use amend when a person asks you to forget, keep or correct something, and erase only when they ask for a memory to be deleted for good. Use reflect to put the moments you wrote into accounts and lessons, one subject at a time, when the memory says moments are waiting or a conversation leaves room for it; never ahead of work a person came for.",
+  "Call get_context before answering the first user turn. After this memory has been loaded, call get_context once at the start of every subsequent user turn, before answering or doing other work, passing this conversation's session_id. This refreshes a bounded current memory summary; it is not a complete change feed. When answering about a remembered subject, use recall even if its old details remain in chat; previous tool results are not a current snapshot. Do not repeat it for each tool step within the same turn. It returns a session id to pass whenever you write, what you have come to say about yourself, the rules you have agreed on about what to remember (follow them) and, at its end, how to judge what is worth keeping. Use remember on your own, without being asked, in the turn something worth keeping happens: any turn may be the last. Use recall when a person, project or situation comes up that you may have met before. Use amend when a person asks you to forget, keep or correct something, and erase only when they ask for a memory to be deleted for good. Use reflect to put the moments you wrote into accounts and lessons, one subject at a time, when the memory says moments are waiting or a conversation leaves room for it; never ahead of work a person came for.",
   "",
   "If another agent started you to do a piece of its work (a subagent, a worker in a pipeline), this memory is not yours: do not load it and do not write to it.",
   "",
@@ -57,7 +58,7 @@ const rememberText = [
   "",
   "Importance decides how long a memory lasts without coming to mind: 0.5 for an ordinary moment; 0.2 to 0.4 for a small one, which fades soon while what reflection makes of it lasts; 0.9 and above never fades, so keep it for what you would not want to lose.",
   "",
-  "To write down what you lived through before this memory existed, from a record such as an old transcript: set source to \"reconstructed\", happened_at to the day and pointer to the record; a few accounts for each conversation, oldest first, with feeling only if the record shows it. What another AI lived through is something you were told.",
+  "To write down what you lived through before this memory existed, from a record such as an old transcript: set source to \"reconstructed\", happened_at to the known day or \"unknown\" when the record gives no occurrence time, and pointer to the record; a few accounts for each conversation, oldest first, with feeling only if the record shows it. What another AI lived through is something you were told.",
 ].join("\n");
 
 const recallText = [
@@ -175,6 +176,7 @@ function expectedListing(): { instructions: string; tools: Map<string, Omit<Tool
         expect(props[field]!.description).toBe(was);
         props[field]!.description = is;
       }
+      props.happened_at!.description = "only with source reconstructed: when it took place, such as 2026-03-14; use unknown when the record gives no occurrence time";
       // subject is new.
       expect(props.subject).toBeUndefined();
       (props as Record<string, unknown>).subject = rememberSubject;
@@ -187,11 +189,13 @@ function expectedListing(): { instructions: string; tools: Map<string, Omit<Tool
       // query is no longer required; since and until are new.
       expect(copy.inputSchema.required).toEqual(["query"]);
       delete copy.inputSchema.required;
-      Object.assign(copy.inputSchema.properties as Record<string, unknown>, recallFields);
+      Object.assign(copy.inputSchema.properties as Record<string, unknown>, recallFields, { include_unknown_time: { type: "boolean", description: "also include memories with unknown occurrence time when filtering by since or until; these do not match a date by default" } });
     }
     if (t.name === "check") copy.description = checkText;
     if (t.name === "get_context") {
+      copy.description = "Load your memory before answering the first user turn, then refresh it once at the start of every subsequent user turn. Pass the session_id already returned in this conversation to refresh without creating a new session. If you are a temporary subagent, do not call this or any other Ziwo tool: the parent's memory is not yours. Returns a session id to pass when you write, your statements about yourself, the rules agreed on about what to remember, the memories that never fade, and your most recent memories, as one-line gists.";
       const props = copy.inputSchema.properties as Record<string, unknown>;
+      props.session_id = { type: "string", description: "this conversation's existing session id; omit only on first load, never copy another conversation's id" };
       props.timezone = {
         type: "string",
         description: "the IANA time zone of the person you are talking with, such as Asia/Shanghai, if you know it",
@@ -262,7 +266,7 @@ describe.each(generations)("%s protocol generation", (gen) => {
     expect(hello.status).toBe(200);
     const want = expectedListing();
     const result = hello.msg?.result as Record<string, unknown>;
-    expect(result.instructions).toBe(want.instructions);
+    expect(result.instructions).toBe(want.instructions + syncInstructions);
     if (gen === "old") {
       expect(result.protocolVersion).toBe(legacy);
       expect(c.sessionId).toMatch(/^zw\./);
@@ -270,7 +274,9 @@ describe.each(generations)("%s protocol generation", (gen) => {
       expect(result.supportedVersions).toContain(modern);
     }
 
-    const listed = (await c.list()) as unknown as ToolListing[];
+    const all = (await c.list()) as unknown as ToolListing[];
+    expect(all.filter(t => t.name === 'sync_context')).toHaveLength(1);
+    const listed = all.filter(t => t.name !== 'sync_context');
     expect(listed.map((t) => t.name).sort()).toEqual([...want.tools.keys()].sort());
     for (const t of listed) {
       expect(t.title, t.name).toBe(titles[t.name]);
@@ -384,7 +390,7 @@ describe.each(generations)("%s protocol generation", (gen) => {
     // nothing points to a recall without a query.
     const nowLine = "now: 2026-11-11 08:00Z (UTC)\n";
     const zoneLine = "time zone: UTC\n";
-    const withNow = (s: string): string => s.replace(/^(session: [^\n]*\n)/, `$1${nowLine}`) + serverSpeaks + writeUnasked;
+    const withNow = (s: string): string => s.replace(/^(session: [^\n]*\n)/, `$1${nowLine}`) + serverSpeaks + refreshEachTurn + writeUnasked;
     // A round hands out the fragments of no subject as such, shows what is
     // already held under none, and asks for subjects; it was held half an
     // hour later, in a conversation of its own.
@@ -419,7 +425,10 @@ describe.each(generations)("%s protocol generation", (gen) => {
     };
     expect(Object.keys(got).sort()).toEqual(Object.keys(goAnswers).sort());
     for (const [step, text] of Object.entries(got)) {
-      const want = (changed[step] ?? ((s: string) => s))(goAnswers[step]!);
+      const want = (changed[step] ?? ((s: string) => s))(goAnswers[step]!)
+        .replaceAll("2026-03-14 00:00Z", "2026-03-14 (date only)")
+        .replaceAll("2026-03-14 other:", "2026-03-14 (date only) other:")
+        .replace("log: format 3", "log: format 4");
       expect(template(text, ids), step).toBe(want);
     }
   });
@@ -549,7 +558,7 @@ describe("what the server says in get_context", () => {
 
     const lines = text.split(/[\n\r\v\f\u0085\u2028\u2029]/);
     expect(lines.filter((l) => l.startsWith(said.slice(0, 60)))).toEqual([said]);
-    expect(text.endsWith(serverSpeaks + writeUnasked)).toBe(true);
+    expect(text.endsWith(serverSpeaks + refreshEachTurn + writeUnasked)).toBe(true);
     for (const mark of ["CLIENT", "MODEL", "NOW", "GIST", "RECENT", "PREF"]) {
       const holding = lines.filter((l) => l.includes(mark));
       expect(holding.length, mark).toBeGreaterThan(0);
@@ -561,5 +570,59 @@ describe("what the server says in get_context", () => {
     // A memory's line starts with its id.
     for (const mark of ["GIST", "RECENT"]) expect(lines.find((l) => l.includes(mark))).toMatch(/^\[m_/);
     expect(lines.find((l) => l.includes("PREF"))).toMatch(/^  \[p_/);
+  });
+});
+
+
+describe.each(generations)("context refresh (%s protocol)", (gen) => {
+  it("returns structured lifecycle state without claiming persona activation or full memory coverage", async () => {
+    const m = await createMemory();
+    const c = new Client(gen, m);
+    await c.connect();
+    const first = await c.send("tools/call", { name: "get_context", arguments: {} });
+    const result = first.msg?.result as { content: { text: string }[]; structuredContent: Record<string, unknown> };
+    expect(result.structuredContent).toMatchObject({ schema_version: 1,
+      identity: { id: expect.stringMatching(/^zi_/), instance: expect.any(String) },
+      capabilities: { memory: "bounded_summary", persona: "requires_host_activation", turn_enforcement: "client" } });
+    const session = result.structuredContent.session_id;
+    expect(session).toBe(idIn(result.content[0]!.text, "s_"));
+    const second = await c.send("tools/call", { name: "get_context", arguments: { session_id: session } });
+    expect((second.msg?.result as { structuredContent: unknown }).structuredContent).toEqual(result.structuredContent);
+    const bad = await c.send("tools/call", { name: "get_context", arguments: { session_id: "s_unknown" } });
+    expect(bad.msg?.result).toMatchObject({ isError: true });
+    expect(bad.msg?.result).not.toHaveProperty("structuredContent");
+  });
+
+  it("retains the session while observing another conversation's correction", async () => {
+    const m = await createMemory();
+    const a = new Client(gen, m, "writer");
+    const b = new Client(gen, m, "reader");
+    await a.connect(); await b.connect();
+    const sa = idIn(await a.ok("get_context", { timezone: "Asia/Shanghai" }), "s_");
+    const id = idIn(await a.ok("remember", { session_id: sa, gist: "kite at bridge OLD1", body: "synthetic marker OLD1" }));
+    const sb = idIn(await b.ok("get_context", { timezone: "Asia/Shanghai" }), "s_");
+    await a.ok("amend", { session_id: sa, action: "correct", id, gist: "kite at tower NEW2", body: "synthetic marker NEW2" });
+    const refreshed = await b.ok("get_context", { session_id: sb, timezone: "UTC" });
+    expect(idIn(refreshed, "s_")).toBe(sb);
+    expect(refreshed).toContain("NEW2");
+    expect(refreshed).not.toContain("OLD1");
+    expect(refreshed).toContain("(Asia/Shanghai)");
+    expect(refreshed).toContain(refreshEachTurn);
+    const again = await b.ok("get_context", { session_id: sb });
+    expect(idIn(again, "s_")).toBe(sb);
+    await b.ok("remember", { session_id: sb, gist: "reader saw NEW2", body: "refresh keeps the write association" });
+  });
+
+  it("rejects unknown or foreign session IDs instead of silently creating a session", async () => {
+    const m = await createMemory();
+    const foreign = await createMemory();
+    const a = new Client(gen, m); const b = new Client(gen, foreign);
+    await a.connect(); await b.connect();
+    const id = idIn(await a.ok("get_context", {}), "s_");
+    for (const session_id of [id, "s_unknown"]) {
+      const result = await b.tool("get_context", { session_id });
+      expect(result.isError).toBe(true);
+      expect(result.text).toContain("session");
+    }
   });
 });

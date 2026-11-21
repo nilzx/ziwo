@@ -338,6 +338,10 @@ def relive(base, secret, name, ms):
     st, _, raw = http("GET", f"{base}/admin/memories/{name}/export", auth)
     check(f"{name} is exported to be moved back in time", st == 200, st)
     lines, prev = [], ""
+    header = raw.split("\n", 1)[0]
+    version = json.loads(header).get("ziwo_export")
+    if version in (2, 3, 4):
+        prev = hashlib.sha256((f"ziwo-export-v{version}\n" + header).encode()).hexdigest()
     for line in raw.split("\n"):
         m = EVENT_LINE.match(line)
         if m is None:
@@ -408,8 +412,8 @@ def run(w):
     desktop = Client(base, "claude", claude_token, "desktop-app")
     check("claude's token opens claude's memory", desktop.status == 200, desktop.status)
     names = desktop.tools()
-    check("it serves the eight tools",
-          sorted(names) == sorted(["get_context", "remember", "recall", "expand", "reflect", "amend", "erase", "check"]), names)
+    check("it serves the memory tools and incremental context feed",
+          sorted(names) == sorted(["sync_context", "get_context", "remember", "recall", "expand", "reflect", "amend", "erase", "check"]), names)
     ctx = desktop.tool("get_context", model="model-a")
     has("a new memory is empty", ctx, "No memories yet")
     has("and says what time it is, in UTC unless told", ctx, "(UTC)")

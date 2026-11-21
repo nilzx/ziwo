@@ -4,12 +4,13 @@
 #
 # The tag must be the version in worker/package.json. Run by hand instead
 # (Actions > Release > Run workflow), it builds and checks everything and
-# publishes nothing.
+# publishes nothing, even when manually selected on a tag. Prereleases use
+# npm's next channel; stable versions use latest.
 #
 # Two jobs, on purpose. "package" installs the dependencies, runs the tests and
 # builds the tarball; it holds no right to publish. "publish" holds that right
 # (npm trusted publishing, by OIDC: no token is stored anywhere) and runs
-# nothing but npm on the tarball the first job checked.
+# npm on the tarball the first job checked, then records the GitHub release.
 #
 # npm must be told to trust this workflow, once: on npmjs.com, the package's
 # Settings > Trusted Publisher > GitHub Actions, with this repository and the
@@ -19,7 +20,8 @@ name: Release
 
 on:
   push:
-    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+    tags: ["v*"]
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -29,6 +31,11 @@ jobs:
   package:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      publish: ${{ steps.policy.outputs.publish }}
+      channel: ${{ steps.policy.outputs.channel }}
+      prerelease: ${{ steps.policy.outputs.prerelease }}
+      version: ${{ steps.policy.outputs.version }}
     defaults:
       run:
         working-directory: worker
@@ -38,38 +45,31 @@ jobs:
         with:
           node-version: 24
           package-manager-cache: false
+      - name: Validate version and publication channel
+        id: policy
+        run: node scripts/release-policy.mjs
       - run: npm ci
-      - name: The tag is the version
-        if: github.ref_type == 'tag'
-        run: |
-          version="$(node -p "require('./package.json').version")"
-          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
-            echo "::error::the tag is $GITHUB_REF_NAME, but worker/package.json says $version"
-            exit 1
-          fi
+      - run: npm ci --prefix ../adapters/codex/native --ignore-scripts
       - run: npx tsc --noEmit
       - run: npm test
       # Packs, installs the tarball into a scratch directory, runs it signed in
       # to nothing, compares its upload with the repository's, and runs the
       # smoke suite on the prebuilt Worker.
-      - run: npm run check:npm
-      - name: Pack what was checked
-        run: npm pack --pack-destination "$RUNNER_TEMP"
-        working-directory: worker/pkg
+      - run: npm run check:npm -- --artifact-dir "$RUNNER_TEMP/checked-package"
       - uses: actions/upload-artifact@v7
         with:
           name: package
-          path: ${{ runner.temp }}/ziwo-*.tgz
+          path: ${{ runner.temp }}/checked-package/
           if-no-files-found: error
           retention-days: 7
 
   publish:
-    if: github.ref_type == 'tag'
+    if: github.event_name == 'push' && github.ref_type == 'tag' && needs.package.outputs.publish == 'true'
     needs: package
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: read
+      contents: write
       id-token: write
     steps:
       - uses: actions/download-artifact@v8
@@ -80,7 +80,20 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
+      - name: Verify the checked artifact
+        run: sha256sum -c SHA256SUMS
       - name: Publish
+        env:
+          NPM_CHANNEL: ${{ needs.package.outputs.channel }}
         run: |
           npm --version
-          npm publish ./ziwo-*.tgz --access public
+          npm publish ./ziwo-*.tgz --access public --tag "$NPM_CHANNEL" --provenance
+      - name: Record the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          IS_PRERELEASE: ${{ needs.package.outputs.prerelease }}
+        run: |
+          args=(--repo "$GITHUB_REPOSITORY" --verify-tag --title "$RELEASE_TAG" --generate-notes)
+          if [ "$IS_PRERELEASE" = true ]; then args+=(--prerelease); fi
+          gh release create "$RELEASE_TAG" "${args[@]}"

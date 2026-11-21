@@ -1,9 +1,10 @@
+import { personaAdminRoute, servePersonaAdmin } from "./persona-api";
 // The admin API: what the owner of a deployment uses to run it. Every route
 // needs the bearer admin secret and is not there without one
 // (adminSecretState): ADMIN_SECRET when it counts (adminSecretOf), else one
 // set on the admin page. /admin/setup alone needs no credential: it says
 // which of the two there is, and sets the second while that is allowed. No
-// route but export returns what a memory says: figures, ids, names,
+// legacy memory route but export returns what a memory says: figures, ids, names,
 // settings, the check report and the clients granted access only.
 
 import { directoryName, type Listed, type StoredSecret } from "./directory";
@@ -18,13 +19,15 @@ import { type GrantMetadata, helpersFor } from "./oauth";
 import { readParams, type SettingsChange } from "./settings";
 import { reportText } from "./store/check";
 import type { LogStats } from "./store/types";
+import { harnessAdminRoute, readObject, serveHarnessAdmin } from "./harness";
+import { z } from "zod";
 
 // What the access log learns about one request while it is served.
 export interface Note {
   auth?: "ok" | "missing" | "rejected";
   // Which credential was weighed: a memory's fixed token, an OAuth access
   // token, or, on the consent page, the token or the admin secret.
-  cred?: "token" | "oauth" | "admin";
+  cred?: "token" | "oauth" | "admin" | "harness" | "evaluation";
   protocol?: string;
   // What an MCP request asked for, as one of a fixed list of words.
   rpc?: string;
@@ -37,7 +40,7 @@ export interface Note {
 }
 
 type Action =
-  | "create" | "describe" | "delete" | "token" | "settings" | "check" | "rebuild" | "export" | "import" | "grants" | "revoke";
+  | "create" | "describe" | "delete" | "token" | "settings" | "check" | "rebuild" | "export" | "import" | "grants" | "revoke" | "identity" | "migrate-identity";
 
 // The routes under /admin/memories/<name>, by last segment and method.
 const memoryRoutes: Record<string, Record<string, Action>> = {
@@ -49,6 +52,7 @@ const memoryRoutes: Record<string, Record<string, Action>> = {
   export: { GET: "export" },
   import: { POST: "import" },
   grants: { GET: "grants" },
+  identity: { GET: "identity", POST: "migrate-identity" },
 };
 
 // A grant's id, as the library draws it.
@@ -326,10 +330,17 @@ function errorName(err: unknown): string {
 // serveAdmin answers a request whose path starts with /admin/. Unknown paths
 // and methods are answered 404 before the secret is weighed, as before.
 export async function serveAdmin(request: Request, env: Env, parts: string[], note: Note): Promise<Response> {
+  const response = await adminResponse(request, env, parts, note);
+  // Host metadata and credentials must not be cached, including auth failures.
+  if (parts[2] === 'harnesses') response.headers.set('cache-control', 'no-store');
+  return response;
+}
+
+async function adminResponse(request: Request, env: Env, parts: string[], note: Note): Promise<Response> {
   if (parts.length === 3 && parts[2] === "setup" && (request.method === "GET" || request.method === "POST")) {
     return serveSetup(request, env, note);
   }
-  let action: Action | "list" | undefined;
+  let action: Action | "list" | "harness" | "persona" | undefined;
   let name = "";
   let grant = "";
   if (parts[2] === "memories") {
@@ -345,6 +356,8 @@ export async function serveAdmin(request: Request, env: Env, parts: string[], no
       action = "revoke";
     }
   }
+  if (harnessAdminRoute(parts, request.method)) action = "harness";
+  if (personaAdminRoute(parts, request.method)) action = "persona";
   if (action === undefined) return notFound();
   let state: AdminSecretState;
   try {
@@ -367,8 +380,10 @@ export async function serveAdmin(request: Request, env: Env, parts: string[], no
     }
   }
   if (note.auth !== "ok") return unauthorized();
-  if (action !== "list" && !validName(name)) return json(400, { error: invalidNameMessage(name) });
+  if (action !== "list" && action !== "harness" && action !== "persona" && !validName(name)) return json(400, { error: invalidNameMessage(name) });
   try {
+    if (action === "persona") return await servePersonaAdmin(request, env, parts);
+    if (action === "harness") return await serveHarnessAdmin(request, env, parts);
     if (action === "list") return await list(env);
     if (action === "grants" || action === "revoke") return await serveGrants(request, env, name, grant);
     if (action === "delete") return await serveDelete(request, env, name);
@@ -417,6 +432,20 @@ async function serveMemoryAdmin(
   const stub = env.MEMORY.getByName(name);
   const endpoint = `/${name}/mcp`;
   switch (action) {
+    case "identity": {
+      const info = await stub.identityInfo();
+      return info === "unknown" ? noSuchMemory(name) : json(200, { memory: name, ...info });
+    }
+    case "migrate-identity": {
+      const parsed = z.object({
+        expectedInstance: z.string().min(1).max(200).nullable(), sourceInstance: z.string().min(1).max(200).optional(),
+      }).strict().safeParse(await readObject(request));
+      if (!parsed.success) return json(400, { error: "expectedInstance is required; export a backup before migration" });
+      const r = await stub.migrateIdentity(parsed.data.expectedInstance, parsed.data.sourceInstance);
+      if ("gone" in r) return json(409, { error: "the data instance changed" });
+      if ("invalid" in r) return json(409, { error: r.invalid });
+      return json(200, { memory: name, ...r });
+    }
     case "create": {
       // Each answer that carries a token is the only place it is ever shown:
       // the object keeps its SHA-256 alone.

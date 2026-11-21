@@ -35,6 +35,9 @@ export interface RememberEvent {
   hash: string; // SHA-256 of the stored content
   corrects: string; // id of the memory this one replaces
   happened: number; // when it took place, if not when it was written; 0 otherwise
+  timePrecision?: 'instant' | 'day' | 'unknown';
+  happenedOn?: string;
+  historySource?: { key: string; fingerprint: string; material: 'original' | 'summary' };
   from: string[]; // ids of the memories it is built on
   ref: string; // self: the statement it revises; reading: the memory it reads
   milestone: boolean;
@@ -115,6 +118,9 @@ export function encodeRemember(e: RememberEvent): string {
     hash: e.hash,
     corrects: omit(e.corrects),
     happened: omitNum(e.happened),
+    time_precision: e.timePrecision,
+    happened_on: e.happenedOn,
+    history_source: e.historySource === undefined ? undefined : { ...e.historySource },
     from: e.from.length > 0 ? e.from : undefined,
     ref: omit(e.ref),
     milestone: e.milestone ? true : undefined,
@@ -162,7 +168,24 @@ export function decodeSession(payload: string): SessionEvent {
 
 export function decodeRemember(payload: string): RememberEvent {
   const o = parseObject(payload, kindRemember);
+  const precision = o.time_precision;
+  if (precision !== undefined && !['instant', 'day', 'unknown'].includes(precision as string)) throw new Error('invalid occurrence precision');
+  if (precision !== undefined && str(o, 'source') !== 'reconstructed') throw new Error('occurrence precision requires reconstructed source');
+  if (precision === 'unknown' && int(o, 'happened') !== 0) throw new Error('unknown occurrence has a timestamp');
+  const date = str(o, 'happened_on');
+  if (precision === 'day' && (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(Date.parse(date)) || new Date(date).toISOString().slice(0, 10) !== date || int(o, 'happened') <= 0)) throw new Error('invalid occurrence date');
+  if (precision !== 'day' && date !== '') throw new Error('date-only value requires day precision');
+  if (precision === 'instant' && int(o, 'happened') <= 0) throw new Error('instant occurrence requires a timestamp');
+  let historySource: RememberEvent['historySource'];
+  if (o.history_source !== undefined) {
+    const raw = o.history_source as Record<string, unknown>;
+    if (raw === null || typeof raw !== 'object' || typeof raw.key !== 'string' || !/^[a-f0-9]{64}$/.test(raw.key) || typeof raw.fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(raw.fingerprint) || !['original', 'summary'].includes(raw.material as string)) throw new Error('invalid history provenance');
+    historySource = { key: raw.key, fingerprint: raw.fingerprint, material: raw.material as 'original' | 'summary' };
+  }
   return {
+    ...(precision === undefined ? {} : { timePrecision: precision as RememberEvent['timePrecision'] }),
+    ...(date === '' ? {} : { happenedOn: date }),
+    ...(historySource === undefined ? {} : { historySource }),
     id: str(o, "id"),
     session: str(o, "session"),
     kind: str(o, "kind"),

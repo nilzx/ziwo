@@ -1,6 +1,6 @@
 # ziwo on Cloudflare Workers: specification
 
-This document describes how the Worker implementation of ziwo behaves, for a developer or an AI agent who wants to operate, extend or audit a deployment. It describes the code in `worker/` as of 2026-11-12. Where it states a figure that was measured, it says when and under what conditions; where something has not been measured, it says so.
+This document describes how the Worker implementation of ziwo behaves, for a developer or an AI agent who wants to operate, extend or audit a deployment. It describes the 0.3.0 preview source in `worker/` as of 2026-11-21. The identity, host-binding, persona, activation and turn-sync APIs have separate [preview installation and migration requirements](preview-release.md); see [Identity and bindings](identity-bindings.md), [Persona initialization and revision](persona.md), [Activation and history backfill](activation.md), and [Per-turn synchronization](turn-sync.md). Where it states a figure that was measured, it says when and under what conditions; where something has not been measured, it says so.
 
 ziwo is an autobiographical memory for an AI: it records what the AI lived through, felt and learned, not the state of a project. It is served over MCP (the Model Context Protocol). Several formats here come from an earlier implementation in Go, which was removed from the repository on 2026-11-13 and is in its history up to commit `a4a8bab`; logs and exports it wrote are still read. OAuth is described in more depth, with its sources, in [worker/docs/oauth-notes.md](../worker/docs/oauth-notes.md).
 
@@ -13,11 +13,11 @@ Contents: [Terms](#terms) · [Architecture](#architecture) · [MCP surface](#mcp
 | memory | Everything one AI remembers, under one name. A deployment holds any number of memories. Each has its own address, `/<name>/mcp`, and its own token. |
 | item | One remembered thing inside a memory, with an id such as `m_abcd2345`: a fragment, an episode, a lesson, an impression, a statement about oneself or a reading. The tools' own texts call items "memories"; this document says "item" to keep the two apart. Items are the rows of the derived table `memories`. |
 | memory object | The Durable Object that holds one memory: a SQLite database with the event log, the contents and the derived tables. |
-| session | One conversation. `get_context` starts it and returns its id (`s_…`). Every write names the session it belongs to. |
+| session | One legacy memory session. `get_context` starts it and returns its id (`s_…`). Every write names the session it belongs to. This is distinct from a host thread or its durable subject binding. |
 | fragment | What `remember` writes: one moment, as it happened. Reflection turns fragments into episodes, lessons, impressions, statements about oneself and readings. |
 | subject | What a run of items is about: a name of the AI's and a description. Fragments, episodes and lessons belong to at most one; one that belongs to none is unsorted. A subject is recorded by subject items (kind `subject`, not items in the sense above: never listed, never counted); its head is the one that stands for it now. |
 | ripe | A fragment waiting for reflection is ripe once the burst it was written in is over: its session has written no fragment for 30 minutes, or has started a new burst since (a fragment written 30 minutes or more after the session's previous one, or its first, starts a burst). The session that asks is no exception. Only ripe fragments are handed out by `reflect` and counted for its prompt. |
-| event log | The table `events`: every write, listing, reading, amendment, erasure, round of reflection and restore, in order. It is append-only and is the only source of truth. |
+| event log | The table `events`: every autobiographical write, listing, reading, amendment, erasure, round of reflection and restore, in order. It is append-only. Stable identity assignments and host-binding authority are stored separately. |
 | derived tables | Tables computed from the event log, the contents and the forgetting parameters. They can be dropped and rebuilt at any time (replay). |
 | experience clock | The number of moments written as they happened. Forgetting is measured against it, not against the calendar. |
 | tier | How reachable an item is: core, active, faded or archived. |
@@ -25,6 +25,8 @@ Contents: [Terms](#terms) · [Architecture](#architecture) · [MCP surface](#mcp
 | reading | An item returned in full by `expand`. It restarts its decay and strengthens it. |
 | grant | An OAuth approval of one client for one memory, kept in KV. |
 | instance | An id (`i_…`) drawn when a memory is created or imported. It tells a memory apart from an earlier one of the same name. |
+| identity | The stable owner (`zi_…`) of a memory. New memories receive one; legacy memories require explicit migration. Restore preserves it while replacing the data instance. |
+| host binding | An immutable association of an authenticated host namespace and a thread with one identity; its pinned data instance changes only by explicit restore association. Initialization readiness is separate from the current turn's acknowledged synchronization capability. |
 | admin secret | The password of whoever owns a deployment: the Worker secret `ADMIN_SECRET` when it is set and counts, else one chosen on the admin page while the deployment was new (see [The admin secret](#the-admin-secret)). It opens the admin API and the admin page, and can approve OAuth grants. |
 
 ## Architecture
@@ -35,7 +37,7 @@ Contents: [Terms](#terms) · [Architecture](#architecture) · [MCP surface](#mcp
 | --- | --- | --- | --- |
 | Worker (`src/index.ts`) | Stateless Worker | nothing | Routes requests, checks credentials, serves MCP (including long-lived streams), the OAuth endpoints and the consent page, the admin API, the admin page; embeds the query of a recall. |
 | `Memory` (`src/memory-object.ts`) | SQLite-backed Durable Object, one per memory name | The event log, the contents, the derived tables, the keyword index, the vectors, the token's hash, the settings | Carries out every tool call and admin action on one memory. Embeds what was written, in an alarm. |
-| `Directory` (`src/directory.ts`) | SQLite-backed Durable Object, one for the deployment | The names of the memories and when each was created or imported | Lists memories for the admin API. It is a list, not an authority: whether a memory exists is decided by its own object. |
+| `Directory` (`src/directory.ts`) | SQLite-backed Durable Object, one for the deployment | Memory names, admin setup, trusted host credentials, conversation bindings and their audit records | The memory list is not existence authority; each memory object decides that. The separate binding registry is the cross-memory authority for host/thread ownership. |
 | `Guard` (`src/guard.ts`) | SQLite-backed Durable Object, one per client address and one for all addresses | Recent wrong credentials of one address; counts of client registrations | The limit on guessing at the consent page and the admin API; the budget on OAuth client registrations. |
 | `OAUTH_KV` | Workers KV namespace | OAuth clients, grants and tokens, written by `@cloudflare/workers-oauth-provider` | Read when an OAuth access token is presented. |
 | `AI` | Workers AI binding | nothing | Embeddings for search by meaning. Optional: without it, search is by keyword only. |
@@ -48,10 +50,10 @@ Every method of the memory object is synchronous inside, and every write is one 
 
 | Request | Fixed token | OAuth access token |
 | --- | --- | --- |
-| Any request to `/<name>/mcp` | `Memory.authorize` (one call to the object), with the SHA-256 of the token | KV, through the OAuth library, to validate the token; no call to the object |
-| `tools/call` | then `Memory.answer` (a second call to the object) | then `Memory.answer`, which also checks the grant's instance |
+| Any request to `/<name>/mcp` | `Memory.authorizeInstance` (one call to the object), checks the token hash and captures the data instance together | KV, through the OAuth library, to validate the token; no call to the object |
+| `tools/call` | then `Memory.answer`, which rechecks the captured instance (a second call to the object) | then `Memory.answer`, which also checks the grant's instance |
 | `recall` with a query, when search by meaning is on | Workers AI, from the Worker, to embed the query, before `Memory.answer` | the same |
-| `server/discover`, `tools/list`, `subscriptions/listen` | answered by the Worker after `authorize` | answered by the Worker; the object is not called |
+| `server/discover`, `tools/list`, `subscriptions/listen` | answered by the Worker after `authorizeInstance` | answered by the Worker; the object is not called |
 
 Not on the path of an MCP request: the `Directory`, the `Guard`, the admin API, and, for a fixed token, KV. A long-lived stream such as `subscriptions/listen` is held by the Worker, never by the object. Embedding what was written happens after the call: `remember` sets the object's alarm, and the alarm calls Workers AI.
 
@@ -63,6 +65,9 @@ Not on the path of an MCP request: the `Directory`, the `Guard`, the admin API, 
 | `/` and `/_page/*` | Worker | The admin page: static files, `GET` and `HEAD` only. Reaches no Durable Object. |
 | `/<name>/mcp` | Worker, then the memory's object | MCP over Streamable HTTP. A path whose name breaks the name rule is `404`. |
 | `/admin/...` | Worker | The admin API. `404` unless the deployment has an admin secret; `/admin/setup` alone needs none. |
+| `/evaluation/v1/...` | Worker, Directory and Memory | Scoped persona evaluation snapshot reads and proposal submission; no autobiographical side effects. |
+| `/admin/persona/...` | Worker and Memory | Private user-facing proposal review, confirmation and adoption; see [Persona workflow](persona.md). |
+| `/harness/v1/...` | Worker and Directory, with target metadata checked in Memory | Registered-host binding API; see [Identity and bindings](identity-bindings.md). Binding, persona loading and gated initialization/backfill; see [Activation](activation.md). |
 | `/oauth/authorize` | Worker | The consent page (`GET`) and its form (`POST`). |
 | `/oauth/token`, `/oauth/register` | Worker, OAuth library | Token and registration endpoints. |
 | `/.well-known/oauth-authorization-server` | Worker, OAuth library | RFC 8414 metadata. |
@@ -167,7 +172,7 @@ Being shown by `get_context` does not count as coming to mind.
 | `pointer` | string | | Where the related work lives, at most 500 characters. |
 | `subject` | string | | The subject it belongs to, by name or by a subject item's id. Trimmed, line breaks folded, cut to 80 characters. `unsorted` (in any case) means none. |
 | `source` | string | | `lived` (default), `told`, `inferred` or `reconstructed`. |
-| `happened_at` | string | with `reconstructed` only | When it took place, read in the session's zone (formats as for `recall`'s `since`). Required with `source: reconstructed`, refused otherwise, and refused more than one minute in the future. |
+| `happened_at` | string | with `reconstructed` only | When it took place, read in the session's zone (formats as for `recall`'s `since`), or `unknown` when absent from the record. Required with `source: reconstructed`, refused otherwise; known dates more than one minute in the future are refused. Date-only inputs retain day precision. |
 | `importance` | number | | 0 to 1; absent or 0 means 0.5. 0.9 and above makes the item core (default `coreImportance`). |
 
 Characters are counted as Unicode code points. The answer is `remembered as m_…`; under an existing subject `remembered as m_… under subject m_…` (the head); under a name no subject has or had, which first writes a subject item, `remembered as m_… under a new subject, m_…. If it is one you already have under another name, merge the two in your next round of reflection.` A write with the same gist and body as an item written in the last 10 minutes (in any session) stores nothing, does not look at the subject, and answers `already remembered as m_…`.
@@ -187,6 +192,7 @@ A name is resolved by its key: the name in NFKC, lower case, with everything but
 | `query` | string | What to look for, best in the words the item would have been written in. Several things separated by commas or other list punctuation are each searched. Leave it out to list by time. Only the first 500 characters are read. |
 | `since` | string | Only items that took place from this time on. |
 | `until` | string | Only items that took place up to this time. |
+| `include_unknown_time` | boolean | Also include unknown occurrence times with a date filter; by default they match no date. |
 | `limit` | integer | How many to return: default 5, at most 20. |
 | `deep` | boolean | Also search the details of faded items and reach archived and replaced ones. |
 | `subject` | string | Only the items of this subject, by name or id, or `unsorted` for those of none. Without a query, its newest are listed. Refused when it names none: `subject "x" names none of your subjects: recall with a query finds them by what they are about`. |
@@ -309,6 +315,11 @@ Log tables, kept for good:
 | `events` | `seq` (autoincrement), `at` (unix milliseconds), `kind`, `payload` (JSON). Triggers refuse every `UPDATE` and `DELETE`. |
 | `contents` | `id` (an item's id), `data` (JSON: `gist`, `body`, `outcome`, `feeling`, `lesson`, `people`, `pointer`, `about`, `context`, empty ones left out). Written once with the event that records the item; a trigger refuses `UPDATE`. A row can be deleted: that is how `erase` works. |
 | `meta` | Key-value pairs; see below. |
+| `persona_versions`, `persona_current` | Adopted versions, fixed loading text, source references and current pointer; separate from autobiographical events and preserved by rebuild. |
+| `persona_evaluations`, `persona_proposals`, `persona_confirmations` | Scoped snapshot references, concrete proposals and immutable decisions; not exported as reusable authorization. |
+| `activations`, `history_receipts`, `activation_requests` | Initialization gates, fixed history manifests, immutable source decisions and request fingerprints; preserved by replay and v4 backups. |
+| `sync_threads`, `sync_snapshots`, `sync_calls` | Runtime cursors, fixed delivery ranges, loading receipts and tool request fingerprints. No copied memory content; retained across eviction, excluded from backups, reset on a restored instance. |
+| `identity_assignment` | One immutable ownership assignment, independent of autobiographical sessions/events. Preserved by replay and included in v2/v3/v4 exports. |
 | `vector_rows` | Embeddings, packed: up to 256 vectors a row, each as signed 8-bit integers (the unit vector times 127, rounded), with the items' row numbers beside them, labelled with the model and the number of dimensions. Kept because they are expensive to recompute; not in the export. |
 
 Keys of `meta`:
@@ -319,6 +330,7 @@ Keys of `meta`:
 | `derived` | `derivedVersion` and the forgetting parameters the derived tables were built with. |
 | `token_sha256` | The SHA-256 (hex) of the memory's fixed token. A memory exists once it has one. |
 | `instance` | The memory's instance id, `i_…`. |
+| `identity_legacy_source` | Source instance retained from a legacy import until explicit identity migration; empty means unknown. It travels in an unassigned v2 backup. |
 | `params` | The forgetting parameters, as JSON; absent means the defaults. |
 | `timezone` | The memory's default time zone; absent means UTC. |
 | `clock` | The experience clock. Derived: rebuilt by a replay. |
@@ -363,9 +375,9 @@ An id is a prefix and eight characters drawn from `abcdefghijkmnpqrstuvwxyz23456
 
 ### Format version, derivedVersion and replay
 
-The event log's format is `3`. A database whose log was written in another format is refused: a newer format with a message that says so, an older one because this build does not migrate it (no memory on this platform was written in one). An import whose `log_format` is not 3 is refused the same way.
+The build reads event log formats `3` and `4`. New stores start at 3; the first occurrence-precision or history-provenance write atomically upgrades to 4. Older builds refuse 4 rather than silently misinterpreting unknown dates. Other formats are refused. Imports claiming format 3 while carrying the new precision/provenance fields are rejected; existing format-3 events retain their interpretation.
 
-`derivedVersion` (now `12`) identifies the layout of the derived tables and the logic that fills them. 6 is the layout the earlier Go implementation wrote; 7 added the indexes a new session's load reads; 8 projects `amend`, `erase` and `reflect` events and replays an erasure as it was lived; 9 keeps the time zone a session reported; 10 keys a carrier by one spelling of its name; 11 indexes what replaced an item, which `expand` reads to show what the new item took the place of; 12 files items under subjects (`subject`, `subjects`, `subject_names`), keeps when a session last wrote a fragment, and leaves subject items out of what is listed. With it the keyword index's version became 2 (`subjects_fts`), so the first call after the deploy also creates that index and replays.
+`derivedVersion` (now `13`) identifies the layout of the derived tables and the logic that fills them. 6 is the layout the earlier Go implementation wrote; 7 added the indexes a new session's load reads; 8 projects `amend`, `erase` and `reflect` events and replays an erasure as it was lived; 9 keeps the time zone a session reported; 10 keys a carrier by one spelling of its name; 11 indexes what replaced an item, which `expand` reads to show what the new item took the place of; 12 files items under subjects (`subject`, `subjects`, `subject_names`), keeps when a session last wrote a fragment, and leaves subject items out of what is listed. With 12 the keyword index's version became 2 (`subjects_fts`). Version 13 adds explicit occurrence precision and civil dates; unknown occurrence time is distinct from write time.
 
 Replay rules for subjects: a fragment, episode or lesson is filed under the current head of the subject item its event names (`''` when that item is gone), and raises its subject's `active_at`; a fragment raises its session's `wrote_at`; an episode files the fragments it absorbs under its subject when they had none. A subject item heads itself, goes into `subjects_fts` and `subject_names`, takes the place of the heads in its `replaces` (they are marked replaced, their items and earlier subject items follow it, their `subjects` rows go and it keeps the latest `active_at`), and files the fragments, episodes and lessons in its `from` that are not erased. An erased item leaves its subject; an erased subject item leaves `subjects_fts` and `subject_names`, and if it was a head its subject is gone and its items belong to none. After the last event, a subject item marked erased because its content was lost is treated the same way.
 
@@ -520,7 +532,7 @@ A query is split into parts at `、`, `，`, `;`, `；`, `|`, line breaks, and `
 
 ### Recall by time
 
-`since` and `until` are read in the session's time zone (else the memory's default, else UTC), in one of the forms `2026-03-14T09:30:00Z` (or with an offset such as `+08:00`), `2026-03-14T09:30:00`, `2026-03-14 09:30:00`, `2026-03-14 09:30` and `2026-03-14`. A fraction of a second is accepted after the seconds. A date alone covers the whole day: `since` from its start, `until` to its end. Both ends are included. A `since` after `until` is refused. Times are compared with when the item took place (for a reconstructed item, its `happened_at`).
+`since` and `until` are read in the session's time zone (else the memory's default, else UTC), in one of the forms `2026-03-14T09:30:00Z` (or with an offset such as `+08:00`), `2026-03-14T09:30:00`, `2026-03-14 09:30:00`, `2026-03-14 09:30` and `2026-03-14`. A fraction of a second is accepted after the seconds. A date alone covers the whole day: `since` from its start, `until` to its end. Both ends are included. A `since` after `until` is refused. Times are compared with when the item took place (for a reconstructed item, its `happened_at`). Unknown occurrence times match no date range unless `include_unknown_time` is true. Day-only text remains a civil date across client zones; unknown dates are never displayed as 1970 or the import date.
 
 - Without a query, `recall` lists the newest items that took place in the span (or the newest of all with neither end given), newest first, up to `limit`: items that stand and are not archived, and with `deep` the archived ones too. A listing by time counts as nothing coming to mind: no event is written and no decay restarts. It calls no model.
 - With a query, `since` and `until` keep the search, by keyword and by meaning, to items that took place in the span; the recall counts as usual.
@@ -588,7 +600,7 @@ A memory's name is 1 to 32 characters: lower-case letters, digits, `-` and `_`, 
 
 A fixed token is `ziwo_` followed by 32 random bytes in base64url (43 characters). It is shown once, in the answer that created it; the memory object keeps only its SHA-256. Replacing it makes the old token stop working at once. Replacing a token does not revoke OAuth grants.
 
-The instance id is drawn when a memory is created or imported and is never carried by an export. An OAuth grant records the instance it was given for, and the object refuses a call whose grant names another instance: a grant left over from a memory that was deleted and created again under the same name opens nothing.
+The instance id is drawn when a memory is created or imported. An export records its source instance, but import generates a new current instance. OAuth grants and authenticated fixed-token requests capture an instance; tool execution rejects a different one. A stable identity is separate and survives a v2/v3/v4 restore. See [identity migration and binding](identity-bindings.md) for the preview identity APIs and legacy compatibility boundary.
 
 ### The admin secret
 
@@ -659,7 +671,7 @@ The admin API sends and takes an export **in the clear**: the event log and what
 - `token_sha256` is the memory's token hash; an imported memory answers to the same token. Without it, the import draws a new token and shows it once.
 - Derived tables and vectors are not exported; they are rebuilt and re-embedded.
 
-The export is built inside one synchronous call to the object, so it describes one state of the memory. The format is the earlier Go implementation's, and a memory with default settings is written with no `settings` field, as it was; exports that implementation wrote are still imported (the tests import recordings of them).
+The export is built inside one synchronous call to the object, so it describes one state of the memory. The example above is legacy v1. Unassigned, unrestored legacy stores retain that format; new identities and restored legacy sources use v2. Its identity/provenance header seeds the hash chain, including for an empty log; see [Backup version 2](identity-bindings.md#backup-version-2). Default settings still omit `settings`. Go v1 exports remain readable; older releases cannot read v2 exports. Stores with adopted persona history use [v3](persona.md#backup-version-3), which protects and validates the identity and persona bundle together; v1/v2 imports remain persona-uninitialized. Stores with initialization records use [v4](activation.md#backup-and-limits), including source receipts and resumable progress, and require a new-instance persona acknowledgment after restore.
 
 An import checks the whole file before anything is written: the header, every line, the chain, unique `seq`s and content ids, the footer's count and head, the settings. It then stores the events with their `seq` and `at`, appends a `restore` event, and replays the log, in one transaction; if the replay fails, nothing is kept. For 7 days after a restore, `get_context` tells the model that the memory was brought back and from an export of when.
 
@@ -943,7 +955,7 @@ On 2026-11-13, 470 Vitest tests and 107 Node tests passed, and the smoke check p
 
 ```
 src/index.ts           the Worker: routing, credentials, MCP, the access log
-src/mcp/               the eight tools, their argument checks, how answers are laid out
+src/mcp/               memory tools, incremental context sync, and scoped persona evaluation
 src/memory-object.ts   the Memory Durable Object: tool calls, admin methods, the embedding alarm, import
 src/memory/            write rules and recall (service.ts), amending and reflecting (amend.ts),
                        input checks and query splitting (clean.ts), background embedding (embedding.ts)

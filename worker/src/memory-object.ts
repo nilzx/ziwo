@@ -1,3 +1,10 @@
+import { Activations, type ActivationReadinessCache } from "./store/activation";
+import { Sync } from "./store/sync";
+import { check as checkTool, tools as toolDefinitions } from "./mcp/tools";
+import { z } from "zod";
+import type { ThreadBinding } from "./bindings";
+import { digest, Personas, PersonaError, personaOutcome, type PersonaLoadCache } from "./store/persona";
+import { ContextSync } from './store/context-sync';
 import { DurableObject } from "cloudflare:workers";
 import { clip, InvalidInput, parseSpan, parseWhen, queryParts, type RememberRequest, trimSpace } from "./memory/clean";
 import type { AmendRequest, EntryRequest, EraseRequest, ReflectView } from "./memory/amend";
@@ -14,9 +21,10 @@ import {
 import { Db, type Usage } from "./store/db";
 import { defaultParams, InvalidParamsError, type Params } from "./store/decay";
 import { ExportError, FormatRefusal, type ParsedExport, parseExport, TooLargeError, writeExport } from "./store/export";
-import { logFormat, metaInstance, metaParams, metaTokenHash, metaZone } from "./store/schema";
+import { latestLogFormat, metaInstance, metaParams, metaTokenHash, metaZone } from "./store/schema";
 import { LogFormatError, parseParams, readLogStats, ReplayError, Store } from "./store/store";
 import type { LogStats } from "./store/types";
+import { type Identity, readIdentity, validSource } from "./store/identity";
 import { knownZone, UTC } from "./zone";
 import type { Env } from "./index";
 
@@ -42,6 +50,7 @@ export interface RecallArgs {
   sessionId?: string;
   since?: string;
   until?: string;
+  includeUnknownTime?: boolean;
   meaning?: QueryVector;
   subject?: string; // only the memories of this subject, by name or id, or unsorted
 }
@@ -49,7 +58,7 @@ export interface RecallArgs {
 // ToolCall is one tool call, its arguments already checked against the
 // tool's schema, as the Worker hands it to answer.
 export type ToolCall =
-  | { tool: "get_context"; model?: string; timezone?: string; client?: string }
+  | { tool: "get_context"; session_id?: string; model?: string; timezone?: string; client?: string }
   | { tool: "remember"; args: RememberArgs }
   | ({ tool: "recall" } & RecallArgs)
   | { tool: "expand"; ids: string[]; sessionId?: string }
@@ -77,7 +86,14 @@ export interface Gone {
 // Answer is the text of a tool's answer, what was wrong with the call, or
 // that the memory is gone. note is what the access log may say of it, in
 // fixed words: never a name, a description or an id.
-export type Answer = { text: string; note?: AnswerNote } | Invalid | Gone;
+export type Answer = { text: string; note?: AnswerNote; structuredContent?: ContextMetadata } | Invalid | Gone;
+
+export interface ContextMetadata {
+  schema_version: 1;
+  session_id: string;
+  identity: { id: string | null; instance: string | null };
+  capabilities: { memory: "bounded_summary"; persona: "requires_host_activation"; turn_enforcement: "client" };
+}
 
 export interface AnswerNote {
   recall_in?: "subject" | "unsorted"; // a recall kept to a subject, or to the unsorted
@@ -130,6 +146,8 @@ export class Memory extends DurableObject<Env> {
   private alarmRun?: Promise<void>;
   // The memory's instance id, once read: see instance.
   private instanceId?: string;
+  private readonly personaLoadCache: PersonaLoadCache = {};
+  private readonly activationReadiness: ActivationReadinessCache = new Map();
 
   private get parts(): { store: Store; service: Service } {
     if (this.built === undefined) {
@@ -145,6 +163,101 @@ export class Memory extends DurableObject<Env> {
 
   get service(): Service {
     return this.parts.service;
+  }
+
+  private get personas(): Personas {
+    if (this.identityInfo() === 'unknown') throw new PersonaError(404, 'subject is unavailable');
+    // Build the store before accessing its separate persona tables.
+    void this.store;
+    return new Personas(new Db(this.ctx.storage.sql), this.ctx.storage, this.personaLoadCache);
+  }
+  syncContext(input: unknown, instance?: string) {
+    return JSON.stringify(personaOutcome(() => {
+      const personas = this.personas;
+      return new ContextSync(new Db(this.ctx.storage.sql), personas).read(input, instance);
+    }));
+  }
+  mcpContext(binding: ThreadBinding, turn: string, input: unknown) {
+    return JSON.stringify(personaOutcome(() => {
+      const personas = this.personas, db = new Db(this.ctx.storage.sql);
+      new Activations(db, this.ctx.storage, this.store, this.service, this.activationReadiness).readySession(binding);
+      return new ContextSync(db, personas).read(input, binding.instance, { scope: digest([binding.harnessId, binding.threadId]), turn });
+    }));
+  }
+  mcpMemoryTool(binding: ThreadBinding, turn: string, cursor: string, requestId: string, name: string, args: Record<string, unknown>, meaning?: QueryVector) {
+    return JSON.stringify(personaOutcome(() => this.ctx.storage.transactionSync(() => {
+      const personas = this.personas, db = new Db(this.ctx.storage.sql);
+      const sessionId = new Activations(db, this.ctx.storage, this.store, this.service, this.activationReadiness).readySession(binding);
+      const scope = digest([binding.harnessId, binding.threadId]);
+      new ContextSync(db, personas).authorize(cursor, binding.identityId, binding.instance, scope, turn);
+      if (!/^[A-Za-z0-9_.:-]{1,200}$/.test(requestId)) throw new PersonaError(400, 'a stable requestId is required');
+      const def = toolDefinitions.find(d => d.name === name && d.name !== 'get_context');
+      if (!def || Object.keys(args).some(k => k === 'session_id' || !def.fields.some(f => f.name === k))) throw new PersonaError(400, 'invalid bound memory arguments');
+      const checked = checkTool(def, { ...args, ...(def.fields.some(f => f.name === 'session_id') ? { session_id: sessionId } : {}) }, 'ziwo-mcp');
+      if ('invalid' in checked) throw new PersonaError(400, checked.invalid);
+      const rid = digest(['mcp', scope, binding.instance, requestId]), fingerprint = digest([name, args]);
+      const prior = db.first('SELECT fingerprint FROM sync_calls WHERE id = ?', rid);
+      if (prior) {
+        if (prior.fingerprint !== fingerprint) throw new PersonaError(409, 'requestId was reused with different arguments');
+        return { text: 'This request already completed and was not repeated. Use a new read request if its result is needed.', replayed: true };
+      }
+      const tool = checked.ok.tool === 'recall' && meaning !== undefined ? { ...checked.ok, meaning } : checked.ok;
+      const result = this.answer(tool, binding.instance);
+      if ('invalid' in result) throw new PersonaError(400, result.invalid);
+      if ('gone' in result) throw new PersonaError(409, 'bound subject is unavailable');
+      db.run('INSERT INTO sync_calls(id, fingerprint) VALUES(?, ?)', rid, fingerprint);
+      return result;
+    })));
+  }
+  startEvaluation(input: { id: string; harnessId: string; threadId: string; requestId: string; identityId: string; instance: string }, tokenHash: string) {
+    return personaOutcome(() => this.personas.start(input, tokenHash, this.now()));
+  }
+  evaluationAuth(id: string, tokenHash: string) { return personaOutcome(() => this.personas.authenticate(id, tokenHash)); }
+  revokeEvaluation(id: string) { return personaOutcome(() => this.personas.revoke(id)); }
+  readEvaluation(id: string, tokenHash: string, offset: number, limit: number) { return personaOutcome(() => this.personas.read(id, tokenHash, offset, limit)); }
+  readEvaluationJson(id: string, tokenHash: string, offset: number, limit: number) { return JSON.stringify(this.readEvaluation(id, tokenHash, offset, limit)); }
+  proposePersona(id: string, tokenHash: string, input: unknown) { return personaOutcome(() => this.personas.propose(id, tokenHash, input, this.now())); }
+  reviewPersona(id: string) { return personaOutcome(() => this.personas.review(id)); }
+  confirmPersona(id: string, input: unknown) { return personaOutcome(() => this.personas.confirm(id, input, this.now())); }
+  adoptPersona(id: string, input: unknown) { return personaOutcome(() => this.personas.adopt(id, input, this.now())); }
+  loadPersona(identityId: string, instance: string) { return personaOutcome(() => this.personas.load(identityId, instance)); }
+
+  activationRequest(binding: ThreadBinding, operation: string, input: unknown) {
+    return personaOutcome(() => {
+      if (this.identityInfo() === 'unknown') throw new PersonaError(409, 'bound subject is unavailable');
+      const a = new Activations(new Db(this.ctx.storage.sql), this.ctx.storage, this.store, this.service);
+      if (operation === 'status') return a.status(binding);
+      if (operation === 'begin') return a.begin(binding, input, this.now());
+      if (operation === 'context') return a.context(binding);
+      if (operation === 'history') return a.history(binding, input);
+      const result = a.operate(binding, operation, input, this.now());
+      if (operation === 'batch') this.wake();
+      return result;
+    });
+  }
+
+  syncRequest(binding: ThreadBinding, operation: string, input: unknown) {
+    return JSON.stringify(personaOutcome<Record<string, unknown>>(() => {
+      if (this.identityInfo() === 'unknown') throw new PersonaError(409, 'bound subject is unavailable');
+      void this.store;
+      const sync = new Sync(new Db(this.ctx.storage.sql), this.ctx.storage);
+      if (operation === 'status') return sync.status(binding);
+      if (operation === 'begin') return sync.begin(binding, input);
+      if (operation === 'page') return sync.page(binding, input);
+      if (operation === 'ack') return sync.ack(binding, input);
+      if (operation === 'end') return sync.end(binding, input);
+      const id = z.string().min(1).max(200).regex(/^[A-Za-z0-9_.:-]+$/);
+      const parsed = z.object({ threadId: id, snapshotId: z.string().regex(/^[a-f0-9]{64}$/), requestId: id,
+        tool: z.enum(['remember', 'recall', 'expand', 'reflect', 'amend', 'erase', 'check']), arguments: z.record(z.string(), z.unknown()) }).strict().safeParse(input);
+      if (!parsed.success || parsed.data.threadId !== binding.threadId) throw new PersonaError(400, 'invalid bound tool call');
+      const p = parsed.data, def = toolDefinitions.find(d => d.name === p.tool)!;
+      if (Object.keys(p.arguments).some(k => k === 'session_id' || !def.fields.some(f => f.name === k))) throw new PersonaError(400, 'bound tools do not accept caller-selected sessions, targets, or unknown arguments');
+      return { ...sync.run(binding, p.snapshotId, p.requestId, [p.tool, p.arguments], session => {
+        const checked = checkTool(def, { ...p.arguments, ...(def.fields.some(f => f.name === 'session_id') ? { session_id: session } : {}) }, 'ziwo-harness');
+        if ('invalid' in checked) throw new PersonaError(400, checked.invalid);
+        return this.answer(checked.ok, binding.instance);
+      }) };
+    }));
   }
 
   private get emb(): Embedding | null {
@@ -261,7 +374,8 @@ export class Memory extends DurableObject<Env> {
     const query = args.query ?? "";
     const limit = args.limit ?? 0;
     const deep = args.deep ?? false;
-    const span = parseSpan(args.since, args.until, this.zoneFor(args.sessionId));
+    const range = parseSpan(args.since, args.until, this.zoneFor(args.sessionId));
+    const span = range === undefined ? undefined : { ...range, includeUnknownTime: args.includeUnknownTime === true };
     const subject = trimSpace(args.subject ?? "") === "" ? undefined : this.service.recallSubject(args.subject ?? "");
     let among: Set<number> | undefined;
     if (trimSpace(query) !== "" && args.meaning !== undefined && this.emb !== null) {
@@ -329,8 +443,14 @@ export class Memory extends DurableObject<Env> {
     return same ? "ok" : "rejected";
   }
 
+  // Capture authorization and the instance together, without an await.
+  authorizeInstance(hash: string): { access: Access; instance?: string } {
+    const access = this.authorize(hash);
+    return access === "ok" ? { access, instance: this.instance() } : { access };
+  }
+
   // instance names this memory as it was made: drawn when it was created or
-  // brought back, never carried by an export, and new when a name is used
+  // brought back, never reused from an export, and new when a name is used
   // again after a deletion. A grant records it (consent.ts), so that what
   // was granted for one memory is refused by the next under the same name.
   instance(): string | "unknown" {
@@ -376,8 +496,26 @@ export class Memory extends DurableObject<Env> {
   // create makes this memory with the given token hash, unless it exists.
   create(hash: string): "created" | "exists" {
     if (this.storedTokenHash() !== undefined) return "exists";
-    this.store.setTokenHash(hash);
+    this.store.createWithIdentity(hash, this.now());
     return "created";
+  }
+
+  identityInfo(): { identity: Identity | null; instance: string | null } | "unknown" {
+    if (!this.exists()) return "unknown";
+    const db = this.logDb();
+    return { identity: readIdentity(db) ?? null, instance: db.getMeta(metaInstance) ?? null };
+  }
+
+  migrateIdentity(expectedInstance: string | null, sourceInstance?: string): { identity: Identity; instance: string } | Invalid | Gone {
+    if (!this.exists() || (this.logDb().getMeta(metaInstance) ?? null) !== expectedInstance) return { gone: true };
+    if (expectedInstance === null && !validSource(sourceInstance)) return { invalid: "a verified legacy source instance is required" };
+    try {
+      const identity = this.store.migrateIdentity(this.now(), sourceInstance, expectedInstance === null);
+      return { identity, instance: this.instance() };
+    } catch (err) {
+      if (err instanceof Error && ["identity source conflict", "a verified legacy source instance is required"].includes(err.message)) return { invalid: err.message };
+      throw err;
+    }
   }
 
   // replaceToken gives an existing memory a new token hash; the old token
@@ -412,21 +550,28 @@ export class Memory extends DurableObject<Env> {
     return zone ?? UTC;
   }
 
-  // getContext starts a session and returns what it is shown. A time zone
-  // the runtime does not know is not kept.
-  getContext(args: { model?: string; client?: string; timezone?: string }): ContextView | Invalid {
+  // getContext starts a session or refreshes the existing one. A time zone
+  // the runtime does not know is not kept; refresh preserves session metadata.
+  getContext(args: { session_id?: string; model?: string; client?: string; timezone?: string }): ContextView | Invalid {
     return outcome(() => this.startContext(args).view);
   }
 
-  private startContext(args: { model?: string; client?: string; timezone?: string }): {
+  private startContext(args: { session_id?: string; model?: string; client?: string; timezone?: string }): {
     view: ContextView;
     zone: string;
     unknownZone?: string;
   } {
     const asked = trimSpace(args.timezone ?? "");
     const known = asked === "" ? undefined : knownZone(asked);
-    const view = this.service.context(args.model ?? "", args.client ?? "", known ?? "");
-    const zone = known ?? this.zoneFor(undefined);
+    const sessionId = trimSpace(args.session_id ?? "");
+    if (sessionId !== "" && this.store.session(sessionId) === undefined) {
+      throw new InvalidInput("unknown session_id: refresh requires the session id returned for this memory in this conversation");
+    }
+    const view = sessionId === ""
+      ? this.service.context(args.model ?? "", args.client ?? "", known ?? "")
+      : this.service.contextFor(sessionId);
+    // Refresh retains the original session metadata and never rebinds a session.
+    const zone = sessionId === "" ? (known ?? this.zoneFor(undefined)) : this.zoneFor(sessionId);
     return asked !== "" && known === undefined ? { view, zone, unknownZone: asked } : { view, zone };
   }
 
@@ -434,8 +579,15 @@ export class Memory extends DurableObject<Env> {
     return outcome(() => {
       const { happenedAt, ...req } = args;
       let happened: number | undefined;
-      if (happenedAt !== undefined && trimSpace(happenedAt) !== "") happened = parseWhen(happenedAt, this.zoneFor(req.sessionId));
-      const r = this.service.remember({ ...req, happened });
+      let timePrecision: RememberRequest['timePrecision'];
+      let happenedOn: string | undefined;
+      const value = trimSpace(happenedAt ?? '');
+      if (value === 'unknown') timePrecision = 'unknown';
+      else if (value !== '') {
+        happened = parseWhen(value, this.zoneFor(req.sessionId));
+        if (happened !== undefined && /^\d{4}-\d{2}-\d{2}$/.test(value)) { timePrecision = 'day'; happenedOn = value; }
+      }
+      const r = this.service.remember({ ...req, happened, timePrecision, happenedOn });
       if (!r.dup) this.wake();
       return r;
     });
@@ -491,7 +643,11 @@ export class Memory extends DurableObject<Env> {
         case "get_context": {
           const { view, zone, unknownZone } = this.startContext(call);
           const note: AnswerNote = view.prompt === undefined ? {} : { reflect_asked: view.prompt.subject === "" ? "unsorted" : "subject" };
-          return { text: formatContext(view, zone, unknownZone), note };
+          const db = new Db(this.ctx.storage.sql);
+          return { text: formatContext(view, zone, unknownZone), note,
+            structuredContent: { schema_version: 1, session_id: view.session.id,
+              identity: { id: readIdentity(db)?.id ?? null, instance: db.getMeta(metaInstance) ?? null },
+              capabilities: { memory: "bounded_summary", persona: "requires_host_activation", turn_enforcement: "client" } } };
         }
         case "remember": {
           const r = this.remember(call.args);
@@ -710,7 +866,7 @@ export class Memory extends DurableObject<Env> {
     if (this.hasLog()) return { exists: true };
     let parsed: ParsedExport;
     try {
-      parsed = parseExport(file, maxEventsInOneGo, (f) => new LogFormatError(f, f > logFormat).message);
+      parsed = parseExport(file, maxEventsInOneGo, (f) => new LogFormatError(f, f > latestLogFormat).message);
     } catch (err) {
       if (err instanceof TooLargeError) return { tooLarge: err.message };
       if (err instanceof ExportError || err instanceof FormatRefusal) return { invalid: err.message };
@@ -732,6 +888,7 @@ export class Memory extends DurableObject<Env> {
       // On SQLite storage this empties the database at once and atomically;
       // the promise only reports that the write was confirmed.
       void this.ctx.storage.deleteAll();
+      if (err instanceof PersonaError) return { invalid: `not a usable export: ${err.message}` };
       if (err instanceof ReplayError) return { invalid: `not a usable export: ${err.message}` };
       throw err;
     }

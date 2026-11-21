@@ -1,3 +1,4 @@
+import { serveEvaluation } from "./persona-api";
 // The Worker in front of the memories. It holds no state: it routes a request
 // to the memory its path names, checks the memory's fixed token with the
 // memory's Durable Object or an OAuth access token with KV (oauth.ts), and
@@ -17,15 +18,17 @@ import { Memory } from "./memory-object";
 import { challenge, isOAuthPath, isOAuthToken, issuerOf, oauthAccess, serveOAuth } from "./oauth";
 import { isPagePath, servePage } from "./page";
 import { buildServer } from "./mcp/server";
+import { serveLifecycleMcp } from './mcp/lifecycle';
 import { clipText, type LogFields, logLine } from "./log";
+import { serveHarness } from "./harness";
 
 export { Directory, Guard, Memory };
 export { newToken, validName } from "./http";
 
 export interface Env extends EmbedEnv {
   MEMORY: DurableObjectNamespace<Memory>;
-  // The list of memories the admin API keeps, and the admin secret set on
-  // the admin page; never reached by MCP.
+  // Memory listing, admin setup and trusted host/thread binding authority;
+  // never reached by the legacy MCP path.
   DIRECTORY: DurableObjectNamespace<Directory>;
   // The limit on guessing at the consent page and the admin API, and the
   // budget on client registrations, one object per address and one for all
@@ -164,17 +167,18 @@ async function serveMemory(request: Request, env: Env, name: string, note: Note)
     note.cred = "token";
     let access;
     try {
-      access = await stub.authorize(await sha256Hex(token));
+      access = await stub.authorizeInstance(await sha256Hex(token));
     } catch (err) {
       logLine({ msg: "memory unavailable", memory: name, error: err instanceof Error ? err.name : "unknown" });
       return plain(503, "this memory cannot be opened right now; see the server log");
     }
     // The same answer for a wrong token and for a name that names nothing, so
     // the names of memories do not leak.
-    if (access !== "ok") {
+    if (access.access !== "ok") {
       note.auth = "rejected";
       return challenge(url, name, true);
     }
+    instance = access.instance;
   }
   note.auth = "ok";
 
@@ -227,7 +231,17 @@ async function route(request: Request, env: Env, ctx: ExecutionContext | undefin
   if (path === "/healthz") return healthz(request);
   // The admin page: static files, never a Durable Object.
   if (isPagePath(path)) return servePage(request, path);
+  if (path.startsWith("/harness/v1/") || path.startsWith("/evaluation/v1/")) {
+    try { return path.startsWith("/evaluation/") ? await serveEvaluation(request, env, path, note) : await serveHarness(request, env, path, note); }
+    catch (err) {
+      logLine({ msg: "harness unavailable", error: err instanceof Error ? err.name : "unknown" });
+      return plain(503, "the harness registry is unavailable; retry without changing the binding");
+    }
+  }
   // /<name>/mcp
+  if (parts.length === 4 && parts[2] === 'agent' && parts[3] === 'mcp' && validName(parts[1]!)) {
+    return serveLifecycleMcp(request, env, parts[1]!, note);
+  }
   if (parts.length === 3 && parts[0] === "" && parts[2] === "mcp" && validName(parts[1]!)) {
     return serveMemory(request, env, parts[1]!, note);
   }
